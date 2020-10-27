@@ -1,0 +1,25 @@
+{
+  "name": "lazy-watch",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "module": "LazyWatch.js",
+  "scripts": {
+    "build": "browserify LazyWatch.js -p esmify > index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://gitlab.com/rb.luff/unkoru.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://gitlab.com/rb.luff/unkoru/issues"
+  },
+  "homepage": "https://gitlab.com/rb.luff/unkoru#readme",
+  "devDependencies": {
+    "browserify": "^17.0.0",
+    "esmify": "^2.1.1"
+  }
+}
