@@ -152,7 +152,7 @@ LazyWatch.RESOLVE_MODE = false
 LazyWatch.LISTENERS = new WeakMap()
 
 function isObject (val) {
-  return val && typeof val === 'object'
+  return val && typeof val === 'object' && !(val instanceof Date)
 }
 
 function deepClone (obj, hash = new WeakMap()) {
