@@ -96,6 +96,7 @@ export class LazyWatch {
           delete target[key]
         } else if (!isSame) {
           target[key] = source[key]
+          target.__ob__ && target.__ob__.dep.notify()
         }
       }
     }
