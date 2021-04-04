@@ -94,6 +94,7 @@ export class LazyWatch {
         } else if (source[key] === null) {
           // remove key from target when value is null
           delete target[key]
+          target.__ob__ && target.__ob__.dep.notify()
         } else if (!isSame) {
           target[key] = source[key]
           target.__ob__ && target.__ob__.dep.notify()
@@ -107,6 +108,7 @@ export class LazyWatch {
       for (const key in target) {
         if ({}.hasOwnProperty.call(target, key) && source[key] === null) {
           delete target[key]
+          target.__ob__ && target.__ob__.dep.notify()
         }
       }
     }
