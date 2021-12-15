@@ -96,8 +96,12 @@ export class LazyWatch {
           delete target[key]
           target.__ob__ && target.__ob__.dep.notify()
         } else if (!isSame) {
-          target[key] = source[key]
-          target.__ob__ && target.__ob__.dep.notify()
+          if (Array.isArray(target)) {
+            target.splice(key, 1, source[key])
+          } else {
+            target[key] = source[key]
+            target.__ob__ && target.__ob__.dep.notify()
+          }
         }
       }
     }
