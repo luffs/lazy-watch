@@ -1,8 +1,3 @@
-/* USAGE:
-const UI = new LazyWatch({ very: true, nice: false })
-LazyWatch.on(UI, diff => console.log({ diff }) )
-UI.nice = true;
-*/
 
 export class LazyWatch {
   constructor (original) {

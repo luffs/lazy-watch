@@ -1,6 +1,6 @@
 {
   "name": "lazy-watch",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "description": "Deep watch objects (using Proxy) and emit diff asynchronously.",
   "main": "lib/index.js",
   "module": "src/index.js",
@@ -10,14 +10,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://gitlab.com/rb.luff/lazy-watch.git"
+    "url": "git+https://github.com/luffs/lazy-watch.git"
   },
   "author": "",
   "license": "ISC",
   "bugs": {
-    "url": "https://gitlab.com/rb.luff/lazy-watch/issues"
+    "url": "https://github.com/luffs/lazy-watch/issues"
   },
-  "homepage": "https://gitlab.com/rb.luff/lazy-watch#readme",
+  "homepage": "https://github.com/luffs/lazy-watch#readme",
   "devDependencies": {
     "@babel/cli": "^7.12.1",
     "@babel/core": "^7.12.3",
