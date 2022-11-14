@@ -73,7 +73,7 @@ export class LazyWatch {
   }
 
   static overwrite (target, source) {
-    const lengthModified = Array.isArray(target) && Array.isArray(source) && (target.length !== source.length)
+    const lengthModified = Array.isArray(target) && typeof source.length === 'number' && (target.length !== source.length)
     if (lengthModified) {
       target.length = source.length
     }
