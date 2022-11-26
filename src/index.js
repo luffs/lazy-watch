@@ -43,7 +43,7 @@ export class LazyWatch {
               diff[prop] = deepClone(value)
               target[prop] = deepClone(value)
               clearTimeout(diffEmitTimeout)
-              diffEmitTimeout = setTimeout(diffEmitter, 1)
+              diffEmitTimeout = setTimeout(diffEmitter, 0)
             }
           }
           return true
@@ -54,7 +54,7 @@ export class LazyWatch {
             diff[prop] = null
             delete target[prop]
             clearTimeout(diffEmitTimeout)
-            diffEmitTimeout = setTimeout(diffEmitter, 1)
+            diffEmitTimeout = setTimeout(diffEmitter, 0)
           }
           return true
         }
