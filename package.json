@@ -1,6 +1,6 @@
 {
   "name": "lazy-watch",
-  "version": "1.1.7",
+  "version": "1.1.8",
   "description": "Deep watch objects (using Proxy) and emit diff asynchronously.",
   "main": "lib/index.js",
   "module": "src/index.js",
@@ -27,5 +27,8 @@
     "presets": [
       "@babel/preset-env"
     ]
+  },
+  "dependencies": {
+    "setimmediate": "^1.0.5"
   }
 }

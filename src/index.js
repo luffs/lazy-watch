@@ -1,4 +1,4 @@
-
+import 'setimmediate'
 export class LazyWatch {
   constructor (original) {
     let masterDiff = {}
@@ -42,8 +42,8 @@ export class LazyWatch {
             } else {
               diff[prop] = deepClone(value)
               target[prop] = deepClone(value)
-              clearTimeout(diffEmitTimeout)
-              diffEmitTimeout = setTimeout(diffEmitter, 0)
+              clearImmediate(diffEmitTimeout)
+              diffEmitTimeout = setImmediate(diffEmitter)
             }
           }
           return true
@@ -53,8 +53,8 @@ export class LazyWatch {
             const diff = LazyWatch.getDiffObject(masterDiff, path)
             diff[prop] = null
             delete target[prop]
-            clearTimeout(diffEmitTimeout)
-            diffEmitTimeout = setTimeout(diffEmitter, 0)
+            clearImmediate(diffEmitTimeout)
+            diffEmitTimeout = setImmediate(diffEmitter)
           }
           return true
         }
