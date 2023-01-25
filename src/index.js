@@ -1,4 +1,7 @@
-import 'setimmediate'
+import { setImmediatePolyfill } from "./set-immediate";
+
+export const setImmediatePolyfillStatus = setImmediatePolyfill(typeof self === 'undefined' ? typeof global === 'undefined' ? this : global : self)
+
 export class LazyWatch {
   constructor (original) {
     let masterDiff = {}
