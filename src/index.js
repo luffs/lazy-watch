@@ -1,14 +1,17 @@
-import { setImmediatePolyfill } from "./set-immediate";
+import { setImmediatePolyfill } from "./set-immediate.js";
 
-export const setImmediatePolyfillStatus = setImmediatePolyfill(typeof self === 'undefined' ? typeof global === 'undefined' ? this : global : self)
+const context = typeof self === 'undefined'
+  ? (typeof global === 'undefined' ? this : global)
+  : self
+export const setImmediatePolyfillStatus = setImmediatePolyfill(context)
 
 export class LazyWatch {
   constructor (original) {
     let masterDiff = {}
-    let diffEmitTimeout = 0
-    const childProxyCache = new WeakMap()
-    const proxy = new Proxy(original, getProxyHandler())
+    const cache = new WeakMap()
+    const proxy = createProxy(original)
 
+    let diffEmitterTimeout = 0
     const diffEmitter = () => {
       const listeners = LazyWatch.LISTENERS.get(proxy) || []
       listeners.forEach(listener => listener(masterDiff))
@@ -17,37 +20,68 @@ export class LazyWatch {
 
     return proxy
 
-    function getProxyHandler (path = []) {
-      return {
-        get (target, prop, receiver) {
+    function createProxy (obj, path = []) {
+      return new Proxy(obj, {
+        get (target, prop) {
           if (LazyWatch.RESOLVE_MODE) {
+            // return the original object, without the proxy
             return target
-          } else if (isObject(target[prop])) {
-            let child = childProxyCache.get(target[prop])
-            if (!child) {
-              child = new Proxy(target[prop], getProxyHandler([...path, prop]))
-              childProxyCache.set(target[prop], child)
-            }
-            return child
-          } else {
-            return target[prop]
           }
+          if (typeof target[prop] === 'object' && target[prop] !== null) {
+            // get proxy from cache, or add to cache and return from cache
+            let childProxy = cache.get(target[prop])
+            if (!childProxy) {
+              childProxy = createProxy(target[prop], [...path, prop])
+              cache.set(target[prop], childProxy)
+            }
+            return childProxy
+          }
+          return target[prop]
         },
         set (target, prop, value, receiver) {
-          // always update target prop, but only emit diff if json values have changed
-          if (target[prop] !== value) {
-            value = LazyWatch.resolveIfProxy(value)
+          // adding a LazyWatch instance to another instance? resolve the original object
+          value = LazyWatch.resolveIfProxy(value)
+
+          const targetPropIsObject = typeof target[prop] === 'object' && target[prop]
+          const valueIsObject = typeof value === 'object' && value
+
+          if (Array.isArray(target[prop]) && Array.isArray(value)) {
+            let currentArrayLength = target[prop].length
+
+            // if array length has changed
+            if (value.length !== currentArrayLength) {
+              receiver[prop].length = value.length
+
+              // clean the diff object from props higher than length
+              const diff = LazyWatch.getDiffObject(masterDiff, [...path, prop])
+              for (const key in diff) {
+                if (key >= value.length) {
+                  delete diff[key]
+                }
+              }
+            }
+          }
+
+          if (targetPropIsObject && valueIsObject) {
+            // merge if both are objects. use receiver[prop] so it will be a proxy instance
+            const propValueProxy = receiver[prop]
+            LazyWatch.overwrite(propValueProxy, value)
+          } else if (target[prop] !== value) {
             const diff = LazyWatch.getDiffObject(masterDiff, path)
 
-            if (isObject(target[prop]) && isObject(value)) {
-              const child = receiver[prop]
-              LazyWatch.overwrite(child, value)
-            } else {
-              diff[prop] = deepClone(value)
-              target[prop] = deepClone(value)
-              clearImmediate(diffEmitTimeout)
-              diffEmitTimeout = setImmediate(diffEmitter)
+            // if array is cleared (length set to 0), but then has more items added to it
+            if (typeof diff.length === 'number') {
+              const index = parseInt(prop, 10)
+              if (diff.length <= index) {
+                diff.length = index + 1
+              }
             }
+
+            diff[prop] = deepClone(value)
+            target[prop] = deepClone(value)
+
+            context.clearImmediate(diffEmitterTimeout)
+            diffEmitterTimeout = context.setImmediate(diffEmitter)
           }
           return true
         },
@@ -56,15 +90,14 @@ export class LazyWatch {
             const diff = LazyWatch.getDiffObject(masterDiff, path)
             diff[prop] = null
             delete target[prop]
-            clearImmediate(diffEmitTimeout)
-            diffEmitTimeout = setImmediate(diffEmitter)
+            context.clearImmediate(diffEmitterTimeout)
+            diffEmitterTimeout = context.setImmediate(diffEmitter)
           }
           return true
         }
-      }
+      })
     }
   }
-
   static getDiffObject (diffObj, path) {
     for (let i = 0; i < path.length; i++) {
       if (!diffObj[path[i]]) {
@@ -76,44 +109,42 @@ export class LazyWatch {
   }
 
   static overwrite (target, source) {
-    const lengthModified = Array.isArray(target) && typeof source.length === 'number' && (target.length !== source.length)
-    if (lengthModified) {
-      target.length = source.length
-    }
-
-    for (const key in source) {
-      if ({}.hasOwnProperty.call(source, key)) {
-        const bothAreObjects = isObject(source[key]) && isObject(target[key])
-        const isSame = target[key] === source[key]
-
-        if (bothAreObjects) {
-          // merge objects and arrays
-          LazyWatch.overwrite(target[key], source[key])
-        } else if (source[key] === null) {
-          // remove key from target when value is null
-          delete target[key]
-          target.__ob__ && target.__ob__.dep.notify()
-        } else if (!isSame) {
-          if (Array.isArray(target)) {
-            target.splice(key, 1, source[key])
-          } else {
-            target[key] = source[key]
-            target.__ob__ && target.__ob__.dep.notify()
+    let modified = false
+    for (const prop in source) {
+      if (source[prop] === null) {
+        // null values are treated as things that should be deleted
+        delete target[prop]
+        modified = true
+      } else if (isObjectOrArray(target[prop]) && isObjectOrArray(source[prop])) {
+        // merge if both are objects
+        this.overwrite(target[prop], source[prop])
+      } else {
+        if (isObjectOrArray(source[prop])) {
+          // null values are treated as things that should be deleted
+          for (const key in source[prop]) {
+            if (source[prop][key] === null) {
+              delete source[prop][key]
+            }
           }
         }
+        target[prop] = source[prop]
+        modified = true
       }
     }
 
     const deleteMissingProperties = !LazyWatch.PATCH_MODE && !Array.isArray(target)
     if (deleteMissingProperties) {
       // delete keys from target that are not in source
-      for (const key in target) {
-        if ({}.hasOwnProperty.call(target, key) && source[key] === null) {
-          delete target[key]
-          target.__ob__ && target.__ob__.dep.notify()
+      for (const prop in target) {
+        if (Object.hasOwnProperty.call(target, prop) && (source[prop] === null || source[prop] === undefined)) {
+          delete target[prop]
+          modified = true
         }
       }
     }
+
+    // trigger vue.js v2 templates to update
+    modified && target.__ob__ && target.__ob__.dep.notify()
   }
 
   static patch (target, source) {
@@ -156,7 +187,7 @@ LazyWatch.PATCH_MODE = false
 LazyWatch.RESOLVE_MODE = false
 LazyWatch.LISTENERS = new WeakMap()
 
-function isObject (val) {
+function isObjectOrArray (val) {
   return val && typeof val === 'object' && !(val instanceof Date)
 }
 
@@ -167,13 +198,13 @@ function deepClone (obj, hash = new WeakMap()) {
     obj instanceof Set
       ? new Set(obj) // objects contained in sets are NOT cloned
       : obj instanceof Map
-      ? new Map(Array.from(obj, ([key, val]) => [key, deepClone(val, hash)]))
-      : obj instanceof Date ? new Date(obj)
-        : obj instanceof RegExp ? new RegExp(obj.source, obj.flags)
-          // ... add here any specific treatment for other classes ...
-          // and finally a catch-all:
-          : obj.constructor ? new obj.constructor()
-            : Object.create(null)
+        ? new Map(Array.from(obj, ([key, val]) => [key, deepClone(val, hash)]))
+        : obj instanceof Date ? new Date(obj)
+          : obj instanceof RegExp ? new RegExp(obj.source, obj.flags)
+            // ... add here any specific treatment for other classes ...
+            // and finally a catch-all:
+            : obj.constructor ? new obj.constructor()
+              : Object.create(null)
 
   hash.set(obj, result)
   return Object.assign(result, ...Object.keys(obj)
