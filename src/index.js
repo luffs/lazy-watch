@@ -142,9 +142,6 @@ export class LazyWatch {
         }
       }
     }
-
-    // trigger vue.js v2 templates to update
-    modified && target.__ob__ && target.__ob__.dep.notify()
   }
 
   static patch (target, source) {
