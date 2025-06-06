@@ -37,3 +37,13 @@ UI.list[0].forEach(item => {
 delete UI.junk
 // this will result in changeListener getting called once with all changes
 ```
+
+### Testing:
+
+To run the tests:
+
+```
+npm test
+```
+
+This will execute the test suite using Jest, which verifies the functionality of LazyWatch including object creation, change detection, event emission, and patching.

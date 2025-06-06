@@ -162,8 +162,8 @@ export class LazyWatch {
   static off (instance, listener) {
     const listeners = LazyWatch.LISTENERS.get(instance) || []
     const index = listeners.indexOf(listener)
-    if (index) {
-      listeners.slice(index, 1)
+    if (index !== -1) {
+      listeners.splice(index, 1)
     }
     LazyWatch.LISTENERS.set(instance, listeners)
   }
