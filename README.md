@@ -70,6 +70,8 @@ Applies changes from a diff object to a target object.
 
 ## Examples
 
+For more comprehensive examples and advanced use cases, see [EXAMPLES.md](EXAMPLES.md).
+
 ### Basic Object Watching
 
 ```js

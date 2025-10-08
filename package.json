@@ -1,13 +1,12 @@
 {
   "name": "lazy-watch",
-  "version": "1.4.1",
+  "version": "2.0.0",
   "description": "Deep watch objects (using Proxy) and emit diff asynchronously.",
   "type": "module",
-  "main": "./lib/index.js",
-  "exports": "./src/index.js",
+  "main": "./src/index.js",
+  "exports": "./src/lazy-watch.js",
   "scripts": {
-    "prepublish": "babel src -d lib",
-    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js"
+    "test": "node ./test/tests.js"
   },
   "repository": {
     "type": "git",
@@ -18,17 +17,5 @@
   "bugs": {
     "url": "https://github.com/luffs/lazy-watch/issues"
   },
-  "homepage": "https://github.com/luffs/lazy-watch#readme",
-  "devDependencies": {
-    "@babel/cli": "^7.12.1",
-    "@babel/core": "^7.12.3",
-    "@babel/preset-env": "^7.12.1",
-    "jest": "^29.5.0"
-  },
-  "babel": {
-    "presets": [
-      "@babel/preset-env"
-    ]
-  },
-  "dependencies": {}
+  "homepage": "https://github.com/luffs/lazy-watch#readme"
 }
