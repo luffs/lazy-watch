@@ -43,7 +43,7 @@ export class EventEmitter {
     this.#context.clearImmediate(this.#emitTimeout);
 
     if (this.#throttle > 0) {
-      const now = Date.now();
+      const now = performance.now();
       const timeSinceLastEmit = now - this.#lastEmitTime;
 
       if (timeSinceLastEmit >= this.#throttle) {
@@ -66,7 +66,7 @@ export class EventEmitter {
   #emit() {
     if (!this.#diffTracker.hasPendingChanges()) return;
 
-    this.#lastEmitTime = Date.now();
+    this.#lastEmitTime = performance.now();
 
     const diff = this.#diffTracker.consumeDiff();
     this.#listeners.forEach(listener => {
