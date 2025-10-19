@@ -38,6 +38,19 @@ export interface SetImmediatePolyfillStatus {
 }
 
 /**
+ * Configuration options for LazyWatch
+ */
+export interface LazyWatchConstructorOptions {
+    /**
+     * Minimum time in milliseconds between emits (throttling)
+     * When set, the first change emits immediately, but subsequent changes
+     * within the throttle window are batched together
+     * @default 0 (no throttling)
+     */
+    throttle?: number;
+}
+
+/**
  * LazyWatch - A reactive proxy-based object change tracker
  *
  * The constructor returns a Proxy that behaves like the original object
@@ -70,11 +83,12 @@ export class LazyWatch<T extends object = any> {
      * Create a new LazyWatch instance
      * Returns a proxy that can be used directly like the original object
      * @param original - The object or array to watch
+     * @param options - Configuration options
      * @returns A proxy that tracks changes to the original object
      * @throws {TypeError} If original is not an object or array
      */
     // @ts-ignore
-    constructor(original: T): T;
+    constructor(original: T, options?: LazyWatchConstructorOptions): T;
 
     /**
      * Add a change listener to a LazyWatch proxy
@@ -201,7 +215,7 @@ export class DiffTracker {
  * Not exposed in public API but included for completeness
  */
 export class EventEmitter {
-    constructor(diffTracker: DiffTracker, context: any);
+    constructor(diffTracker: DiffTracker, context: any, options?: LazyWatchConstructorOptions);
     on(listener: ChangeListener): void;
     off(listener: ChangeListener): void;
     scheduleEmit(): void;
@@ -237,25 +251,6 @@ export type WatchedProxy<T> = T extends object ? {
     [K in keyof T]: T[K] extends object ? WatchedProxy<T[K]> : T[K];
 } : T;
 
-/**
- * Configuration options for advanced usage (future enhancement)
- */
-export interface LazyWatchOptions {
-    /**
-     * Debounce delay for change emission in milliseconds
-     */
-    debounce?: number;
-
-    /**
-     * Whether to deep clone values (default: true)
-     */
-    deepClone?: boolean;
-
-    /**
-     * Custom equality function for change detection
-     */
-    equals?: (a: any, b: any) => boolean;
-}
 
 // Augment global context with setImmediate types if needed
 declare global {

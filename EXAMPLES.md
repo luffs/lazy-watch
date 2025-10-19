@@ -47,16 +47,35 @@ watched.user.name = 'Bob';
 LazyWatch.dispose(watched);
 ```
 
+### With Throttling
+
+```javascript
+// Create a watched object with 100ms throttle
+const watched = new LazyWatch({ count: 0 }, { throttle: 100 });
+
+LazyWatch.on(watched, (changes) => {
+  console.log('Changes detected:', changes);
+});
+
+// Rapid changes are batched within the throttle window
+watched.count = 1;
+watched.count = 2;
+watched.count = 3;
+// After 100ms, emits once with: { count: 3 }
+```
+
 ## API Reference
 
 ### Constructor
 
-#### `new LazyWatch<T>(original: T): T`
+#### `new LazyWatch<T>(original: T, options?: LazyWatchConstructorOptions): T`
 
 Creates a new LazyWatch instance and returns a proxy that tracks changes.
 
 **Parameters:**
 - `original` - The object or array to watch
+- `options` (optional) - Configuration options
+  - `throttle` - Minimum time in milliseconds between emits (default: 0). When set, the first change emits immediately, but subsequent changes within the throttle window are batched together.
 
 **Returns:**
 - A proxy object that behaves like the original but tracks all changes
@@ -69,6 +88,10 @@ Creates a new LazyWatch instance and returns a proxy that tracks changes.
 const watched = new LazyWatch({ count: 0 });
 // watched is now a proxy that tracks changes
 watched.count = 1; // This change will be tracked
+
+// With throttling
+const throttled = new LazyWatch({ count: 0 }, { throttle: 50 });
+// Changes within 50ms will be batched
 ```
 
 ### Static Methods
@@ -170,7 +193,7 @@ The changes object passed to listeners contains the modified properties:
 ```javascript
 {
   propertyName: newValue,
-    nested: {
+  nested: {
     property: newValue
   },
   deletedProperty: null // null indicates deletion
@@ -359,138 +382,6 @@ undoManager.undo(); // Reverts text change
 undoManager.redo(); // Reapplies text change
 ```
 
-### Example 4: Form Validation
-
-```javascript
-class ValidatedForm {
-  constructor(initialData, validators) {
-    this.data = new LazyWatch(initialData);
-    this.validators = validators;
-    this.errors = {};
-    
-    LazyWatch.on(this.data, (changes) => {
-      this.validateChanges(changes);
-    });
-  }
-  
-  validateChanges(changes) {
-    for (const field in changes) {
-      if (this.validators[field]) {
-        const error = this.validators[field](changes[field]);
-        if (error) {
-          this.errors[field] = error;
-        } else {
-          delete this.errors[field];
-        }
-      }
-    }
-    
-    this.onValidationChange?.(this.errors);
-  }
-  
-  isValid() {
-    return Object.keys(this.errors).length === 0;
-  }
-}
-
-// Usage
-const form = new ValidatedForm(
-  { email: '', password: '' },
-  {
-    email: (value) => {
-      if (!value.includes('@')) return 'Invalid email';
-    },
-    password: (value) => {
-      if (value.length < 8) return 'Password too short';
-    }
-  }
-);
-
-form.onValidationChange = (errors) => {
-  console.log('Validation errors:', errors);
-};
-
-form.data.email = 'invalid';  // Triggers validation
-form.data.email = 'user@example.com';  // Valid
-```
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(batch)
-      });
-    } catch (error) {
-      console.error('Sync failed:', error);
-      this.syncQueue.unshift(...batch); // Re-queue on failure
-    } finally {
-      this.syncing = false;
-    }
-}
-
-get data() {
-return this.watched.proxy;
-}
-}
-
-// Usage
-const sync = new DataSync({ todos: [] });
-sync.data.todos.push({ id: 1, text: 'Buy milk', done: false });
-// Automatically synced to server
-```
-
-### Example 3: Undo/Redo System
-
-```javascript
-class UndoManager {
-  constructor(data) {
-    this.watched = new LazyWatch(data);
-    this.history = [];
-    this.currentIndex = -1;
-    
-    this.watched.on((changes) => {
-      if (!this.applying) {
-        // Truncate forward history
-        this.history = this.history.slice(0, this.currentIndex + 1);
-        this.history.push(changes);
-        this.currentIndex++;
-      }
-    });
-  }
-  
-  undo() {
-    if (this.currentIndex < 0) return;
-    
-    this.applying = true;
-    const changes = this.history[this.currentIndex];
-    this.reverseChanges(changes);
-    this.currentIndex--;
-    this.applying = false;
-  }
-  
-  redo() {
-    if (this.currentIndex >= this.history.length - 1) return;
-    
-    this.applying = true;
-    this.currentIndex++;
-    const changes = this.history[this.currentIndex];
-    this.watched.patch(changes);
-    this.applying = false;
-  }
-  
-  reverseChanges(changes) {
-    // Implement reverse logic based on your needs
-    // This is simplified - real implementation would be more complex
-    for (const key in changes) {
-      if (changes[key] === null) {
-        // Restore deleted property (would need to store original values)
-      } else {
-        // Revert to previous value (would need to store original values)
-      }
-    }
-  }
-  
-  get data() {
-    return this.watched.proxy;
-  }
-}
-```
 
 ### Example 4: Form Validation
 
@@ -576,6 +467,7 @@ class MyComponent {
 - Nested proxies are cached for efficiency
 - Deep cloning only occurs when necessary
 - Use `LazyWatch.patch()` instead of `LazyWatch.overwrite()` when you only need to update specific properties
+- Use the `throttle` option to reduce emit frequency for high-frequency updates (e.g., mouse tracking, real-time data streams)
 
 ### Error Handling
 
@@ -594,15 +486,6 @@ LazyWatch.on(watched, () => {
 
 watched.value = 1; // Both listeners execute
 ```
-
-## Browser Support
-
-LazyWatch works in all modern browsers and Node.js environments that support:
-- Proxy (ES2015)
-- WeakMap (ES2015)
-- Promise (ES2015)
-
-For older environments, use appropriate polyfills.
 
 ## TypeScript
 
@@ -629,29 +512,3 @@ LazyWatch.on(watched, (changes) => {
 watched.age = 31; // ✓ OK
 watched.invalid = true; // ✗ TypeScript error
 ```
-
-## License
-
-MIT
-
-## Contributing
-
-Contributions are welcome! Please ensure:
-- All tests pass
-- Code follows the existing style
-- New features include tests and documentation
-
-## Changelog
-
-### Version 2.0.0
-- Complete rewrite with improved architecture
-- Better memory management with proper disposal
-- TypeScript support with full type definitions
-- Performance improvements with optimized caching
-- **Breaking changes**:
-    - Constructor now returns proxy directly (use `const watched = new LazyWatch(data)` instead of `watched.proxy`)
-    - Methods moved to static API (`LazyWatch.on(watched, callback)` instead of `watched.on(callback)`)
-    - Cleaner, more intuitive syntax throughout
-
-### Version 1.0.0
-- Initial release

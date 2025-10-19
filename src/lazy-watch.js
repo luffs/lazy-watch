@@ -43,12 +43,14 @@ export class LazyWatch {
   /**
    * Create a new LazyWatch instance
    * @param {Object|Array} original - The object or array to watch
+   * @param {Object} options - Configuration options
+   * @param {number} options.throttle - Minimum time in milliseconds between emits (default: 0)
    * @returns {Proxy} A proxy that tracks changes
    * @throws {TypeError} If original is not an object or array
    */
-  constructor(original) {
+  constructor(original, options = {}) {
     this.#diffTracker = new DiffTracker();
-    this.#eventEmitter = new EventEmitter(this.#diffTracker, context);
+    this.#eventEmitter = new EventEmitter(this.#diffTracker, context, options);
     this.#proxyHandler = new ProxyHandler(original, this.#diffTracker, this.#eventEmitter);
     this.#proxy = this.#proxyHandler.createRootProxy(this);
 

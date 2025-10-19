@@ -34,15 +34,35 @@ UI.hello = 'world';
 // After the next tick, logs: { diff: { hello: 'world' } }
 ```
 
+### With Throttling
+
+```js
+// Create a watched object with 50ms throttle
+const UI = new LazyWatch({}, { throttle: 50 });
+
+LazyWatch.on(UI, diff => console.log({ diff }));
+
+// Multiple rapid changes will be batched
+UI.count = 1;
+UI.count = 2;
+UI.count = 3;
+// After 50ms, logs once: { diff: { count: 3 } }
+```
+
 ## API Reference
 
 ### Creating Watched Objects
 
 ```js
-const watchedObject = new LazyWatch(originalObject);
+const watchedObject = new LazyWatch(originalObject, options);
 ```
 
 Creates a proxy around the original object that tracks all changes.
+
+**Parameters:**
+- `originalObject` - The object or array to watch
+- `options` (optional) - Configuration options
+  - `throttle` - Minimum time in milliseconds between emits (default: 0). When set, the first change emits immediately, but subsequent changes within the throttle window are batched together.
 
 ### Listening for Changes
 

@@ -4,13 +4,16 @@ export class EventEmitter {
   #diffTracker;
   #emitTimeout = null;
   #context;
+  #throttle;
+  #lastEmitTime = 0;
 
-  constructor(diffTracker, context) {
+  constructor(diffTracker, context, options = {}) {
     if (!diffTracker) {
       throw new TypeError('EventEmitter requires a DiffTracker instance');
     }
     this.#diffTracker = diffTracker;
     this.#context = context;
+    this.#throttle = options.throttle || 0;
   }
 
   /**
@@ -38,7 +41,23 @@ export class EventEmitter {
    */
   scheduleEmit() {
     this.#context.clearImmediate(this.#emitTimeout);
-    this.#emitTimeout = this.#context.setImmediate(() => this.#emit());
+
+    if (this.#throttle > 0) {
+      const now = Date.now();
+      const timeSinceLastEmit = now - this.#lastEmitTime;
+
+      if (timeSinceLastEmit >= this.#throttle) {
+        // Enough time has passed, emit immediately (on next tick)
+        this.#emitTimeout = this.#context.setImmediate(() => this.#emit());
+      } else {
+        // Not enough time has passed, schedule for later
+        const delay = this.#throttle - timeSinceLastEmit;
+        this.#emitTimeout = setTimeout(() => this.#emit(), delay);
+      }
+    } else {
+      // No throttling, emit immediately (on next tick)
+      this.#emitTimeout = this.#context.setImmediate(() => this.#emit());
+    }
   }
 
   /**
@@ -46,6 +65,8 @@ export class EventEmitter {
    */
   #emit() {
     if (!this.#diffTracker.hasPendingChanges()) return;
+
+    this.#lastEmitTime = Date.now();
 
     const diff = this.#diffTracker.consumeDiff();
     this.#listeners.forEach(listener => {
@@ -62,6 +83,7 @@ export class EventEmitter {
    */
   dispose() {
     this.#context.clearImmediate(this.#emitTimeout);
+    clearTimeout(this.#emitTimeout);
     this.#listeners = [];
   }
 }

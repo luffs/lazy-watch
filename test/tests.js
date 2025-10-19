@@ -405,8 +405,107 @@ runner.test('should handle large number of changes efficiently', async () => {
   LazyWatch.dispose(watched);
 });
 
+// Throttle tests
+runner.test('should throttle emits with throttle option', async () => {
+  const data = { count: 0 };
+  const watched = new LazyWatch(data, { throttle: 50 });
+  const emitTimes = [];
+
+  LazyWatch.on(watched, () => {
+    emitTimes.push(Date.now());
+  });
+
+  // First change - should emit immediately
+  watched.count = 1;
+  await wait(10);
+
+  // Second change within throttle window - should be delayed
+  watched.count = 2;
+  await wait(10);
+
+  // Third change within throttle window - should be batched with second
+  watched.count = 3;
+  await wait(60); // Wait for throttle to complete
+
+  // Fourth change after throttle window - should emit immediately
+  watched.count = 4;
+  await wait(10);
+
+  assertTrue(emitTimes.length >= 2, `Expected at least 2 emits, got ${emitTimes.length}`);
+
+  // Check that first and second emits are at least 50ms apart
+  if (emitTimes.length >= 2) {
+    const timeBetween = emitTimes[1] - emitTimes[0];
+    assertTrue(timeBetween >= 45, `Expected at least 45ms between emits, got ${timeBetween}ms`);
+  }
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should batch multiple changes within throttle window', async () => {
+  const data = { a: 0, b: 0, c: 0 };
+  const watched = new LazyWatch(data, { throttle: 50 });
+  let emitCount = 0;
+  let lastChanges = null;
+
+  LazyWatch.on(watched, (changes) => {
+    emitCount++;
+    lastChanges = changes;
+  });
+
+  // Make multiple changes quickly
+  watched.a = 1;
+  watched.b = 2;
+  watched.c = 3;
+
+  await wait(70);
+
+  // Should have emitted once with all changes
+  assertEquals(emitCount, 1, 'Should emit once');
+  assertTrue(lastChanges.a === 1 && lastChanges.b === 2 && lastChanges.c === 3, 'Should include all changes');
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should work without throttle option (default behavior)', async () => {
+  const data = { count: 0 };
+  const watched = new LazyWatch(data);
+  let changesCaught = null;
+
+  LazyWatch.on(watched, (changes) => {
+    changesCaught = changes;
+  });
+
+  watched.count = 1;
+  await wait(10);
+
+  assertTrue(changesCaught !== null, 'Should detect changes without throttle');
+  assertEquals(changesCaught.count, 1);
+
+  LazyWatch.dispose(watched);
+});
+
 // Usage examples
 console.log('\n=== LazyWatch Usage Examples ===\n');
+
+// Example 0: Throttled change detection
+console.log('Example 0: Throttled change detection');
+{
+  const state = { count: 0 };
+  const watched = new LazyWatch(state, { throttle: 50 });
+
+  LazyWatch.on(watched, (changes) => {
+    console.log('Throttled changes:', changes);
+  });
+
+  // Rapid changes will be batched
+  watched.count = 1;
+  watched.count = 2;
+  watched.count = 3;
+  // Only emits after 50ms with final changes
+
+  setTimeout(() => LazyWatch.dispose(watched), 150);
+}
 
 // Example 1: Basic usage
 console.log('Example 1: Basic change detection');
