@@ -74,8 +74,11 @@ export class ProxyHandler {
           this.#handleArrayLengthChange(target, value, path, receiver);
         }
 
-        // Merge if both are objects
-        if (currentIsObject && valueIsObject) {
+        // When assigning a new array to a property, treat it as replacement not merge
+        const isArrayReplacement = Array.isArray(currentValue) && Array.isArray(value) && currentValue !== value;
+
+        // Merge if both are objects (but not array replacement)
+        if (currentIsObject && valueIsObject && !isArrayReplacement) {
           this.overwrite(receiver[prop], value);
         } else if (currentValue !== value) {
           this.#recordChange(target, prop, value, path);

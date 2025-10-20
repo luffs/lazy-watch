@@ -1,6 +1,6 @@
 {
   "name": "lazy-watch",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "Deep watch objects (using Proxy) and emit diff asynchronously.",
   "type": "module",
   "main": "./src/index.js",

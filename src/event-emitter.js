@@ -2,7 +2,8 @@
 export class EventEmitter {
   #listeners = [];
   #diffTracker;
-  #emitTimeout = null;
+  #immediateId = null;
+  #timeoutId = null;
   #context;
   #throttle;
   #lastEmitTime = 0;
@@ -40,7 +41,8 @@ export class EventEmitter {
    * Schedule a diff emission
    */
   scheduleEmit() {
-    this.#context.clearImmediate(this.#emitTimeout);
+    // Clear any existing pending emits
+    this.#clearPending();
 
     if (this.#throttle > 0) {
       const now = performance.now();
@@ -48,15 +50,15 @@ export class EventEmitter {
 
       if (timeSinceLastEmit >= this.#throttle) {
         // Enough time has passed, emit immediately (on next tick)
-        this.#emitTimeout = this.#context.setImmediate(() => this.#emit());
+        this.#immediateId = this.#context.setImmediate(() => this.#emit());
       } else {
         // Not enough time has passed, schedule for later
         const delay = this.#throttle - timeSinceLastEmit;
-        this.#emitTimeout = setTimeout(() => this.#emit(), delay);
+        this.#timeoutId = setTimeout(() => this.#emit(), delay);
       }
     } else {
       // No throttling, emit immediately (on next tick)
-      this.#emitTimeout = this.#context.setImmediate(() => this.#emit());
+      this.#immediateId = this.#context.setImmediate(() => this.#emit());
     }
   }
 
@@ -79,11 +81,18 @@ export class EventEmitter {
   }
 
   /**
+   * Clear any pending emits
+   */
+  #clearPending() {
+    this.#context.clearImmediate(this.#immediateId);
+    clearTimeout(this.#timeoutId);
+  }
+
+  /**
    * Clean up resources
    */
   dispose() {
-    this.#context.clearImmediate(this.#emitTimeout);
-    clearTimeout(this.#emitTimeout);
+    this.#clearPending();
     this.#listeners = [];
   }
 }
