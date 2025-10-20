@@ -79,7 +79,7 @@ export class ProxyHandler {
 
         // Merge if both are objects (but not array replacement)
         if (currentIsObject && valueIsObject && !isArrayReplacement) {
-          this.overwrite(receiver[prop], value);
+          this.overwrite(receiver[prop], value, [...path, prop]);
         } else if (currentValue !== value) {
           this.#recordChange(target, prop, value, path);
         }
@@ -140,38 +140,64 @@ export class ProxyHandler {
 
   /**
    * Overwrite target with source properties
+   * @param {Object} target - The target object (or proxy)
+   * @param {Object} source - The source object with new values
+   * @param {Array} path - The path to the current object (defaults to [] for root)
    */
-  overwrite(target, source) {
+  overwrite(target, source, path = []) {
     if (!source || typeof source !== 'object') {
       throw new TypeError('Source must be an object');
     }
 
-    for (const prop in source) {
-      if (source[prop] === null) {
-        delete target[prop];
-      } else if (Utils.isObjectOrArray(target[prop]) && Utils.isObjectOrArray(source[prop])) {
-        this.overwrite(target[prop], source[prop]);
-      } else {
+    // Get the target object (resolve proxy if needed)
+    const rawTarget = this.resolveIfProxy(target);
+    const rawSource = this.resolveIfProxy(source);
+    const diff = this.#diffTracker.getDiffObject(path);
+    let hasChanges = false;
+
+    // Track array length changes
+    if (Array.isArray(rawTarget) && Array.isArray(rawSource) && rawTarget.length !== rawSource.length) {
+      diff.length = rawSource.length;
+      hasChanges = true;
+    }
+
+    for (const prop in rawSource) {
+      if (rawSource[prop] === null) {
+        delete rawTarget[prop];
+      } else if (Utils.isObjectOrArray(rawTarget[prop]) && Utils.isObjectOrArray(rawSource[prop])) {
+        this.overwrite(rawTarget[prop], rawSource[prop], [...path, prop]);
+      } else if (rawTarget[prop] !== rawSource[prop]) {
         // Handle nested nulls
-        if (Utils.isObjectOrArray(source[prop])) {
-          for (const key in source[prop]) {
-            if (source[prop][key] === null) {
-              delete source[prop][key];
+        if (Utils.isObjectOrArray(rawSource[prop])) {
+          for (const key in rawSource[prop]) {
+            if (rawSource[prop][key] === null) {
+              delete rawSource[prop][key];
             }
           }
         }
-        target[prop] = source[prop];
+        // Record the change in diff
+        const clonedValue = Utils.isObjectOrArray(rawSource[prop]) ? Utils.deepClone(rawSource[prop]) : rawSource[prop];
+        diff[prop] = clonedValue;
+        rawTarget[prop] = clonedValue;
+        hasChanges = true;
       }
     }
 
     // Delete missing properties (unless in patch mode or target is array)
-    if (!this.#patchMode && !Array.isArray(target)) {
-      for (const prop in target) {
-        if (Object.hasOwnProperty.call(target, prop) &&
-          (source[prop] === null || source[prop] === undefined)) {
-          delete target[prop];
+    if (!this.#patchMode && !Array.isArray(rawTarget)) {
+      for (const prop in rawTarget) {
+        if (Object.hasOwnProperty.call(rawTarget, prop) &&
+          (rawSource[prop] === null || rawSource[prop] === undefined)) {
+          // Track deletion in diff
+          diff[prop] = null;
+          delete rawTarget[prop];
+          hasChanges = true;
         }
       }
+    }
+
+    if (hasChanges) {
+      this.#eventEmitter.scheduleEmit();
     }
   }
 
