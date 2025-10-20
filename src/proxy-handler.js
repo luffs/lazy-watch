@@ -152,12 +152,20 @@ export class ProxyHandler {
     // Get the target object (resolve proxy if needed)
     const rawTarget = this.resolveIfProxy(target);
     const rawSource = this.resolveIfProxy(source);
-    const diff = this.#diffTracker.getDiffObject(path);
+    let diff = null; // Lazy initialization
     let hasChanges = false;
+
+    // Helper to get diff object only when needed
+    const getDiff = () => {
+      if (!diff) {
+        diff = this.#diffTracker.getDiffObject(path);
+      }
+      return diff;
+    };
 
     // Track array length changes
     if (Array.isArray(rawTarget) && Array.isArray(rawSource) && rawTarget.length !== rawSource.length) {
-      diff.length = rawSource.length;
+      getDiff().length = rawSource.length;
       hasChanges = true;
     }
 
@@ -177,7 +185,7 @@ export class ProxyHandler {
         }
         // Record the change in diff
         const clonedValue = Utils.isObjectOrArray(rawSource[prop]) ? Utils.deepClone(rawSource[prop]) : rawSource[prop];
-        diff[prop] = clonedValue;
+        getDiff()[prop] = clonedValue;
         rawTarget[prop] = clonedValue;
         hasChanges = true;
       }
@@ -189,7 +197,7 @@ export class ProxyHandler {
         if (Object.hasOwnProperty.call(rawTarget, prop) &&
           (rawSource[prop] === null || rawSource[prop] === undefined)) {
           // Track deletion in diff
-          diff[prop] = null;
+          getDiff()[prop] = null;
           delete rawTarget[prop];
           hasChanges = true;
         }
