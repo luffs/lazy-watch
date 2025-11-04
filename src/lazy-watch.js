@@ -3,7 +3,7 @@ import {Utils} from "./utils.js";
 import {EventEmitter} from "./event-emitter.js";
 import {setImmediatePolyfill} from "./set-immediate-polyfill.js";
 import {DiffTracker} from "./diff-tracker.js";
-import {ProxyHandler} from "./proxy-handler.js";
+import {ProxyHandler, LAZYWATCH_INSTANCE, PROXY_TARGET} from "./proxy-handler.js";
 
 
 // main.js - Main LazyWatch class
@@ -143,6 +143,30 @@ export class LazyWatch {
   }
 
   /**
+   * Check if an object is a LazyWatch proxy
+   * @param {*} obj - The object to check
+   * @returns {boolean} True if the object is a LazyWatch proxy, false otherwise
+   */
+  static isProxy(obj) {
+    if (!obj || typeof obj !== 'object') {
+      return false;
+    }
+
+    // Try to access the LazyWatch instance via symbol
+    try {
+      const instance = obj[LAZYWATCH_INSTANCE];
+      if (instance instanceof LazyWatch && !instance.#disposed) {
+        return true;
+      }
+    } catch (e) {
+      // Accessing the symbol might throw in some edge cases
+    }
+
+    // Fallback to WeakMap check (which won't find disposed proxies)
+    return LazyWatch.#instances.has(obj);
+  }
+
+  /**
    * Clean up resources and remove all listeners
    * @param {Proxy} proxy - The LazyWatch proxy
    */
@@ -169,3 +193,6 @@ export class LazyWatch {
 
 // Export for backward compatibility
 LazyWatch.Utils = Utils;
+
+// Export symbols for advanced usage
+export { PROXY_TARGET, LAZYWATCH_INSTANCE };

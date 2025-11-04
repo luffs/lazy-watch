@@ -161,6 +161,20 @@ export class LazyWatch<T extends object = any> {
     static resolveIfProxy<T>(obj: T): T;
 
     /**
+     * Check if an object is a LazyWatch proxy
+     * @param obj - The object to check
+     * @returns True if the object is a LazyWatch proxy, false otherwise
+     *
+     * @example
+     * const data = { count: 0 };
+     * const watched = new LazyWatch(data);
+     * LazyWatch.isProxy(watched); // true
+     * LazyWatch.isProxy(data); // false
+     * LazyWatch.isProxy(null); // false
+     */
+    static isProxy(obj: any): boolean;
+
+    /**
      * Clean up resources and remove all listeners
      * After disposal, the proxy cannot be used anymore
      * @param proxy - The LazyWatch proxy
