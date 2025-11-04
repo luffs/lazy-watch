@@ -152,6 +152,9 @@ export class LazyWatch {
     const instance = LazyWatch.#getInstance(proxy);
     instance.#checkDisposed();
     return instance.#diffTracker.getPendingDiff();
+  }
+
+  /**
    * Check if an object is a LazyWatch proxy
    * @param {*} obj - The object to check
    * @returns {boolean} True if the object is a LazyWatch proxy, false otherwise
@@ -173,6 +176,39 @@ export class LazyWatch {
 
     // Fallback to WeakMap check (which won't find disposed proxies)
     return LazyWatch.#instances.has(obj);
+  }
+
+  /**
+   * Pause event emissions
+   * Changes continue to be tracked but listeners won't be notified until resumed
+   * @param {Proxy} proxy - The LazyWatch proxy
+   */
+  static pause(proxy) {
+    const instance = LazyWatch.#getInstance(proxy);
+    instance.#checkDisposed();
+    instance.#eventEmitter.pause();
+  }
+
+  /**
+   * Resume event emissions
+   * If there are pending changes, they will be emitted
+   * @param {Proxy} proxy - The LazyWatch proxy
+   */
+  static resume(proxy) {
+    const instance = LazyWatch.#getInstance(proxy);
+    instance.#checkDisposed();
+    instance.#eventEmitter.resume();
+  }
+
+  /**
+   * Check if event emissions are paused
+   * @param {Proxy} proxy - The LazyWatch proxy
+   * @returns {boolean} True if paused, false otherwise
+   */
+  static isPaused(proxy) {
+    const instance = LazyWatch.#getInstance(proxy);
+    instance.#checkDisposed();
+    return instance.#eventEmitter.isPaused();
   }
 
   /**
