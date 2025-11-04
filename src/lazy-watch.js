@@ -45,6 +45,7 @@ export class LazyWatch {
    * @param {Object|Array} original - The object or array to watch
    * @param {Object} options - Configuration options
    * @param {number} options.throttle - Minimum time in milliseconds between emits (default: 0)
+   * @param {number} options.debounce - Time in milliseconds to wait for additional changes before emitting (default: 0)
    * @returns {Proxy} A proxy that tracks changes
    * @throws {TypeError} If original is not an object or array
    */
