@@ -170,18 +170,20 @@ export class LazyWatch<T extends object = any> {
     static resolveIfProxy<T>(obj: T): T;
 
     /**
-     * Check if an object is a LazyWatch proxy
-     * @param obj - The object to check
-     * @returns True if the object is a LazyWatch proxy, false otherwise
+     * Get a copy of the current pending diff without consuming it
+     * Returns a snapshot of pending changes that haven't been emitted yet
+     * @param proxy - The LazyWatch proxy
+     * @returns A copy of the pending changes
+     * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
      *
      * @example
-     * const data = { count: 0 };
-     * const watched = new LazyWatch(data);
-     * LazyWatch.isProxy(watched); // true
-     * LazyWatch.isProxy(data); // false
-     * LazyWatch.isProxy(null); // false
+     * const watched = new LazyWatch({ count: 0 });
+     * watched.count = 1;
+     * watched.count = 2;
+     * const pending = LazyWatch.getPendingDiff(watched); // { count: 2 }
+     * // Changes are still pending and will be emitted to listeners
      */
-    static isProxy(obj: any): boolean;
+    static getPendingDiff<T extends object>(proxy: T): ChangeSet;
 
     /**
      * Clean up resources and remove all listeners
@@ -230,6 +232,7 @@ export class DiffTracker {
     getDiffObject(path?: string[]): Record<string, any>;
     consumeDiff(): ChangeSet;
     hasPendingChanges(): boolean;
+    getPendingDiff(): ChangeSet;
     clear(): void;
 }
 

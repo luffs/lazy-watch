@@ -144,6 +144,14 @@ export class LazyWatch {
   }
 
   /**
+   * Get a copy of the current pending diff without consuming it
+   * @param {Proxy} proxy - The LazyWatch proxy
+   * @returns {Object} A copy of the pending changes
+   */
+  static getPendingDiff(proxy) {
+    const instance = LazyWatch.#getInstance(proxy);
+    instance.#checkDisposed();
+    return instance.#diffTracker.getPendingDiff();
    * Check if an object is a LazyWatch proxy
    * @param {*} obj - The object to check
    * @returns {boolean} True if the object is a LazyWatch proxy, false otherwise
