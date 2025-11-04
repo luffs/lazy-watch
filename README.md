@@ -11,6 +11,7 @@ Deep watch JavaScript objects using Proxy and emit diffs asynchronously. LazyWat
 - ⏱️ Asynchronous batched updates
 - 🔍 Detailed change tracking with diffs
 - 🧩 Support for nested objects and arrays
+- ⏸️ Pause and resume event emissions
 - 📦 Efficient patching mechanism
 - 🌐 Works in browsers and Node.js
 
@@ -79,6 +80,44 @@ LazyWatch.off(watchedObject, callback);
 ```
 
 Removes a previously registered callback function.
+
+### Pausing and Resuming Event Emissions
+
+```js
+LazyWatch.pause(watchedObject);
+```
+
+Pauses event emissions. Changes continue to be tracked but listeners won't be notified until `resume()` is called.
+
+```js
+LazyWatch.resume(watchedObject);
+```
+
+Resumes event emissions. If there are pending changes, they will be emitted immediately.
+
+```js
+const isPaused = LazyWatch.isPaused(watchedObject);
+```
+
+Returns `true` if the watched object is currently paused, `false` otherwise.
+
+**Example:**
+```js
+const data = new LazyWatch({ count: 0 });
+
+LazyWatch.on(data, diff => {
+  console.log('Changes:', diff);
+});
+
+LazyWatch.pause(data);
+data.count = 1;
+data.count = 2;
+data.count = 3;
+// No listener notifications while paused
+
+LazyWatch.resume(data);
+// Immediately logs: Changes: { count: 3 }
+```
 
 ### Applying Changes
 

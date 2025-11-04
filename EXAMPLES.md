@@ -7,6 +7,7 @@ A lightweight, reactive proxy-based object change tracker for JavaScript and Typ
 - 🎯 **Automatic Change Detection** - Track changes to objects and arrays automatically
 - 🔄 **Deep Nesting Support** - Monitor changes at any depth level
 - 📦 **Batched Updates** - Multiple synchronous changes are batched into a single notification
+- ⏸️ **Pause and Resume** - Control when event emissions occur
 - 🧹 **Memory Safe** - Proper cleanup with dispose() method
 - 💪 **TypeScript Support** - Full type definitions included
 - 🚀 **Zero Dependencies** - Standalone library with optional polyfills
@@ -125,6 +126,58 @@ Removes a previously added change listener.
 const listener = (changes) => console.log(changes);
 LazyWatch.on(watched, listener);
 LazyWatch.off(watched, listener); // Listener removed
+```
+
+#### `LazyWatch.pause(proxy): void`
+
+Pauses event emissions. Changes continue to be tracked but listeners won't be notified until `resume()` is called.
+
+**Parameters:**
+- `proxy` - The LazyWatch proxy
+
+**Example:**
+```javascript
+const watched = new LazyWatch({ count: 0 });
+LazyWatch.on(watched, (changes) => console.log(changes));
+
+LazyWatch.pause(watched);
+watched.count = 1; // No listener notification
+watched.count = 2; // Still no notification
+```
+
+#### `LazyWatch.resume(proxy): void`
+
+Resumes event emissions. If there are pending changes, they will be emitted immediately.
+
+**Parameters:**
+- `proxy` - The LazyWatch proxy
+
+**Example:**
+```javascript
+// Continuing from pause example...
+LazyWatch.resume(watched);
+// Immediately logs: { count: 2 } with all batched changes
+```
+
+#### `LazyWatch.isPaused(proxy): boolean`
+
+Checks if event emissions are currently paused.
+
+**Parameters:**
+- `proxy` - The LazyWatch proxy
+
+**Returns:** `true` if paused, `false` otherwise
+
+**Example:**
+```javascript
+const watched = new LazyWatch({ count: 0 });
+console.log(LazyWatch.isPaused(watched)); // false
+
+LazyWatch.pause(watched);
+console.log(LazyWatch.isPaused(watched)); // true
+
+LazyWatch.resume(watched);
+console.log(LazyWatch.isPaused(watched)); // false
 ```
 
 #### `LazyWatch.overwrite(proxy, source): void`

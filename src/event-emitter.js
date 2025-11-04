@@ -7,6 +7,7 @@ export class EventEmitter {
   #context;
   #throttle;
   #lastEmitTime = 0;
+  #paused = false;
 
   constructor(diffTracker, context, options = {}) {
     if (!diffTracker) {
@@ -41,6 +42,9 @@ export class EventEmitter {
    * Schedule a diff emission
    */
   scheduleEmit() {
+    // Skip scheduling if paused
+    if (this.#paused) return;
+
     // Clear any existing pending emits
     this.#clearPending();
 
@@ -86,6 +90,35 @@ export class EventEmitter {
   #clearPending() {
     this.#context.clearImmediate(this.#immediateId);
     clearTimeout(this.#timeoutId);
+  }
+
+  /**
+   * Pause event emissions
+   * Changes continue to be tracked but listeners won't be notified until resumed
+   */
+  pause() {
+    this.#paused = true;
+    this.#clearPending();
+  }
+
+  /**
+   * Resume event emissions
+   * If there are pending changes, they will be emitted
+   */
+  resume() {
+    this.#paused = false;
+    // If there are pending changes, schedule an emit
+    if (this.#diffTracker.hasPendingChanges()) {
+      this.scheduleEmit();
+    }
+  }
+
+  /**
+   * Check if event emissions are paused
+   * @returns {boolean} True if paused, false otherwise
+   */
+  isPaused() {
+    return this.#paused;
   }
 
   /**

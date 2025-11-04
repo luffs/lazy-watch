@@ -485,6 +485,175 @@ runner.test('should work without throttle option (default behavior)', async () =
   LazyWatch.dispose(watched);
 });
 
+// Pause/Resume tests
+runner.test('should pause event emissions', async () => {
+  const data = { count: 0 };
+  const watched = new LazyWatch(data);
+  let changesCaught = null;
+
+  LazyWatch.on(watched, (changes) => {
+    changesCaught = changes;
+  });
+
+  LazyWatch.pause(watched);
+  watched.count = 1;
+
+  await wait(50);
+
+  assertEquals(changesCaught, null, 'Should not emit while paused');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should resume event emissions', async () => {
+  const data = { count: 0 };
+  const watched = new LazyWatch(data);
+  let changesCaught = null;
+
+  LazyWatch.on(watched, (changes) => {
+    changesCaught = changes;
+  });
+
+  LazyWatch.pause(watched);
+  watched.count = 1;
+
+  await wait(50);
+  assertEquals(changesCaught, null, 'Should not emit while paused');
+
+  LazyWatch.resume(watched);
+
+  await wait(50);
+  assertEquals(changesCaught, { count: 1 }, 'Should emit pending changes on resume');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should batch multiple changes while paused', async () => {
+  const data = { a: 0, b: 0, c: 0 };
+  const watched = new LazyWatch(data);
+  let emitCount = 0;
+  let lastChanges = null;
+
+  LazyWatch.on(watched, (changes) => {
+    emitCount++;
+    lastChanges = changes;
+  });
+
+  LazyWatch.pause(watched);
+  watched.a = 1;
+  watched.b = 2;
+  watched.c = 3;
+
+  await wait(50);
+  assertEquals(emitCount, 0, 'Should not emit while paused');
+
+  LazyWatch.resume(watched);
+
+  await wait(50);
+  assertEquals(emitCount, 1, 'Should emit once on resume');
+  assertEquals(lastChanges, { a: 1, b: 2, c: 3 }, 'Should include all pending changes');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should report pause state correctly with isPaused', () => {
+  const data = { count: 0 };
+  const watched = new LazyWatch(data);
+
+  assertEquals(LazyWatch.isPaused(watched), false, 'Should not be paused initially');
+
+  LazyWatch.pause(watched);
+  assertEquals(LazyWatch.isPaused(watched), true, 'Should be paused after pause()');
+
+  LazyWatch.resume(watched);
+  assertEquals(LazyWatch.isPaused(watched), false, 'Should not be paused after resume()');
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should not emit if no changes while paused', async () => {
+  const data = { count: 0 };
+  const watched = new LazyWatch(data);
+  let emitCount = 0;
+
+  LazyWatch.on(watched, () => {
+    emitCount++;
+  });
+
+  LazyWatch.pause(watched);
+  // No changes made
+
+  LazyWatch.resume(watched);
+
+  await wait(50);
+  assertEquals(emitCount, 0, 'Should not emit if no changes were made');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should handle pause/resume with nested objects', async () => {
+  const data = { user: { name: 'Alice', age: 30 } };
+  const watched = new LazyWatch(data);
+  let changesCaught = null;
+
+  LazyWatch.on(watched, (changes) => {
+    changesCaught = changes;
+  });
+
+  LazyWatch.pause(watched);
+  watched.user.name = 'Bob';
+  watched.user.age = 31;
+
+  await wait(50);
+  assertEquals(changesCaught, null, 'Should not emit nested changes while paused');
+
+  LazyWatch.resume(watched);
+
+  await wait(50);
+  assertEquals(changesCaught, { user: { name: 'Bob', age: 31 } }, 'Should emit all nested changes on resume');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should work correctly with pause/resume and throttle', async () => {
+  const data = { count: 0 };
+  const watched = new LazyWatch(data, { throttle: 50 });
+  let emitCount = 0;
+  let lastChanges = null;
+
+  LazyWatch.on(watched, (changes) => {
+    emitCount++;
+    lastChanges = changes;
+  });
+
+  // First change - should emit immediately
+  watched.count = 1;
+  await wait(10);
+
+  // Pause before second change
+  LazyWatch.pause(watched);
+  watched.count = 2;
+  await wait(70); // Wait longer than throttle
+
+  assertEquals(emitCount, 1, 'Should not emit second change while paused');
+
+  // Resume and make another change
+  LazyWatch.resume(watched);
+  await wait(10);
+
+  // Should emit the paused change immediately on resume
+  assertEquals(emitCount, 2, 'Should emit paused change on resume');
+  assertEquals(lastChanges, { count: 2 }, 'Should have the paused change');
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should throw error for pause/resume on disposed instance', () => {
+  const data = { count: 0 };
+  const watched = new LazyWatch(data);
+
+  LazyWatch.dispose(watched);
+
+  assertThrows(() => LazyWatch.pause(watched), 'Should throw error on pause after disposal');
+  assertThrows(() => LazyWatch.resume(watched), 'Should throw error on resume after disposal');
+  assertThrows(() => LazyWatch.isPaused(watched), 'Should throw error on isPaused after disposal');
+});
+
 // Usage examples
 console.log('\n=== LazyWatch Usage Examples ===\n');
 
