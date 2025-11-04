@@ -186,6 +186,53 @@ export class LazyWatch<T extends object = any> {
     static getPendingDiff<T extends object>(proxy: T): ChangeSet;
 
     /**
+     * Pause event emissions
+     * Changes continue to be tracked but listeners won't be notified until resumed
+     * @param proxy - The LazyWatch proxy
+     * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
+     *
+     * @example
+     * const watched = new LazyWatch({ count: 0 });
+     * LazyWatch.on(watched, (changes) => console.log(changes));
+     * LazyWatch.pause(watched);
+     * watched.count = 1; // No listener notification
+     * watched.count = 2; // Still no notification
+     * LazyWatch.resume(watched); // Listener is called with { count: 2 }
+     */
+    static pause<T extends object>(proxy: T): void;
+
+    /**
+     * Resume event emissions
+     * If there are pending changes, they will be emitted immediately
+     * @param proxy - The LazyWatch proxy
+     * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
+     *
+     * @example
+     * const watched = new LazyWatch({ count: 0 });
+     * LazyWatch.on(watched, (changes) => console.log(changes));
+     * LazyWatch.pause(watched);
+     * watched.count = 1;
+     * LazyWatch.resume(watched); // Listener is called immediately with { count: 1 }
+     */
+    static resume<T extends object>(proxy: T): void;
+
+    /**
+     * Check if event emissions are paused
+     * @param proxy - The LazyWatch proxy
+     * @returns True if paused, false otherwise
+     * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
+     *
+     * @example
+     * const watched = new LazyWatch({ count: 0 });
+     * console.log(LazyWatch.isPaused(watched)); // false
+     * LazyWatch.pause(watched);
+     * console.log(LazyWatch.isPaused(watched)); // true
+     * LazyWatch.resume(watched);
+     * console.log(LazyWatch.isPaused(watched)); // false
+     */
+    static isPaused<T extends object>(proxy: T): boolean;
+
+    /**
      * Clean up resources and remove all listeners
      * After disposal, the proxy cannot be used anymore
      * @param proxy - The LazyWatch proxy
@@ -245,6 +292,9 @@ export class EventEmitter {
     on(listener: ChangeListener): void;
     off(listener: ChangeListener): void;
     scheduleEmit(): void;
+    pause(): void;
+    resume(): void;
+    isPaused(): boolean;
     dispose(): void;
 }
 

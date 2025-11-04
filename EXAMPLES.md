@@ -127,6 +127,58 @@ LazyWatch.on(watched, listener);
 LazyWatch.off(watched, listener); // Listener removed
 ```
 
+#### `LazyWatch.pause(proxy): void`
+
+Pauses event emissions. Changes continue to be tracked but listeners won't be notified until `resume()` is called.
+
+**Parameters:**
+- `proxy` - The LazyWatch proxy
+
+**Example:**
+```javascript
+const watched = new LazyWatch({ count: 0 });
+LazyWatch.on(watched, (changes) => console.log(changes));
+
+LazyWatch.pause(watched);
+watched.count = 1; // No listener notification
+watched.count = 2; // Still no notification
+```
+
+#### `LazyWatch.resume(proxy): void`
+
+Resumes event emissions. If there are pending changes, they will be emitted immediately.
+
+**Parameters:**
+- `proxy` - The LazyWatch proxy
+
+**Example:**
+```javascript
+// Continuing from pause example...
+LazyWatch.resume(watched);
+// Immediately logs: { count: 2 } with all batched changes
+```
+
+#### `LazyWatch.isPaused(proxy): boolean`
+
+Checks if event emissions are currently paused.
+
+**Parameters:**
+- `proxy` - The LazyWatch proxy
+
+**Returns:** `true` if paused, `false` otherwise
+
+**Example:**
+```javascript
+const watched = new LazyWatch({ count: 0 });
+console.log(LazyWatch.isPaused(watched)); // false
+
+LazyWatch.pause(watched);
+console.log(LazyWatch.isPaused(watched)); // true
+
+LazyWatch.resume(watched);
+console.log(LazyWatch.isPaused(watched)); // false
+```
+
 #### `LazyWatch.overwrite(proxy, source): void`
 
 Replaces the watched object's properties with the source object's properties. Properties not in source are deleted (except for arrays).
