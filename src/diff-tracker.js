@@ -35,6 +35,15 @@ export class DiffTracker {
   }
 
   /**
+   * Get a copy of the current pending diff without consuming it
+   * Returns a deep clone to prevent external modifications
+   */
+  getPendingDiff() {
+    // Return a deep clone to prevent external modifications
+    return JSON.parse(JSON.stringify(this.#masterDiff));
+  }
+
+  /**
    * Clear all pending diffs
    */
   clear() {

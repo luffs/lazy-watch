@@ -3,7 +3,7 @@ import {Utils} from "./utils.js";
 import {EventEmitter} from "./event-emitter.js";
 import {setImmediatePolyfill} from "./set-immediate-polyfill.js";
 import {DiffTracker} from "./diff-tracker.js";
-import {ProxyHandler} from "./proxy-handler.js";
+import {ProxyHandler, PROXY_TARGET, LAZYWATCH_INSTANCE} from "./proxy-handler.js";
 
 
 // main.js - Main LazyWatch class
@@ -140,6 +140,17 @@ export class LazyWatch {
     } catch (e) {
       return obj;
     }
+  }
+
+  /**
+   * Get a copy of the current pending diff without consuming it
+   * @param {Proxy} proxy - The LazyWatch proxy
+   * @returns {Object} A copy of the pending changes
+   */
+  static getPendingDiff(proxy) {
+    const instance = LazyWatch.#getInstance(proxy);
+    instance.#checkDisposed();
+    return instance.#diffTracker.getPendingDiff();
   }
 
   /**

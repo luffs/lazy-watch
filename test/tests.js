@@ -485,6 +485,123 @@ runner.test('should work without throttle option (default behavior)', async () =
   LazyWatch.dispose(watched);
 });
 
+// getPendingDiff tests
+runner.test('should return pending diff without consuming it', async () => {
+  const data = { count: 0 };
+  const watched = new LazyWatch(data);
+  let changesCaught = null;
+
+  LazyWatch.on(watched, (changes) => {
+    changesCaught = changes;
+  });
+
+  watched.count = 1;
+  watched.count = 2;
+
+  // Get pending diff before it's emitted
+  const pendingDiff = LazyWatch.getPendingDiff(watched);
+  assertEquals(pendingDiff.count, 2, 'Should return pending changes');
+
+  // Wait for emission
+  await wait(10);
+
+  // Changes should still have been emitted to listeners
+  assertTrue(changesCaught !== null, 'Changes should be emitted to listeners');
+  assertEquals(changesCaught.count, 2, 'Emitted changes should match pending diff');
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should return empty object when no pending changes', () => {
+  const data = { count: 0 };
+  const watched = new LazyWatch(data);
+
+  const pendingDiff = LazyWatch.getPendingDiff(watched);
+  assertEquals(pendingDiff, {}, 'Should return empty object when no pending changes');
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should return pending diff for nested objects', async () => {
+  const data = { user: { name: 'Alice', age: 30 } };
+  const watched = new LazyWatch(data);
+
+  watched.user.name = 'Bob';
+  watched.user.age = 31;
+
+  const pendingDiff = LazyWatch.getPendingDiff(watched);
+  assertTrue(pendingDiff.user !== undefined, 'Should have user changes');
+  assertEquals(pendingDiff.user.name, 'Bob', 'Should track nested name change');
+  assertEquals(pendingDiff.user.age, 31, 'Should track nested age change');
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should return pending diff for array changes', () => {
+  const data = { items: [1, 2, 3] };
+  const watched = new LazyWatch(data);
+
+  watched.items[0] = 10;
+  watched.items.push(4);
+
+  const pendingDiff = LazyWatch.getPendingDiff(watched);
+  assertTrue(pendingDiff.items !== undefined, 'Should have items changes');
+  assertEquals(pendingDiff.items[0], 10, 'Should track array element change');
+  assertEquals(pendingDiff.items[3], 4, 'Should track array push');
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should return a copy that does not affect internal diff', async () => {
+  const data = { count: 0 };
+  const watched = new LazyWatch(data);
+  let changesCaught = null;
+
+  LazyWatch.on(watched, (changes) => {
+    changesCaught = changes;
+  });
+
+  watched.count = 1;
+
+  const pendingDiff = LazyWatch.getPendingDiff(watched);
+  // Modify the returned diff
+  pendingDiff.count = 999;
+  pendingDiff.newProp = 'should not affect internal';
+
+  // Wait for emission
+  await wait(10);
+
+  // Internal diff should not be affected
+  assertEquals(changesCaught.count, 1, 'Internal diff should not be modified');
+  assertTrue(changesCaught.newProp === undefined, 'Internal diff should not have new properties');
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should return pending diff after multiple changes', () => {
+  const data = { a: 1, b: 2, c: 3 };
+  const watched = new LazyWatch(data);
+
+  watched.a = 10;
+  watched.b = 20;
+  delete watched.c;
+
+  const pendingDiff = LazyWatch.getPendingDiff(watched);
+  assertEquals(pendingDiff.a, 10, 'Should track first change');
+  assertEquals(pendingDiff.b, 20, 'Should track second change');
+  assertEquals(pendingDiff.c, null, 'Should track deletion as null');
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should throw error if instance is disposed', () => {
+  const data = { count: 0 };
+  const watched = new LazyWatch(data);
+  LazyWatch.dispose(watched);
+
+  assertThrows(() => LazyWatch.getPendingDiff(watched), 'Should throw error for disposed instance');
+});
+
 // Usage examples
 console.log('\n=== LazyWatch Usage Examples ===\n');
 
