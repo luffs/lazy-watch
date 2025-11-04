@@ -48,6 +48,15 @@ export interface LazyWatchConstructorOptions {
      * @default 0 (no throttling)
      */
     throttle?: number;
+
+    /**
+     * Time in milliseconds to wait for additional changes before emitting (debouncing)
+     * When set, emits are delayed until no changes occur for the specified duration
+     * Each new change resets the debounce timer
+     * @default 0 (no debouncing)
+     * @note If both throttle and debounce are set, debounce takes precedence
+     */
+    debounce?: number;
 }
 
 /**
