@@ -6,6 +6,7 @@ export class EventEmitter {
   #timeoutId = null;
   #context;
   #throttle;
+  #debounce;
   #lastEmitTime = 0;
 
   constructor(diffTracker, context, options = {}) {
@@ -15,6 +16,7 @@ export class EventEmitter {
     this.#diffTracker = diffTracker;
     this.#context = context;
     this.#throttle = options.throttle || 0;
+    this.#debounce = options.debounce || 0;
   }
 
   /**
@@ -44,7 +46,12 @@ export class EventEmitter {
     // Clear any existing pending emits
     this.#clearPending();
 
-    if (this.#throttle > 0) {
+    if (this.#debounce > 0) {
+      // Debouncing: delay emission until debounce period passes with no new changes
+      // Each new change resets the timer
+      this.#timeoutId = setTimeout(() => this.#emit(), this.#debounce);
+    } else if (this.#throttle > 0) {
+      // Throttling: ensure emissions happen at most once per throttle period
       const now = performance.now();
       const timeSinceLastEmit = now - this.#lastEmitTime;
 
@@ -57,7 +64,7 @@ export class EventEmitter {
         this.#timeoutId = setTimeout(() => this.#emit(), delay);
       }
     } else {
-      // No throttling, emit immediately (on next tick)
+      // No throttling or debouncing, emit immediately (on next tick)
       this.#immediateId = this.#context.setImmediate(() => this.#emit());
     }
   }

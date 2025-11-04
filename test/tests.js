@@ -485,6 +485,153 @@ runner.test('should work without throttle option (default behavior)', async () =
   LazyWatch.dispose(watched);
 });
 
+// Debounce tests
+runner.test('should debounce emits with debounce option', async () => {
+  const data = { count: 0 };
+  const watched = new LazyWatch(data, { debounce: 50 });
+  let emitCount = 0;
+  let lastChanges = null;
+
+  LazyWatch.on(watched, (changes) => {
+    emitCount++;
+    lastChanges = changes;
+  });
+
+  // Make rapid changes - each should reset the debounce timer
+  watched.count = 1;
+  await wait(20);
+  watched.count = 2;
+  await wait(20);
+  watched.count = 3;
+  await wait(20);
+
+  // At this point, no emit should have happened yet (only 60ms total, but timer keeps resetting)
+  assertEquals(emitCount, 0, 'Should not have emitted yet');
+
+  // Wait for debounce to complete
+  await wait(60);
+
+  // Now it should have emitted once with the final value
+  assertEquals(emitCount, 1, 'Should emit once after debounce period');
+  assertEquals(lastChanges.count, 3, 'Should have final value');
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should batch all changes in debounce window', async () => {
+  const data = { a: 0, b: 0, c: 0 };
+  const watched = new LazyWatch(data, { debounce: 50 });
+  let emitCount = 0;
+  let lastChanges = null;
+
+  LazyWatch.on(watched, (changes) => {
+    emitCount++;
+    lastChanges = changes;
+  });
+
+  // Make multiple rapid changes
+  watched.a = 1;
+  watched.b = 2;
+  watched.c = 3;
+
+  // Wait less than debounce time
+  await wait(30);
+
+  // Should not have emitted yet
+  assertEquals(emitCount, 0, 'Should not emit before debounce period');
+
+  // Wait for debounce to complete
+  await wait(30);
+
+  // Should have emitted once with all changes
+  assertEquals(emitCount, 1, 'Should emit once');
+  assertTrue(lastChanges.a === 1 && lastChanges.b === 2 && lastChanges.c === 3, 'Should include all changes');
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should reset debounce timer on each change', async () => {
+  const data = { count: 0 };
+  const watched = new LazyWatch(data, { debounce: 50 });
+  let emitCount = 0;
+
+  LazyWatch.on(watched, () => {
+    emitCount++;
+  });
+
+  // Make changes every 30ms (less than debounce of 50ms)
+  watched.count = 1;
+  await wait(30);
+  watched.count = 2;
+  await wait(30);
+  watched.count = 3;
+  await wait(30);
+
+  // Should not have emitted yet because timer keeps resetting
+  assertEquals(emitCount, 0, 'Should not emit while changes keep coming');
+
+  // Wait for full debounce period with no changes
+  await wait(60);
+
+  // Now should have emitted
+  assertEquals(emitCount, 1, 'Should emit after debounce period with no changes');
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should prioritize debounce over throttle when both are set', async () => {
+  const data = { count: 0 };
+  const watched = new LazyWatch(data, { throttle: 30, debounce: 50 });
+  let emitCount = 0;
+  let lastChanges = null;
+
+  LazyWatch.on(watched, (changes) => {
+    emitCount++;
+    lastChanges = changes;
+  });
+
+  // With throttle only, first change would emit immediately
+  // But with debounce, it should wait for the debounce period
+  watched.count = 1;
+  await wait(20);
+
+  // Should not have emitted yet (debounce behavior)
+  assertEquals(emitCount, 0, 'Should use debounce behavior, not throttle');
+
+  // Make another change to reset debounce
+  watched.count = 2;
+  await wait(60);
+
+  // Should have emitted once with final value
+  assertEquals(emitCount, 1, 'Should emit once');
+  assertEquals(lastChanges.count, 2);
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should allow multiple emits with debounce if changes are separated', async () => {
+  const data = { count: 0 };
+  const watched = new LazyWatch(data, { debounce: 30 });
+  const emitTimes = [];
+
+  LazyWatch.on(watched, () => {
+    emitTimes.push(Date.now());
+  });
+
+  // First change
+  watched.count = 1;
+  await wait(50); // Wait for debounce to complete
+
+  // Second change after debounce
+  watched.count = 2;
+  await wait(50); // Wait for debounce to complete
+
+  // Should have emitted twice
+  assertTrue(emitTimes.length === 2, `Expected 2 emits, got ${emitTimes.length}`);
+
+  LazyWatch.dispose(watched);
+});
+
 // Usage examples
 console.log('\n=== LazyWatch Usage Examples ===\n');
 
@@ -505,6 +652,28 @@ console.log('Example 0: Throttled change detection');
   // Only emits after 50ms with final changes
 
   setTimeout(() => LazyWatch.dispose(watched), 150);
+}
+
+// Example 0b: Debounced change detection
+console.log('Example 0b: Debounced change detection');
+{
+  const searchQuery = { text: '' };
+  const watched = new LazyWatch(searchQuery, { debounce: 100 });
+
+  LazyWatch.on(watched, (changes) => {
+    console.log('Debounced search query:', changes);
+    // In real app: performSearch(changes.text);
+  });
+
+  // Simulate user typing - each keystroke resets the debounce timer
+  watched.text = 'h';
+  setTimeout(() => { watched.text = 'he'; }, 20);
+  setTimeout(() => { watched.text = 'hel'; }, 40);
+  setTimeout(() => { watched.text = 'hell'; }, 60);
+  setTimeout(() => { watched.text = 'hello'; }, 80);
+  // Only emits 100ms after the last change (at 'hello')
+
+  setTimeout(() => LazyWatch.dispose(watched), 250);
 }
 
 // Example 1: Basic usage
