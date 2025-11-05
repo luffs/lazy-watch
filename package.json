@@ -6,7 +6,11 @@
   "main": "./src/index.js",
   "exports": "./src/lazy-watch.js",
   "scripts": {
-    "test": "node ./test/tests.js"
+    "test": "node ./test/tests.js",
+    "benchmark": "node --expose-gc ./benchmark/index.js",
+    "benchmark:core": "node --expose-gc ./benchmark/index.js --core",
+    "benchmark:memory": "node --expose-gc ./benchmark/index.js --memory",
+    "benchmark:all": "node --expose-gc ./benchmark/index.js --all"
   },
   "repository": {
     "type": "git",
