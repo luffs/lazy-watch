@@ -179,6 +179,40 @@ LazyWatch.resume(watched);
 console.log(LazyWatch.isPaused(watched)); // false
 ```
 
+#### `LazyWatch.silent(proxy, callback): ChangeSet`
+
+Executes a callback while suppressing event emissions. Any changes made during the callback are tracked and returned as a diff object.
+
+**Parameters:**
+- `proxy` - The LazyWatch proxy
+- `callback` - Function to execute silently
+
+**Returns:** A diff object containing changes made during the callback
+
+**Example:**
+```javascript
+const watched = new LazyWatch({ count: 0, name: '' });
+
+LazyWatch.on(watched, (changes) => {
+  console.log('Changes:', changes);
+});
+
+// Make changes silently - no listener is triggered
+const diff = LazyWatch.silent(watched, () => {
+  watched.count = 1;
+  watched.name = 'test';
+});
+
+console.log(diff); // { count: 1, name: 'test' }
+// Listener was NOT called
+```
+
+**Use Cases:**
+- Initializing state without triggering side effects
+- Bulk updates with manual control over notifications
+- Testing scenarios where you need to inspect changes without side effects
+- Implementing custom batching logic
+
 #### `LazyWatch.overwrite(proxy, source): void`
 
 Replaces the watched object's properties with the source object's properties. Properties not in source are deleted (except for arrays).
@@ -492,6 +526,127 @@ form.onValidationChange = (errors) => {
 
 form.data.email = 'invalid';  // Triggers validation
 form.data.email = 'user@example.com';  // Valid
+```
+
+### Example 5: Silent Initialization
+
+```javascript
+class ConfigManager {
+  constructor() {
+    this.config = new LazyWatch({
+      apiUrl: '',
+      timeout: 5000,
+      retries: 3,
+      features: {}
+    });
+
+    LazyWatch.on(this.config, (changes) => {
+      console.log('Config changed:', changes);
+      this.saveToLocalStorage(changes);
+      this.notifyListeners(changes);
+    });
+  }
+
+  // Load initial config without triggering change listeners
+  async loadFromServer() {
+    const serverConfig = await fetch('/api/config').then(r => r.json());
+
+    // Use silent to initialize without triggering save/notify
+    const diff = LazyWatch.silent(this.config, () => {
+      this.config.apiUrl = serverConfig.apiUrl;
+      this.config.timeout = serverConfig.timeout;
+      this.config.retries = serverConfig.retries;
+      this.config.features = serverConfig.features;
+    });
+
+    console.log('Loaded config:', diff);
+    // No saveToLocalStorage or notifyListeners called during init
+  }
+
+  // Subsequent updates will trigger listeners normally
+  updateConfig(updates) {
+    Object.assign(this.config, updates);
+    // This triggers the listener as expected
+  }
+
+  saveToLocalStorage(changes) {
+    const current = JSON.parse(localStorage.getItem('config') || '{}');
+    localStorage.setItem('config', JSON.stringify({ ...current, ...changes }));
+  }
+
+  notifyListeners(changes) {
+    // Notify other parts of the app about config changes
+    window.dispatchEvent(new CustomEvent('configChanged', { detail: changes }));
+  }
+}
+
+// Usage
+const configManager = new ConfigManager();
+await configManager.loadFromServer(); // Silent initialization
+configManager.updateConfig({ timeout: 10000 }); // Triggers listeners
+```
+
+### Example 6: Conditional Change Broadcasting
+
+```javascript
+class SmartState {
+  constructor(initialState) {
+    this.state = new LazyWatch(initialState);
+    this.listeners = new Set();
+
+    LazyWatch.on(this.state, (changes) => {
+      this.broadcastChanges(changes);
+    });
+  }
+
+  // Perform changes and decide whether to broadcast
+  transaction(callback, shouldBroadcast = true) {
+    if (!shouldBroadcast) {
+      // Use silent for internal updates
+      return LazyWatch.silent(this.state, callback);
+    }
+
+    // Normal updates that trigger listeners
+    callback();
+    return null;
+  }
+
+  // Internal update that shouldn't notify listeners
+  internalUpdate(data) {
+    const diff = this.transaction(() => {
+      Object.assign(this.state, data);
+    }, false);
+
+    console.log('Internal update applied:', diff);
+    return diff;
+  }
+
+  // Public update that notifies listeners
+  publicUpdate(data) {
+    this.transaction(() => {
+      Object.assign(this.state, data);
+    }, true);
+  }
+
+  broadcastChanges(changes) {
+    this.listeners.forEach(listener => listener(changes));
+  }
+
+  subscribe(listener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+}
+
+// Usage
+const state = new SmartState({ count: 0, internal: 0 });
+
+state.subscribe((changes) => {
+  console.log('Public changes:', changes);
+});
+
+state.internalUpdate({ internal: 42 }); // No broadcast
+state.publicUpdate({ count: 1 }); // Broadcasts to subscribers
 ```
 
 ## Advanced Topics
