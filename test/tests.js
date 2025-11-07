@@ -948,6 +948,144 @@ runner.test('should throw error for pause/resume on disposed instance', () => {
   assertThrows(() => LazyWatch.isPaused(watched), 'Should throw error on isPaused after disposal');
 });
 
+// Silent method tests
+runner.test('should execute callback silently and return diff', async () => {
+  const data = { count: 0, name: '' };
+  const watched = new LazyWatch(data);
+  let eventFired = false;
+
+  LazyWatch.on(watched, () => {
+    eventFired = true;
+  });
+
+  const diff = LazyWatch.silent(watched, () => {
+    watched.count = 1;
+    watched.name = 'test';
+  });
+
+  assertEquals(diff, { count: 1, name: 'test' });
+
+  // Wait to ensure no events fired
+  await wait(50);
+  assertTrue(!eventFired, 'No events should fire during silent execution');
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should handle nested object changes in silent mode', async () => {
+  const data = { user: { profile: { name: '', age: 0 } } };
+  const watched = new LazyWatch(data);
+  let eventFired = false;
+
+  LazyWatch.on(watched, () => {
+    eventFired = true;
+  });
+
+  const diff = LazyWatch.silent(watched, () => {
+    watched.user.profile.name = 'Alice';
+    watched.user.profile.age = 30;
+  });
+
+  assertEquals(diff, { user: { profile: { name: 'Alice', age: 30 } } });
+  await wait(50);
+  assertTrue(!eventFired, 'No events should fire for nested changes in silent mode');
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should force emit pending changes before silent execution', async () => {
+  const data = { count: 0, name: '' };
+  const watched = new LazyWatch(data);
+  let changesCaught = null;
+
+  LazyWatch.on(watched, (changes) => {
+    changesCaught = changes;
+  });
+
+  // Make some changes that will be pending
+  watched.count = 1;
+
+  // Now execute silent - this should force emit the pending count change first
+  const diff = LazyWatch.silent(watched, () => {
+    watched.name = 'test';
+  });
+
+  // The silent diff should only contain the name change
+  assertEquals(diff, { name: 'test' });
+
+  // Wait for the forced emit to complete
+  await wait(50);
+
+  // The listener should have been called with the count change that was forced out
+  assertEquals(changesCaught, { count: 1 });
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should return empty diff if no changes in silent callback', () => {
+  const data = { count: 0 };
+  const watched = new LazyWatch(data);
+
+  const diff = LazyWatch.silent(watched, () => {
+    // No changes
+  });
+
+  assertEquals(diff, {});
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should handle array changes in silent mode', async () => {
+  const data = { items: [1, 2, 3] };
+  const watched = new LazyWatch(data);
+  let eventFired = false;
+
+  LazyWatch.on(watched, () => {
+    eventFired = true;
+  });
+
+  const diff = LazyWatch.silent(watched, () => {
+    watched.items.push(4);
+    watched.items[0] = 10;
+  });
+
+  assertEquals(diff, { items: { '0': 10, '3': 4 } });
+  await wait(50);
+  assertTrue(!eventFired, 'No events should fire for array changes in silent mode');
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should throw error for silent on disposed instance', () => {
+  const data = { count: 0 };
+  const watched = new LazyWatch(data);
+
+  LazyWatch.dispose(watched);
+
+  assertThrows(() => LazyWatch.silent(watched, () => {}), 'Should throw error on silent after disposal');
+});
+
+runner.test('should handle exceptions in silent callback', () => {
+  const data = { count: 0 };
+  const watched = new LazyWatch(data);
+
+  try {
+    LazyWatch.silent(watched, () => {
+      watched.count = 1;
+      throw new Error('Test error');
+    });
+  } catch (e) {
+    // Error should propagate
+    assertTrue(e.message === 'Test error');
+  }
+
+  // Despite the error, we should still get the diff consumed
+  const pending = LazyWatch.getPendingDiff(watched);
+  assertEquals(pending, {});
+
+  LazyWatch.dispose(watched);
+});
+
 // Usage examples
 console.log('\n=== LazyWatch Usage Examples ===\n');
 
