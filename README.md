@@ -12,6 +12,7 @@ Deep watch JavaScript objects using Proxy and emit diffs asynchronously. LazyWat
 - 🔍 Detailed change tracking with diffs
 - 🧩 Support for nested objects and arrays
 - ⏸️ Pause and resume event emissions
+- 🤫 Silent mutations without triggering events
 - 📦 Efficient patching mechanism
 - 🌐 Works in browsers and Node.js
 
@@ -118,6 +119,47 @@ data.count = 3;
 LazyWatch.resume(data);
 // Immediately logs: Changes: { count: 3 }
 ```
+
+### Silent Mutations
+
+```js
+const diff = LazyWatch.silent(watchedObject, callback);
+```
+
+Executes a callback while suppressing event emissions. Any changes made during the callback are tracked and returned as a diff object. Forces emission of any pending changes before silent execution to ensure a clean slate.
+
+**Parameters:**
+- `watchedObject` - The LazyWatch proxy
+- `callback` - Function to execute silently
+
+**Returns:**
+- A diff object containing changes made during the callback
+
+**Example:**
+```js
+const data = new LazyWatch({ count: 0, name: '' });
+
+LazyWatch.on(data, diff => {
+  console.log('Changes:', diff);
+});
+
+// Make silent changes without triggering listeners
+const diff = LazyWatch.silent(data, () => {
+  data.count = 1;
+  data.name = 'test';
+});
+
+// diff = { count: 1, name: 'test' }
+// No listener was triggered
+
+// Use the returned diff to perform custom operations
+console.log('Silent changes:', diff);
+```
+
+**Use cases:**
+- Initializing state without triggering listeners
+- Bulk updates where you want manual control over notifications
+- Testing or debugging scenarios where you need to inspect changes without side effects
 
 ### Applying Changes
 
