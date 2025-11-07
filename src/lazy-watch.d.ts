@@ -233,6 +233,26 @@ export class LazyWatch<T extends object = any> {
     static isPaused<T extends object>(proxy: T): boolean;
 
     /**
+     * Execute a callback while suppressing event emissions
+     * Any changes made during the callback are tracked and returned as a diff
+     *
+     * @param proxy - The LazyWatch proxy
+     * @param callback - Function to execute silently
+     * @returns A diff object containing any changes made during the callback
+     * @throws {Error} If the instance has been disposed
+     *
+     * @example
+     * const watched = new LazyWatch({ count: 0, name: '' });
+     * const diff = LazyWatch.silent(watched, () => {
+     *   watched.count = 1;
+     *   watched.name = 'test';
+     * });
+     * // diff = { count: 1, name: 'test' }
+     * // No event listeners are triggered
+     */
+    static silent<T extends object>(proxy: T, callback: () => void): ChangeSet;
+
+    /**
      * Clean up resources and remove all listeners
      * After disposal, the proxy cannot be used anymore
      * @param proxy - The LazyWatch proxy
@@ -295,6 +315,7 @@ export class EventEmitter {
     pause(): void;
     resume(): void;
     isPaused(): boolean;
+    forceEmit(): void;
     dispose(): void;
 }
 

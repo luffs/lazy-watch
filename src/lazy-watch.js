@@ -212,6 +212,35 @@ export class LazyWatch {
   }
 
   /**
+   * Execute a callback while suppressing event emissions
+   * Any changes made during the callback are tracked and returned as a diff
+   *
+   * @param {Proxy} proxy - The LazyWatch proxy
+   * @param {Function} callback - Function to execute silently
+   * @returns {Object} A diff object containing any changes made during the callback
+   * @throws {Error} If the instance has been disposed
+   * @example
+   * const diff = LazyWatch.silent(watched, () => {
+   *   watched.count = 1;
+   *   watched.name = 'test';
+   * });
+   * // diff = { count: 1, name: 'test' }
+   */
+  static silent(proxy, callback) {
+    const instance = LazyWatch.#getInstance(proxy);
+    instance.#checkDisposed();
+    instance.#eventEmitter.forceEmit()
+
+    let diff = {}
+    try {
+      callback()
+    } finally {
+      diff = instance.#diffTracker.consumeDiff()
+    }
+    return diff
+  }
+
+  /**
    * Clean up resources and remove all listeners
    * @param {Proxy} proxy - The LazyWatch proxy
    */

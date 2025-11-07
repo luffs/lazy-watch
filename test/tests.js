@@ -948,6 +948,70 @@ runner.test('should throw error for pause/resume on disposed instance', () => {
   assertThrows(() => LazyWatch.isPaused(watched), 'Should throw error on isPaused after disposal');
 });
 
+// Silent method tests
+runner.test('should execute callback silently and return diff', async () => {
+  const data = { count: 0, name: '' };
+  const watched = new LazyWatch(data);
+  let eventFired = false;
+
+  LazyWatch.on(watched, () => {
+    eventFired = true;
+  });
+
+  const diff = LazyWatch.silent(watched, () => {
+    watched.count = 1;
+    watched.name = 'test';
+  });
+
+  assertEquals(diff, { count: 1, name: 'test' });
+  await wait(50);
+  assertTrue(!eventFired, 'No events should fire during silent execution');
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should force emit pending changes before silent execution', async () => {
+  const data = { count: 0, name: '' };
+  const watched = new LazyWatch(data);
+  let changesCaught = null;
+
+  LazyWatch.on(watched, (changes) => {
+    changesCaught = changes;
+  });
+
+  watched.count = 1;
+
+  const diff = LazyWatch.silent(watched, () => {
+    watched.name = 'test';
+  });
+
+  assertEquals(diff, { name: 'test' });
+  await wait(50);
+  assertEquals(changesCaught, { count: 1 });
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should handle exceptions in silent callback', () => {
+  const data = { count: 0 };
+  const watched = new LazyWatch(data);
+
+  try {
+    LazyWatch.silent(watched, () => {
+      watched.count = 1;
+      throw new Error('Test error');
+    });
+  } catch (e) {
+    assertTrue(e.message === 'Test error');
+  }
+
+  // Diff should still be consumed despite exception
+  const pending = LazyWatch.getPendingDiff(watched);
+  assertEquals(pending, {});
+
+  LazyWatch.dispose(watched);
+});
+
 // Usage examples
 console.log('\n=== LazyWatch Usage Examples ===\n');
 

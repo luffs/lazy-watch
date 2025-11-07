@@ -129,6 +129,18 @@ export class EventEmitter {
   }
 
   /**
+   * Force immediate emission of pending changes
+   * Bypasses throttle, debounce, and pause state
+   * Used internally by silent() to ensure clean state before silent operations
+   */
+  forceEmit() {
+    this.#clearPending();
+    if (this.#diffTracker.hasPendingChanges()) {
+      this.#emit();
+    }
+  }
+
+  /**
    * Clean up resources
    */
   dispose() {
