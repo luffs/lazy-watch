@@ -1012,6 +1012,167 @@ runner.test('should handle exceptions in silent callback', () => {
   LazyWatch.dispose(watched);
 });
 
+// Nested proxy listener tests
+runner.test('should emit path-relative diffs for nested proxy listeners', async () => {
+  const data = { root: { count: 1 } };
+  const watched = new LazyWatch(data, { throttle: 15 });
+  let rootChanges = null;
+  let nestedChanges = null;
+
+  // Listener on root proxy
+  LazyWatch.on(watched, (changes) => {
+    rootChanges = changes;
+  });
+
+  // Listener on nested proxy
+  LazyWatch.on(watched.root, (changes) => {
+    nestedChanges = changes;
+  });
+
+  watched.root.count++;
+
+  await wait(50);
+
+  // Root listener should receive full diff
+  assertEquals(rootChanges, { root: { count: 2 } }, 'Root listener should receive full diff');
+
+  // Nested listener should receive path-relative diff
+  assertEquals(nestedChanges, { count: 2 }, 'Nested listener should receive path-relative diff');
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should only notify nested listeners when their subtree changes', async () => {
+  const data = {
+    users: { name: 'Alice' },
+    settings: { theme: 'dark' }
+  };
+  const watched = new LazyWatch(data);
+  let usersChanges = null;
+  let settingsChanges = null;
+
+  LazyWatch.on(watched.users, (changes) => {
+    usersChanges = changes;
+  });
+
+  LazyWatch.on(watched.settings, (changes) => {
+    settingsChanges = changes;
+  });
+
+  // Only change settings
+  watched.settings.theme = 'light';
+
+  await wait(50);
+
+  // Users listener should not be called
+  assertEquals(usersChanges, null, 'Users listener should not be called');
+
+  // Settings listener should be called with path-relative diff
+  assertEquals(settingsChanges, { theme: 'light' }, 'Settings listener should receive changes');
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should support deeply nested proxy listeners', async () => {
+  const data = {
+    level1: {
+      level2: {
+        level3: {
+          value: 'deep'
+        }
+      }
+    }
+  };
+  const watched = new LazyWatch(data);
+  let rootChanges = null;
+  let level2Changes = null;
+  let level3Changes = null;
+
+  LazyWatch.on(watched, (changes) => {
+    rootChanges = changes;
+  });
+
+  LazyWatch.on(watched.level1.level2, (changes) => {
+    level2Changes = changes;
+  });
+
+  LazyWatch.on(watched.level1.level2.level3, (changes) => {
+    level3Changes = changes;
+  });
+
+  watched.level1.level2.level3.value = 'updated';
+
+  await wait(50);
+
+  // Root listener receives full path
+  assertEquals(rootChanges, { level1: { level2: { level3: { value: 'updated' } } } },
+    'Root listener should receive full diff');
+
+  // Level2 listener receives from level2 down
+  assertEquals(level2Changes, { level3: { value: 'updated' } },
+    'Level2 listener should receive diff from level2');
+
+  // Level3 listener receives only its own changes
+  assertEquals(level3Changes, { value: 'updated' },
+    'Level3 listener should receive only its changes');
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should handle multiple listeners on same nested proxy', async () => {
+  const data = { settings: { theme: 'dark', lang: 'en' } };
+  const watched = new LazyWatch(data);
+  let listener1Changes = null;
+  let listener2Changes = null;
+
+  const listener1 = (changes) => { listener1Changes = changes; };
+  const listener2 = (changes) => { listener2Changes = changes; };
+
+  LazyWatch.on(watched.settings, listener1);
+  LazyWatch.on(watched.settings, listener2);
+
+  watched.settings.theme = 'light';
+
+  await wait(50);
+
+  // Both listeners should receive the same path-relative diff
+  assertEquals(listener1Changes, { theme: 'light' }, 'Listener 1 should receive changes');
+  assertEquals(listener2Changes, { theme: 'light' }, 'Listener 2 should receive changes');
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should work with nested array listeners', async () => {
+  const data = {
+    lists: {
+      todos: [1, 2, 3]
+    }
+  };
+  const watched = new LazyWatch(data);
+  let rootChanges = null;
+  let todosChanges = null;
+
+  LazyWatch.on(watched, (changes) => {
+    rootChanges = changes;
+  });
+
+  LazyWatch.on(watched.lists.todos, (changes) => {
+    todosChanges = changes;
+  });
+
+  watched.lists.todos.push(4);
+
+  await wait(50);
+
+  // Root listener receives full path
+  assertTrue(rootChanges.lists.todos[3] === 4, 'Root listener should see array change');
+
+  // Nested array listener receives only array changes
+  assertEquals(todosChanges[3], 4, 'Nested listener should see new element');
+
+  LazyWatch.dispose(watched);
+});
+
 // Usage examples
 console.log('\n=== LazyWatch Usage Examples ===\n');
 
