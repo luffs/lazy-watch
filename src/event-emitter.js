@@ -22,19 +22,21 @@ export class EventEmitter {
 
   /**
    * Add a change listener
+   * @param {Function} listener - The listener function
+   * @param {Array} path - The path of the proxy this listener is registered on
    */
-  on(listener) {
+  on(listener, path = []) {
     if (typeof listener !== 'function') {
       throw new TypeError('Listener must be a function');
     }
-    this.#listeners.push(listener);
+    this.#listeners.push({ listener, path });
   }
 
   /**
    * Remove a change listener
    */
   off(listener) {
-    const index = this.#listeners.indexOf(listener);
+    const index = this.#listeners.findIndex(l => l.listener === listener);
     if (index !== -1) {
       this.#listeners.splice(index, 1);
     }
@@ -82,13 +84,44 @@ export class EventEmitter {
     this.#lastEmitTime = performance.now();
 
     const diff = this.#diffTracker.consumeDiff();
-    this.#listeners.forEach(listener => {
+    this.#listeners.forEach(({ listener, path }) => {
       try {
-        listener(diff);
+        // Filter the diff based on the listener's path
+        const filteredDiff = this.#filterDiffByPath(diff, path);
+        // Only call the listener if there are changes relevant to their path
+        if (filteredDiff && Object.keys(filteredDiff).length > 0) {
+          listener(filteredDiff);
+        }
       } catch (e) {
         console.error('Error in LazyWatch listener:', e);
       }
     });
+  }
+
+  /**
+   * Filter a diff to only include changes at or below a specific path
+   * @param {Object} diff - The full diff object
+   * @param {Array} path - The path to filter by
+   * @returns {Object} The filtered diff
+   */
+  #filterDiffByPath(diff, path) {
+    if (path.length === 0) {
+      // Root listener, return full diff
+      return diff;
+    }
+
+    // Navigate to the relevant part of the diff
+    let current = diff;
+    for (const segment of path) {
+      if (current && typeof current === 'object' && segment in current) {
+        current = current[segment];
+      } else {
+        // No changes at this path
+        return {};
+      }
+    }
+
+    return current;
   }
 
   /**

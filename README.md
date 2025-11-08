@@ -74,6 +74,61 @@ LazyWatch.on(watchedObject, callback);
 
 Registers a callback function that will be called with a diff object whenever changes are made to the watched object.
 
+#### Nested Proxy Listeners
+
+Listeners can be registered on nested objects or arrays within a watched object. When you register a listener on a nested proxy, it receives **path-relative diffs** - only the changes relevant to that subtree, rather than the full root diff.
+
+**Example:**
+```js
+const data = new LazyWatch({
+  root: {
+    count: 1
+  }
+}, { throttle: 15 });
+
+// Listener on the root proxy receives full diffs
+LazyWatch.on(data, change => {
+  console.log('Root:', JSON.stringify(change));
+  // Logs: Root: {"root":{"count":2}}
+});
+
+// Listener on nested proxy receives path-relative diffs
+LazyWatch.on(data.root, change => {
+  console.log('Nested:', JSON.stringify(change));
+  // Logs: Nested: {"count":2}
+});
+
+data.root.count++;
+```
+
+This feature is particularly useful when:
+- You want to listen to changes in specific parts of a large state object
+- Different components manage different sections of your application state
+- You need granular control over which changes trigger specific handlers
+
+**Multi-level nesting example:**
+```js
+const app = new LazyWatch({
+  user: { name: 'Alice', preferences: { theme: 'dark' } },
+  settings: { lang: 'en' }
+});
+
+// Only notified when user changes
+LazyWatch.on(app.user, changes => {
+  console.log('User changes:', changes);
+  // Will receive: { name: 'Bob' } or { preferences: { theme: 'light' } }
+});
+
+// Only notified when settings change
+LazyWatch.on(app.settings, changes => {
+  console.log('Settings changes:', changes);
+  // Will receive: { lang: 'fr' }
+});
+
+app.user.name = 'Bob';      // Only user listener fires
+app.settings.lang = 'fr';   // Only settings listener fires
+```
+
 ### Removing Listeners
 
 ```js

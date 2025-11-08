@@ -7,6 +7,7 @@ export const LAZYWATCH_INSTANCE = Symbol('LazyWatch.Instance');
 export class ProxyHandler {
   #original;
   #cache = new WeakMap();
+  #proxyPaths = new WeakMap();
   #diffTracker;
   #eventEmitter;
   #patchMode = false;
@@ -27,6 +28,8 @@ export class ProxyHandler {
     const proxy = this.#createProxy(this.#original, [], lazyWatchInstance);
     // Store the target reference using a symbol
     this.#cache.set(proxy, this.#original);
+    // Store the path for this proxy
+    this.#proxyPaths.set(proxy, []);
     return proxy;
   }
 
@@ -52,8 +55,10 @@ export class ProxyHandler {
           // Get proxy from cache, or create and cache it
           let childProxy = this.#cache.get(value);
           if (!childProxy) {
-            childProxy = this.#createProxy(value, [...path, prop], lazyWatchInstance);
+            const childPath = [...path, prop];
+            childProxy = this.#createProxy(value, childPath, lazyWatchInstance);
             this.#cache.set(value, childProxy);
+            this.#proxyPaths.set(childProxy, childPath);
           }
           return childProxy;
         }
@@ -233,6 +238,13 @@ export class ProxyHandler {
     } catch (e) {
       return obj;
     }
+  }
+
+  /**
+   * Get the path for a given proxy
+   */
+  getProxyPath(proxy) {
+    return this.#proxyPaths.get(proxy) || [];
   }
 
   /**

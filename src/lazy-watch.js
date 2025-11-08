@@ -88,7 +88,8 @@ export class LazyWatch {
   static on(proxy, listener) {
     const instance = LazyWatch.#getInstance(proxy);
     instance.#checkDisposed();
-    instance.#eventEmitter.on(listener);
+    const path = instance.#proxyHandler.getProxyPath(proxy);
+    instance.#eventEmitter.on(listener, path);
   }
 
   /**
