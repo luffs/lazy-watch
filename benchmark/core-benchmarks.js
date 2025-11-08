@@ -195,58 +195,58 @@ export async function runCoreBenchmarks() {
 export async function runListenerBenchmarks() {
   console.log('\n=== Listener Notification Benchmarks ===\n');
 
+  // Wait deterministically for all listeners to be notified instead of using a fixed delay
+  async function notifyWithNListeners(n) {
+    const watched = new LazyWatch({ count: 0 });
+    let notified = 0;
+    const done = new Promise(resolve => {
+      const handler = () => {
+        notified++;
+        if (notified === n) resolve();
+      };
+      for (let i = 0; i < n; i++) {
+        LazyWatch.on(watched, handler);
+      }
+    });
+
+    // Trigger a change that should notify all listeners once
+    watched.count = 1;
+
+    // Await until all listeners have been called
+    await done;
+
+    LazyWatch.dispose(watched);
+  }
+
   const benchmarks = [
     {
       name: '1 listener notification',
       fn: async () => {
-        const watched = new LazyWatch({ count: 0 });
-        let notified = false;
-        LazyWatch.on(watched, () => { notified = true; });
-        watched.count = 1;
-        await wait(10);
-        LazyWatch.dispose(watched);
-      },
-      options: { iterations: 1000, warmup: 100 }
-    },
-    {
-      name: '5 listeners notification',
-      fn: async () => {
-        const watched = new LazyWatch({ count: 0 });
-        for (let i = 0; i < 5; i++) {
-          LazyWatch.on(watched, () => {});
-        }
-        watched.count = 1;
-        await wait(10);
-        LazyWatch.dispose(watched);
+        await notifyWithNListeners(1);
       },
       options: { iterations: 1000, warmup: 100 }
     },
     {
       name: '10 listeners notification',
       fn: async () => {
-        const watched = new LazyWatch({ count: 0 });
-        for (let i = 0; i < 10; i++) {
-          LazyWatch.on(watched, () => {});
-        }
-        watched.count = 1;
-        await wait(10);
-        LazyWatch.dispose(watched);
+        await notifyWithNListeners(10);
       },
       options: { iterations: 1000, warmup: 100 }
     },
     {
-      name: '50 listeners notification',
+      name: '100 listeners notification',
       fn: async () => {
-        const watched = new LazyWatch({ count: 0 });
-        for (let i = 0; i < 50; i++) {
-          LazyWatch.on(watched, () => {});
-        }
-        watched.count = 1;
-        await wait(10);
-        LazyWatch.dispose(watched);
+        await notifyWithNListeners(100);
       },
       options: { iterations: 500, warmup: 50 }
-    }
+    },
+    {
+      name: '1000 listeners notification',
+      fn: async () => {
+        await notifyWithNListeners(1000);
+      },
+      options: { iterations: 500, warmup: 50 }
+    },
   ];
 
   const results = await runBenchmarkSuite(benchmarks);
@@ -261,45 +261,75 @@ export async function runListenerBenchmarks() {
 export async function runThrottleDebounceBenchmarks() {
   console.log('\n=== Throttle/Debounce Benchmarks ===\n');
 
+  // Helper to await a specific number of emissions
+  function expectEmits(watched, expected) {
+    return new Promise(resolve => {
+      let count = 0;
+      const handler = () => {
+        count++;
+        if (count >= expected) {
+          LazyWatch.off(watched, handler);
+          resolve();
+        }
+      };
+      LazyWatch.on(watched, handler);
+    });
+  }
+
+  // Throttle case: rapid writes every 10ms for ~100ms with throttle=50ms
+  // Expected behavior (per implementation): emits around ~0ms, ~50ms, ~100ms => 3 emits
+  async function throttleRapidWritesCase() {
+    const watched = new LazyWatch({ count: 0 }, { throttle: 50 });
+    const done = expectEmits(watched, 3);
+    for (let i = 0; i < 10; i++) {
+      watched.count = i;
+      if (i < 9) await wait(10);
+    }
+    await done;
+    LazyWatch.dispose(watched);
+  }
+
+  // Debounce case: burst of rapid writes (<50ms apart), expect single trailing emit ~50ms after last write
+  async function debounceBurstCase() {
+    const watched = new LazyWatch({ count: 0 }, { debounce: 50 });
+    const done = expectEmits(watched, 1);
+    for (let i = 0; i < 5; i++) {
+      watched.count = i;
+      if (i < 4) await wait(10);
+    }
+    await done; // resolves when the single debounced emit fires
+    LazyWatch.dispose(watched);
+  }
+
   const benchmarks = [
     {
       name: 'No throttle/debounce',
       fn: async () => {
         const watched = new LazyWatch({ count: 0 });
-        LazyWatch.on(watched, () => {});
+        const done = new Promise(resolve => {
+          LazyWatch.on(watched, () => resolve());
+        });
         for (let i = 0; i < 10; i++) {
           watched.count = i;
         }
-        await wait(20);
+        await done; // wait for the actual emission instead of sleeping
         LazyWatch.dispose(watched);
       },
       options: { iterations: 500, warmup: 50 }
     },
     {
-      name: 'With throttle (50ms)',
+      name: 'With throttle (50ms) — rapid writes',
       fn: async () => {
-        const watched = new LazyWatch({ count: 0 }, { throttle: 50 });
-        LazyWatch.on(watched, () => {});
-        for (let i = 0; i < 10; i++) {
-          watched.count = i;
-        }
-        await wait(100);
-        LazyWatch.dispose(watched);
+        await throttleRapidWritesCase();
       },
-      options: { iterations: 200, warmup: 20 }
+      options: { iterations: 50, warmup: 5 }
     },
     {
-      name: 'With debounce (50ms)',
+      name: 'With debounce (50ms) — burst',
       fn: async () => {
-        const watched = new LazyWatch({ count: 0 }, { debounce: 50 });
-        LazyWatch.on(watched, () => {});
-        for (let i = 0; i < 10; i++) {
-          watched.count = i;
-        }
-        await wait(100);
-        LazyWatch.dispose(watched);
+        await debounceBurstCase();
       },
-      options: { iterations: 200, warmup: 20 }
+      options: { iterations: 50, warmup: 5 }
     }
   ];
 
