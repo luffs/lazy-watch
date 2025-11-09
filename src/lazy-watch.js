@@ -44,9 +44,9 @@ export class LazyWatch {
    * Create a new LazyWatch instance
    * @param {Object|Array} original - The object or array to watch
    * @param {Object} options - Configuration options
-   * @param {number} options.throttle - Minimum time in milliseconds between emits (default: 0)
-   * @param {number} options.debounce - Time in milliseconds to wait for additional changes before emitting (default: 0)
-   * @returns {Proxy} A proxy that tracks changes
+   * @param {number} [options.throttle=0] - Minimum time in milliseconds between emits (default: 0)
+   * @param {number} [options.debounce=0] - Time in milliseconds to wait for additional changes before emitting (default: 0)
+   * @returns {Object} A proxy that tracks changes
    * @throws {TypeError} If original is not an object or array
    */
   constructor(original, options = {}) {
@@ -58,22 +58,22 @@ export class LazyWatch {
     // Store the instance reference so we can access it from the proxy
     LazyWatch.#instances.set(this.#proxy, this);
 
-    // Return the proxy directly
-    return this.#proxy;
+    // Return the proxy directly. The "|| original" is for better code completion
+    return this.#proxy || original;
   }
 
   /**
-   * Get the LazyWatch instance from a proxy
+   * Get the LazyWatch instance from a watched proxy
    */
-  static #getInstance(proxy) {
+  static #getInstance(watched) {
     // Try to get instance from the proxy using our symbol
     try {
-      const instance = proxy[LAZYWATCH_INSTANCE];
+      const instance = watched[LAZYWATCH_INSTANCE];
       if (instance) return instance;
     } catch (e) {}
 
     // Fallback to WeakMap lookup
-    const instance = LazyWatch.#instances.get(proxy);
+    const instance = LazyWatch.#instances.get(watched);
     if (!instance) {
       throw new Error('Not a LazyWatch proxy or instance has been disposed');
     }
@@ -82,23 +82,23 @@ export class LazyWatch {
 
   /**
    * Add a change listener
-   * @param {Proxy} proxy - The LazyWatch proxy
+   * @param {Object} watched - The LazyWatch proxy
    * @param {Function} listener - Callback function that receives changes
    */
-  static on(proxy, listener) {
-    const instance = LazyWatch.#getInstance(proxy);
+  static on(watched, listener) {
+    const instance = LazyWatch.#getInstance(watched);
     instance.#checkDisposed();
-    const path = instance.#proxyHandler.getProxyPath(proxy);
+    const path = instance.#proxyHandler.getProxyPath(watched);
     instance.#eventEmitter.on(listener, path);
   }
 
   /**
    * Remove a change listener
-   * @param {Proxy} proxy - The LazyWatch proxy
+   * @param {Object} watched - The LazyWatch proxy
    * @param {Function} listener - The listener to remove
    */
-  static off(proxy, listener) {
-    const instance = LazyWatch.#getInstance(proxy);
+  static off(watched, listener) {
+    const instance = LazyWatch.#getInstance(watched);
     instance.#checkDisposed();
     instance.#eventEmitter.off(listener);
   }
@@ -106,24 +106,24 @@ export class LazyWatch {
   /**
    * Overwrite the watched object with new values
    * Deletes properties not present in source (unless target is array)
-   * @param {Proxy} proxy - The LazyWatch proxy
+   * @param {Object} watched - The LazyWatch proxy
    * @param {Object} source - The new values
    */
-  static overwrite(proxy, source) {
-    const instance = LazyWatch.#getInstance(proxy);
+  static overwrite(watched, source) {
+    const instance = LazyWatch.#getInstance(watched);
     instance.#checkDisposed();
-    instance.#proxyHandler.overwrite(proxy, source);
+    instance.#proxyHandler.overwrite(watched, source);
   }
 
   /**
    * Patch (merge) new values without deleting missing properties
-   * @param {Proxy} proxy - The LazyWatch proxy
+   * @param {Object} watched - The LazyWatch proxy
    * @param {Object} source - The values to merge
    */
-  static patch(proxy, source) {
-    const instance = LazyWatch.#getInstance(proxy);
+  static patch(watched, source) {
+    const instance = LazyWatch.#getInstance(watched);
     instance.#checkDisposed();
-    instance.#proxyHandler.patch(proxy, source);
+    instance.#proxyHandler.patch(watched, source);
   }
 
   /**
@@ -146,11 +146,11 @@ export class LazyWatch {
 
   /**
    * Get a copy of the current pending diff without consuming it
-   * @param {Proxy} proxy - The LazyWatch proxy
+   * @param {Object} watched - The LazyWatch proxy
    * @returns {Object} A copy of the pending changes
    */
-  static getPendingDiff(proxy) {
-    const instance = LazyWatch.#getInstance(proxy);
+  static getPendingDiff(watched) {
+    const instance = LazyWatch.#getInstance(watched);
     instance.#checkDisposed();
     return instance.#diffTracker.getPendingDiff();
   }
@@ -182,10 +182,10 @@ export class LazyWatch {
   /**
    * Pause event emissions
    * Changes continue to be tracked but listeners won't be notified until resumed
-   * @param {Proxy} proxy - The LazyWatch proxy
+   * @param {Object} watched - The LazyWatch proxy
    */
-  static pause(proxy) {
-    const instance = LazyWatch.#getInstance(proxy);
+  static pause(watched) {
+    const instance = LazyWatch.#getInstance(watched);
     instance.#checkDisposed();
     instance.#eventEmitter.pause();
   }
@@ -193,21 +193,21 @@ export class LazyWatch {
   /**
    * Resume event emissions
    * If there are pending changes, they will be emitted
-   * @param {Proxy} proxy - The LazyWatch proxy
+   * @param {Object} watched - The LazyWatch proxy
    */
-  static resume(proxy) {
-    const instance = LazyWatch.#getInstance(proxy);
+  static resume(watched) {
+    const instance = LazyWatch.#getInstance(watched);
     instance.#checkDisposed();
     instance.#eventEmitter.resume();
   }
 
   /**
    * Check if event emissions are paused
-   * @param {Proxy} proxy - The LazyWatch proxy
+   * @param {Object} watched - The LazyWatch proxy
    * @returns {boolean} True if paused, false otherwise
    */
-  static isPaused(proxy) {
-    const instance = LazyWatch.#getInstance(proxy);
+  static isPaused(watched) {
+    const instance = LazyWatch.#getInstance(watched);
     instance.#checkDisposed();
     return instance.#eventEmitter.isPaused();
   }
@@ -216,7 +216,7 @@ export class LazyWatch {
    * Execute a callback while suppressing event emissions
    * Any changes made during the callback are tracked and returned as a diff
    *
-   * @param {Proxy} proxy - The LazyWatch proxy
+   * @param {Object} watched - The LazyWatch proxy
    * @param {Function} callback - Function to execute silently
    * @returns {Object} A diff object containing any changes made during the callback
    * @throws {Error} If the instance has been disposed
@@ -227,8 +227,8 @@ export class LazyWatch {
    * });
    * // diff = { count: 1, name: 'test' }
    */
-  static silent(proxy, callback) {
-    const instance = LazyWatch.#getInstance(proxy);
+  static silent(watched, callback) {
+    const instance = LazyWatch.#getInstance(watched);
     instance.#checkDisposed();
     instance.#eventEmitter.forceEmit()
 
@@ -243,17 +243,17 @@ export class LazyWatch {
 
   /**
    * Clean up resources and remove all listeners
-   * @param {Proxy} proxy - The LazyWatch proxy
+   * @param {Object} watched - The LazyWatch proxy
    */
-  static dispose(proxy) {
-    const instance = LazyWatch.#getInstance(proxy);
+  static dispose(watched) {
+    const instance = LazyWatch.#getInstance(watched);
     if (instance.#disposed) return;
 
     instance.#disposed = true;
     instance.#eventEmitter.dispose();
     instance.#proxyHandler.dispose();
     instance.#diffTracker.clear();
-    LazyWatch.#instances.delete(proxy);
+    LazyWatch.#instances.delete(watched);
   }
 
   /**
