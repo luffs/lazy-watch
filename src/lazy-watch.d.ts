@@ -101,7 +101,7 @@ export class LazyWatch<T extends object = any> {
 
     /**
      * Add a change listener to a LazyWatch proxy
-     * @param proxy - The LazyWatch proxy returned from the constructor
+     * @param watched - The LazyWatch proxy returned from the constructor
      * @param listener - Callback function that receives changes
      * @throws {TypeError} If listener is not a function
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
@@ -112,11 +112,11 @@ export class LazyWatch<T extends object = any> {
      *   console.log('Changes:', changes);
      * });
      */
-    static on<T extends object>(proxy: T, listener: ChangeListener): void;
+    static on<T extends object>(watched: T, listener: ChangeListener): void;
 
     /**
      * Remove a change listener from a LazyWatch proxy
-     * @param proxy - The LazyWatch proxy
+     * @param watched - The LazyWatch proxy
      * @param listener - The listener to remove
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
      *
@@ -125,12 +125,12 @@ export class LazyWatch<T extends object = any> {
      * LazyWatch.on(watched, listener);
      * LazyWatch.off(watched, listener);
      */
-    static off<T extends object>(proxy: T, listener: ChangeListener): void;
+    static off<T extends object>(watched: T, listener: ChangeListener): void;
 
     /**
      * Overwrite the watched object with new values
      * Deletes properties not present in source (unless target is array)
-     * @param proxy - The LazyWatch proxy
+     * @param watched - The LazyWatch proxy
      * @param source - The new values
      * @throws {TypeError} If source is not an object
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
@@ -140,11 +140,11 @@ export class LazyWatch<T extends object = any> {
      * LazyWatch.overwrite(watched, { a: 10, d: 4 });
      * // watched is now { a: 10, d: 4 } - b and c are deleted
      */
-    static overwrite<T extends object>(proxy: T, source: Partial<T>): void;
+    static overwrite<T extends object>(watched: T, source: Partial<T>): void;
 
     /**
      * Patch (merge) new values without deleting missing properties
-     * @param proxy - The LazyWatch proxy
+     * @param watched - The LazyWatch proxy
      * @param source - The values to merge
      * @throws {TypeError} If source is not an object
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
@@ -154,7 +154,7 @@ export class LazyWatch<T extends object = any> {
      * LazyWatch.patch(watched, { a: 10, d: 4 });
      * // watched is now { a: 10, b: 2, c: 3, d: 4 } - b and c remain
      */
-    static patch<T extends object>(proxy: T, source: Partial<T>): void;
+    static patch<T extends object>(watched: T, source: Partial<T>): void;
 
     /**
      * Resolve a proxy to its original target
@@ -172,7 +172,7 @@ export class LazyWatch<T extends object = any> {
     /**
      * Get a copy of the current pending diff without consuming it
      * Returns a snapshot of pending changes that haven't been emitted yet
-     * @param proxy - The LazyWatch proxy
+     * @param watched - The LazyWatch proxy
      * @returns A copy of the pending changes
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
      *
@@ -183,12 +183,12 @@ export class LazyWatch<T extends object = any> {
      * const pending = LazyWatch.getPendingDiff(watched); // { count: 2 }
      * // Changes are still pending and will be emitted to listeners
      */
-    static getPendingDiff<T extends object>(proxy: T): ChangeSet;
+    static getPendingDiff<T extends object>(watched: T): ChangeSet;
 
     /**
      * Pause event emissions
      * Changes continue to be tracked but listeners won't be notified until resumed
-     * @param proxy - The LazyWatch proxy
+     * @param watched - The LazyWatch proxy
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
      *
      * @example
@@ -199,12 +199,12 @@ export class LazyWatch<T extends object = any> {
      * watched.count = 2; // Still no notification
      * LazyWatch.resume(watched); // Listener is called with { count: 2 }
      */
-    static pause<T extends object>(proxy: T): void;
+    static pause<T extends object>(watched: T): void;
 
     /**
      * Resume event emissions
      * If there are pending changes, they will be emitted immediately
-     * @param proxy - The LazyWatch proxy
+     * @param watched - The LazyWatch proxy
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
      *
      * @example
@@ -214,11 +214,11 @@ export class LazyWatch<T extends object = any> {
      * watched.count = 1;
      * LazyWatch.resume(watched); // Listener is called immediately with { count: 1 }
      */
-    static resume<T extends object>(proxy: T): void;
+    static resume<T extends object>(watched: T): void;
 
     /**
      * Check if event emissions are paused
-     * @param proxy - The LazyWatch proxy
+     * @param watched - The LazyWatch proxy
      * @returns True if paused, false otherwise
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
      *
@@ -230,13 +230,13 @@ export class LazyWatch<T extends object = any> {
      * LazyWatch.resume(watched);
      * console.log(LazyWatch.isPaused(watched)); // false
      */
-    static isPaused<T extends object>(proxy: T): boolean;
+    static isPaused<T extends object>(watched: T): boolean;
 
     /**
      * Execute a callback while suppressing event emissions
      * Any changes made during the callback are tracked and returned as a diff
      *
-     * @param proxy - The LazyWatch proxy
+     * @param watched - The LazyWatch proxy
      * @param callback - Function to execute silently
      * @returns A diff object containing any changes made during the callback
      * @throws {Error} If the instance has been disposed
@@ -250,19 +250,19 @@ export class LazyWatch<T extends object = any> {
      * // diff = { count: 1, name: 'test' }
      * // No event listeners are triggered
      */
-    static silent<T extends object>(proxy: T, callback: () => void): ChangeSet;
+    static silent<T extends object>(watched: T, callback: () => void): ChangeSet;
 
     /**
      * Clean up resources and remove all listeners
      * After disposal, the proxy cannot be used anymore
-     * @param proxy - The LazyWatch proxy
+     * @param watched - The LazyWatch proxy
      *
      * @example
      * const watched = new LazyWatch({ count: 0 });
      * // ... use watched ...
      * LazyWatch.dispose(watched);
      */
-    static dispose<T extends object>(proxy: T): void;
+    static dispose<T extends object>(watched: T): void;
 
     /**
      * Utility functions
