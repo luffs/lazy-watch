@@ -82,7 +82,7 @@ export class LazyWatch {
 
   /**
    * Add a change listener
-   * @param {LazyWatch} watched - The LazyWatch proxy
+   * @param {Object} watched - The LazyWatch proxy
    * @param {Function} listener - Callback function that receives changes
    */
   static on(watched, listener) {
@@ -94,7 +94,7 @@ export class LazyWatch {
 
   /**
    * Remove a change listener
-   * @param {LazyWatch} watched - The LazyWatch proxy
+   * @param {Object} watched - The LazyWatch proxy
    * @param {Function} listener - The listener to remove
    */
   static off(watched, listener) {
@@ -106,7 +106,7 @@ export class LazyWatch {
   /**
    * Overwrite the watched object with new values
    * Deletes properties not present in source (unless target is array)
-   * @param {LazyWatch} watched - The LazyWatch proxy
+   * @param {Object} watched - The LazyWatch proxy
    * @param {Object} source - The new values
    */
   static overwrite(watched, source) {
@@ -117,7 +117,7 @@ export class LazyWatch {
 
   /**
    * Patch (merge) new values without deleting missing properties
-   * @param {LazyWatch} watched - The LazyWatch proxy
+   * @param {Object} watched - The LazyWatch proxy
    * @param {Object} source - The values to merge
    */
   static patch(watched, source) {
@@ -146,7 +146,7 @@ export class LazyWatch {
 
   /**
    * Get a copy of the current pending diff without consuming it
-   * @param {LazyWatch} watched - The LazyWatch proxy
+   * @param {Object} watched - The LazyWatch proxy
    * @returns {Object} A copy of the pending changes
    */
   static getPendingDiff(watched) {
@@ -182,7 +182,7 @@ export class LazyWatch {
   /**
    * Pause event emissions
    * Changes continue to be tracked but listeners won't be notified until resumed
-   * @param {LazyWatch} watched - The LazyWatch proxy
+   * @param {Object} watched - The LazyWatch proxy
    */
   static pause(watched) {
     const instance = LazyWatch.#getInstance(watched);
@@ -193,7 +193,7 @@ export class LazyWatch {
   /**
    * Resume event emissions
    * If there are pending changes, they will be emitted
-   * @param {LazyWatch} watched - The LazyWatch proxy
+   * @param {Object} watched - The LazyWatch proxy
    */
   static resume(watched) {
     const instance = LazyWatch.#getInstance(watched);
@@ -203,7 +203,7 @@ export class LazyWatch {
 
   /**
    * Check if event emissions are paused
-   * @param {LazyWatch} watched - The LazyWatch proxy
+   * @param {Object} watched - The LazyWatch proxy
    * @returns {boolean} True if paused, false otherwise
    */
   static isPaused(watched) {
@@ -216,7 +216,7 @@ export class LazyWatch {
    * Execute a callback while suppressing event emissions
    * Any changes made during the callback are tracked and returned as a diff
    *
-   * @param {LazyWatch} watched - The LazyWatch proxy
+   * @param {Object} watched - The LazyWatch proxy
    * @param {Function} callback - Function to execute silently
    * @returns {Object} A diff object containing any changes made during the callback
    * @throws {Error} If the instance has been disposed
@@ -243,7 +243,7 @@ export class LazyWatch {
 
   /**
    * Clean up resources and remove all listeners
-   * @param {LazyWatch} watched - The LazyWatch proxy
+   * @param {Object} watched - The LazyWatch proxy
    */
   static dispose(watched) {
     const instance = LazyWatch.#getInstance(watched);
