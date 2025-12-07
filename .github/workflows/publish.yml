@@ -35,6 +35,7 @@ jobs:
         env:
           # This helps npm detect and include build provenance (in addition to --provenance flag)
           NPM_CONFIG_PROVENANCE: true
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           # Ensure we are on the tagged version from the release
           echo "Publishing version $(node -p "require('./package.json').version")"
