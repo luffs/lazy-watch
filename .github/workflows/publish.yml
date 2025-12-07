@@ -39,4 +39,5 @@ jobs:
         run: |
           # Ensure we are on the tagged version from the release
           echo "Publishing version $(node -p "require('./package.json').version")"
-          npm publish --provenance --access public
+          read -r OTP
+          npm publish --access public --otp $OTP
