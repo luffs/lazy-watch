@@ -1,6 +1,6 @@
 {
   "name": "lazy-watch",
-  "version": "2.4.2",
+  "version": "2.4.3",
   "description": "Deep watch objects (using Proxy) and emit diff asynchronously.",
   "type": "module",
   "main": "./src/index.js",
@@ -11,6 +11,9 @@
     "benchmark:core": "node --expose-gc ./benchmark/index.js --core",
     "benchmark:memory": "node --expose-gc ./benchmark/index.js --memory",
     "benchmark:all": "node --expose-gc ./benchmark/index.js --all"
+  },
+  "publishConfig": {
+    "provenance": true
   },
   "repository": {
     "type": "git",
