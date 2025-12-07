@@ -170,6 +170,7 @@ export class ProxyHandler {
 
     // Track array length changes
     if (Array.isArray(rawTarget) && Array.isArray(rawSource) && rawTarget.length !== rawSource.length) {
+      rawTarget.length = rawSource.length;
       getDiff().length = rawSource.length;
       hasChanges = true;
     }

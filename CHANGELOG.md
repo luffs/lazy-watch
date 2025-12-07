@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
+## [2.4.2] - 2025-12-07
+
+- fix: Ensure array `length` is updated on overwrite to keep target/source in sync
+- chore: Bump version to 2.4.2
+
 ## [2.4.1] - 2025-11-09
 
 - docs: Clarify optional parameters in LazyWatch constructor using default value syntax
@@ -143,6 +148,7 @@ Helpful links:
 - Package on npm: https://www.npmjs.com/package/lazy-watch
 - GitHub Releases: https://github.com/luffs/lazy-watch/releases
 
+[2.4.2]: https://www.npmjs.com/package/lazy-watch/v/2.4.2
 [2.4.1]: https://www.npmjs.com/package/lazy-watch/v/2.4.1
 [2.4.0]: https://www.npmjs.com/package/lazy-watch/v/2.4.0
 [2.3.0]: https://www.npmjs.com/package/lazy-watch/v/2.3.0
