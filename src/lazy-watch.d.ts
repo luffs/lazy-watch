@@ -157,6 +157,26 @@ export class LazyWatch<T extends object = any> {
     static patch<T extends object>(watched: T, source: Partial<T>): void;
 
     /**
+     * Patch (merge) new values into a normal (non-proxy) object without deleting missing properties
+     * This utility method applies LazyWatch's patching semantics to regular objects
+     * @param target - A normal object or array (not a LazyWatch proxy)
+     * @param source - The values to merge into the target
+     * @throws {TypeError} If target or source is not an object
+     *
+     * @example
+     * const normalObj = { a: 1, b: 2, c: { d: 3 } };
+     * LazyWatch.patchObject(normalObj, { a: 10, c: { d: 30, e: 40 } });
+     * // normalObj is now { a: 10, b: 2, c: { d: 30, e: 40 } }
+     *
+     * @example
+     * // Using null to delete properties
+     * const obj = { a: 1, b: 2, c: 3 };
+     * LazyWatch.patchObject(obj, { b: null, c: 30 });
+     * // obj is now { a: 1, c: 30 }
+     */
+    static patchObject<T extends object>(target: T, source: Partial<T>): void;
+
+    /**
      * Resolve a proxy to its original target
      * @param obj - Potentially a proxy object
      * @returns The original target or the input if not a proxy
@@ -168,6 +188,21 @@ export class LazyWatch<T extends object = any> {
      * // resolved === original
      */
     static resolveIfProxy<T>(obj: T): T;
+
+    /**
+     * Check if an object is a LazyWatch proxy
+     * @param obj - The object to check
+     * @returns True if the object is a LazyWatch proxy, false otherwise
+     *
+     * @example
+     * const watched = new LazyWatch({ count: 0 });
+     * const normal = { count: 0 };
+     * console.log(LazyWatch.isProxy(watched)); // true
+     * console.log(LazyWatch.isProxy(normal));  // false
+     * LazyWatch.dispose(watched);
+     * console.log(LazyWatch.isProxy(watched)); // false (disposed)
+     */
+    static isProxy(obj: any): boolean;
 
     /**
      * Get a copy of the current pending diff without consuming it

@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
+## [2.4.7] - 2025-12-21
+
+- feat: Add `LazyWatch.patchObject` static method for patching normal (non-proxy) objects
+- docs: Update documentation to include patchObject usage
+
 ## [2.4.2] - 2025-12-07
 
 - fix: Ensure array `length` is updated on overwrite to keep target/source in sync
@@ -148,6 +153,7 @@ Helpful links:
 - Package on npm: https://www.npmjs.com/package/lazy-watch
 - GitHub Releases: https://github.com/luffs/lazy-watch/releases
 
+[2.4.7]: https://www.npmjs.com/package/lazy-watch/v/2.4.7
 [2.4.2]: https://www.npmjs.com/package/lazy-watch/v/2.4.2
 [2.4.1]: https://www.npmjs.com/package/lazy-watch/v/2.4.1
 [2.4.0]: https://www.npmjs.com/package/lazy-watch/v/2.4.0

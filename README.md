@@ -218,11 +218,59 @@ console.log('Silent changes:', diff);
 
 ### Applying Changes
 
+#### Patching LazyWatch Proxies
+
 ```js
-LazyWatch.patch(targetObject, diffObject);
+LazyWatch.patch(watchedObject, diffObject);
 ```
 
-Applies changes from a diff object to a target object.
+Applies changes from a diff object to a watched LazyWatch proxy. Properties not present in the diff are preserved (merge behavior, not replacement).
+
+**Example:**
+```js
+const data = new LazyWatch({ a: 1, b: 2, c: { d: 3 } });
+
+LazyWatch.patch(data, { a: 10, c: { d: 30, e: 40 } });
+// Result: { a: 10, b: 2, c: { d: 30, e: 40 } }
+// Note: 'b' is preserved, nested object 'c' is merged
+```
+
+#### Patching Normal Objects
+
+```js
+LazyWatch.patchObject(targetObject, sourceObject);
+```
+
+Applies changes from a source object to a normal (non-proxy) object. This is useful when you want to use LazyWatch's patching semantics on regular objects without creating a watched proxy.
+
+**Parameters:**
+- `targetObject` - A normal object or array (not a LazyWatch proxy)
+- `sourceObject` - The object with values to merge into the target
+
+**Behavior:**
+- Merges properties from source into target (mutates target in place)
+- Missing properties in source are preserved in target
+- Nested objects are recursively merged
+- Properties with `null` values are deleted from target
+- Objects/arrays are deep cloned to avoid reference sharing
+
+**Example:**
+```js
+const normalObj = { a: 1, b: 2, c: { d: 3 } };
+
+LazyWatch.patchObject(normalObj, { a: 10, c: { d: 30, e: 40 } });
+// normalObj is now: { a: 10, b: 2, c: { d: 30, e: 40 } }
+
+// Using null to delete properties
+const obj2 = { a: 1, b: 2, c: 3 };
+LazyWatch.patchObject(obj2, { b: null, c: 30 });
+// obj2 is now: { a: 1, c: 30 }
+```
+
+**Use cases:**
+- Applying server-side state updates to local objects
+- Merging configuration objects
+- Synchronizing state between watched and non-watched objects
 
 ## Examples
 

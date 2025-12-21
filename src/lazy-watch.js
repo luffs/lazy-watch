@@ -127,6 +127,30 @@ export class LazyWatch {
   }
 
   /**
+   * Helper method to patch normal (non-proxy) objects
+   * @param {Object} target - The target object to patch
+   * @param {Object} source - The source object with values to merge
+   */
+  static patchObject(target, source) {
+    const resolvedSource = LazyWatch.resolveIfProxy(source);
+
+    for (const prop in resolvedSource) {
+      if (resolvedSource[prop] === null) {
+        delete target[prop];
+      } else if (Utils.isObjectOrArray(target[prop]) && Utils.isObjectOrArray(resolvedSource[prop])) {
+        // Recursively patch nested objects
+        LazyWatch.patchObject(target[prop], resolvedSource[prop]);
+      } else {
+        // Clone if it's an object/array to match LazyWatch behavior
+        const clonedValue = Utils.isObjectOrArray(resolvedSource[prop])
+          ? Utils.deepClone(resolvedSource[prop])
+          : resolvedSource[prop];
+        target[prop] = clonedValue;
+      }
+    }
+  }
+
+  /**
    * Resolve a proxy to its original target
    * @param {*} obj - Potentially a proxy object
    * @returns {*} The original target or the input if not a proxy
