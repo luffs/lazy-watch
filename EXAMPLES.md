@@ -1,315 +1,26 @@
-# LazyWatch
+# LazyWatch Examples
 
-A lightweight, reactive proxy-based object change tracker for JavaScript and TypeScript. LazyWatch allows you to monitor changes to objects and arrays with automatic batching, deep nesting support, and a clean API.
+This document provides comprehensive real-world examples demonstrating how to use LazyWatch in various scenarios. For installation instructions and API documentation, see the [README](README.md).
 
-## Features
+## Table of Contents
 
-- 🎯 **Automatic Change Detection** - Track changes to objects and arrays automatically
-- 🔄 **Deep Nesting Support** - Monitor changes at any depth level
-- 📦 **Batched Updates** - Multiple synchronous changes are batched into a single notification
-- 🧹 **Memory Safe** - Proper cleanup with dispose() method
-- 💪 **TypeScript Support** - Full type definitions included
-- 🚀 **Zero Dependencies** - Standalone library with optional polyfills
-- ⚡ **High Performance** - Efficient proxy-based implementation with caching
+- [State Management](#example-1-state-management)
+- [Real-time Sync](#example-2-real-time-sync)
+- [Form Validation](#example-3-form-validation)
+- [Silent Initialization](#example-4-silent-initialization)
+- [Conditional Change Broadcasting](#example-5-conditional-change-broadcasting)
+- [Advanced Topics](#advanced-topics)
+- [TypeScript](#typescript)
 
-## Installation
+---
 
-```bash
-npm install lazywatch
-```
+## Example 1: State Management
 
-Or use directly in browser:
-
-```html
-<script type="module">
-	import { LazyWatch } from './lazy-watch.js';
-</script>
-```
-
-## Quick Start
+Build a simple state management system with subscription support:
 
 ```javascript
-import { LazyWatch } from 'lazywatch';
+import LazyWatch from 'lazy-watch';
 
-// Create a watched object - returns a proxy
-const watched = new LazyWatch({ count: 0, user: { name: 'Alice' } });
-
-// Listen for changes using static method
-LazyWatch.on(watched, (changes) => {
-  console.log('Changes detected:', changes);
-});
-
-// Make changes directly - triggers listener with batched changes
-watched.count = 1;
-watched.user.name = 'Bob';
-
-// Clean up when done
-LazyWatch.dispose(watched);
-```
-
-### With Throttling
-
-```javascript
-// Create a watched object with 100ms throttle
-const watched = new LazyWatch({ count: 0 }, { throttle: 100 });
-
-LazyWatch.on(watched, (changes) => {
-  console.log('Changes detected:', changes);
-});
-
-// Rapid changes are batched within the throttle window
-watched.count = 1;
-watched.count = 2;
-watched.count = 3;
-// After 100ms, emits once with: { count: 3 }
-```
-
-## API Reference
-
-### Constructor
-
-#### `new LazyWatch<T>(original: T, options?: LazyWatchConstructorOptions): T`
-
-Creates a new LazyWatch instance and returns a proxy that tracks changes.
-
-**Parameters:**
-- `original` - The object or array to watch
-- `options` (optional) - Configuration options
-  - `throttle` - Minimum time in milliseconds between emits (default: 0). When set, the first change emits immediately, but subsequent changes within the throttle window are batched together.
-
-**Returns:**
-- A proxy object that behaves like the original but tracks all changes
-
-**Throws:**
-- `TypeError` if original is not an object or array
-
-**Example:**
-```javascript
-const watched = new LazyWatch({ count: 0 });
-// watched is now a proxy that tracks changes
-watched.count = 1; // This change will be tracked
-
-// With throttling
-const throttled = new LazyWatch({ count: 0 }, { throttle: 50 });
-// Changes within 50ms will be batched
-```
-
-### Static Methods
-
-#### `LazyWatch.on(proxy, listener): void`
-
-Adds a change listener to a LazyWatch proxy.
-
-**Parameters:**
-- `proxy` - The proxy returned from the LazyWatch constructor
-- `listener` - Callback function that receives a changes object
-
-**Example:**
-```javascript
-const watched = new LazyWatch({ count: 0 });
-LazyWatch.on(watched, (changes) => {
-  console.log('Changes:', changes);
-});
-```
-
-#### `LazyWatch.off(proxy, listener): void`
-
-Removes a previously added change listener.
-
-**Parameters:**
-- `proxy` - The LazyWatch proxy
-- `listener` - The listener function to remove
-
-**Example:**
-```javascript
-const listener = (changes) => console.log(changes);
-LazyWatch.on(watched, listener);
-LazyWatch.off(watched, listener); // Listener removed
-```
-
-#### `LazyWatch.pause(proxy): void`
-
-Pauses event emissions. Changes continue to be tracked but listeners won't be notified until `resume()` is called.
-
-**Parameters:**
-- `proxy` - The LazyWatch proxy
-
-**Example:**
-```javascript
-const watched = new LazyWatch({ count: 0 });
-LazyWatch.on(watched, (changes) => console.log(changes));
-
-LazyWatch.pause(watched);
-watched.count = 1; // No listener notification
-watched.count = 2; // Still no notification
-```
-
-#### `LazyWatch.resume(proxy): void`
-
-Resumes event emissions. If there are pending changes, they will be emitted immediately.
-
-**Parameters:**
-- `proxy` - The LazyWatch proxy
-
-**Example:**
-```javascript
-// Continuing from pause example...
-LazyWatch.resume(watched);
-// Immediately logs: { count: 2 } with all batched changes
-```
-
-#### `LazyWatch.isPaused(proxy): boolean`
-
-Checks if event emissions are currently paused.
-
-**Parameters:**
-- `proxy` - The LazyWatch proxy
-
-**Returns:** `true` if paused, `false` otherwise
-
-**Example:**
-```javascript
-const watched = new LazyWatch({ count: 0 });
-console.log(LazyWatch.isPaused(watched)); // false
-
-LazyWatch.pause(watched);
-console.log(LazyWatch.isPaused(watched)); // true
-
-LazyWatch.resume(watched);
-console.log(LazyWatch.isPaused(watched)); // false
-```
-
-#### `LazyWatch.silent(proxy, callback): ChangeSet`
-
-Executes a callback while suppressing event emissions. Any changes made during the callback are tracked and returned as a diff object.
-
-**Parameters:**
-- `proxy` - The LazyWatch proxy
-- `callback` - Function to execute silently
-
-**Returns:** A diff object containing changes made during the callback
-
-**Example:**
-```javascript
-const watched = new LazyWatch({ count: 0, name: '' });
-
-LazyWatch.on(watched, (changes) => {
-  console.log('Changes:', changes);
-});
-
-// Make changes silently - no listener is triggered
-const diff = LazyWatch.silent(watched, () => {
-  watched.count = 1;
-  watched.name = 'test';
-});
-
-console.log(diff); // { count: 1, name: 'test' }
-// Listener was NOT called
-```
-
-**Use Cases:**
-- Initializing state without triggering side effects
-- Bulk updates with manual control over notifications
-- Testing scenarios where you need to inspect changes without side effects
-- Implementing custom batching logic
-
-#### `LazyWatch.overwrite(proxy, source): void`
-
-Replaces the watched object's properties with the source object's properties. Properties not in source are deleted (except for arrays).
-
-**Parameters:**
-- `proxy` - The LazyWatch proxy
-- `source` - Object containing the new values
-
-**Example:**
-```javascript
-const watched = new LazyWatch({ a: 1, b: 2, c: 3 });
-LazyWatch.overwrite(watched, { a: 10, d: 4 });
-// Result: { a: 10, d: 4 } - b and c are deleted
-```
-
-#### `LazyWatch.patch(proxy, source): void`
-
-Merges the source object into the watched object without deleting missing properties.
-
-**Parameters:**
-- `proxy` - The LazyWatch proxy
-- `source` - Object containing values to merge
-
-**Example:**
-```javascript
-const watched = new LazyWatch({ a: 1, b: 2, c: 3 });
-LazyWatch.patch(watched, { a: 10, d: 4 });
-// Result: { a: 10, b: 2, c: 3, d: 4 } - b and c remain
-```
-
-#### `LazyWatch.dispose(proxy): void`
-
-Cleans up resources and removes all listeners. After disposal, the proxy cannot be used.
-
-**Example:**
-```javascript
-LazyWatch.dispose(watched);
-// All listeners removed, resources freed
-```
-
-#### `LazyWatch.resolveIfProxy<T>(obj: T): T`
-
-Resolves a proxy to its original target object.
-
-**Parameters:**
-- `obj` - Potentially a proxy object
-
-**Returns:** The original target or the input if not a proxy
-
-**Example:**
-```javascript
-const original = { count: 0 };
-const watched = new LazyWatch(original);
-const resolved = LazyWatch.resolveIfProxy(watched.proxy);
-// resolved === original
-```
-
-## Change Detection
-
-### Change Object Format
-
-The changes object passed to listeners contains the modified properties:
-
-```javascript
-{
-  propertyName: newValue,
-  nested: {
-    property: newValue
-  },
-  deletedProperty: null // null indicates deletion
-}
-```
-
-### Batching Behavior
-
-Multiple synchronous changes are automatically batched:
-
-```javascript
-const watched = new LazyWatch({ a: 1, b: 2, c: 3 });
-
-LazyWatch.on(watched, (changes) => {
-  // Called once with all changes
-  console.log(changes);
-  // { a: 10, b: 20, c: 30 }
-});
-
-watched.a = 10;
-watched.b = 20;
-watched.c = 30;
-// Listener called once after all synchronous changes
-```
-
-## Usage Examples
-
-### Example 1: State Management
-
-```javascript
 class Store {
   constructor(initialState) {
     this.state = new LazyWatch(initialState);
@@ -346,9 +57,15 @@ store.state.count++;
 store.state.user = { name: 'Alice' };
 ```
 
-### Example 2: Real-time Sync
+---
+
+## Example 2: Real-time Sync
+
+Synchronize local changes with a remote server:
 
 ```javascript
+import LazyWatch from 'lazy-watch';
+
 class DataSync {
   constructor(localData) {
     this.data = new LazyWatch(localData);
@@ -392,97 +109,26 @@ sync.data.todos.push({ id: 1, text: 'Buy milk', done: false });
 // Automatically synced to server
 ```
 
-### Example 3: Undo/Redo System
+---
+
+## Example 3: Form Validation
+
+Create a form with automatic validation on changes:
 
 ```javascript
-class UndoManager {
-  constructor(data) {
-    this.data = new LazyWatch(data);
-    this.history = [];
-    this.historyIndex = -1;
-    this.originalStates = [];
-    
-    LazyWatch.on(this.data, (changes) => {
-      if (!this.applying) {
-        // Store the original state before changes
-        const currentState = JSON.parse(JSON.stringify(this.data));
-        
-        // Truncate forward history
-        this.history = this.history.slice(0, this.historyIndex + 1);
-        this.originalStates = this.originalStates.slice(0, this.historyIndex + 1);
-        
-        this.history.push(changes);
-        this.originalStates.push(currentState);
-        this.historyIndex++;
-      }
-    });
-  }
-  
-  undo() {
-    if (this.historyIndex < 0) return false;
-    
-    this.applying = true;
-    
-    // Restore the state from before this change
-    const previousState = this.historyIndex > 0 
-      ? this.originalStates[this.historyIndex - 1]
-      : this.originalStates[0];
-    
-    LazyWatch.overwrite(this.data, previousState);
-    this.historyIndex--;
-    
-    this.applying = false;
-    return true;
-  }
-  
-  redo() {
-    if (this.historyIndex >= this.history.length - 1) return false;
-    
-    this.applying = true;
-    this.historyIndex++;
-    
-    const changes = this.history[this.historyIndex];
-    LazyWatch.patch(this.data, changes);
-    
-    this.applying = false;
-    return true;
-  }
-  
-  canUndo() {
-    return this.historyIndex >= 0;
-  }
-  
-  canRedo() {
-    return this.historyIndex < this.history.length - 1;
-  }
-}
+import LazyWatch from 'lazy-watch';
 
-// Usage
-const undoManager = new UndoManager({ text: 'Hello', count: 0 });
-
-undoManager.data.text = 'Hello World';
-undoManager.data.count = 5;
-
-undoManager.undo(); // Reverts count change
-undoManager.undo(); // Reverts text change
-undoManager.redo(); // Reapplies text change
-```
-
-
-### Example 4: Form Validation
-
-```javascript
 class ValidatedForm {
   constructor(initialData, validators) {
     this.watched = new LazyWatch(initialData);
     this.validators = validators;
     this.errors = {};
-    
-    this.watched.on((changes) => {
+
+    LazyWatch.on(this.watched, (changes) => {
       this.validateChanges(changes);
     });
   }
-  
+
   validateChanges(changes) {
     for (const field in changes) {
       if (this.validators[field]) {
@@ -494,14 +140,14 @@ class ValidatedForm {
         }
       }
     }
-    
+
     this.onValidationChange?.(this.errors);
   }
-  
+
   get data() {
-    return this.watched.proxy;
+    return this.watched;
   }
-  
+
   isValid() {
     return Object.keys(this.errors).length === 0;
   }
@@ -528,9 +174,15 @@ form.data.email = 'invalid';  // Triggers validation
 form.data.email = 'user@example.com';  // Valid
 ```
 
-### Example 5: Silent Initialization
+---
+
+## Example 4: Silent Initialization
+
+Load initial configuration without triggering change listeners:
 
 ```javascript
+import LazyWatch from 'lazy-watch';
+
 class ConfigManager {
   constructor() {
     this.config = new LazyWatch({
@@ -586,9 +238,15 @@ await configManager.loadFromServer(); // Silent initialization
 configManager.updateConfig({ timeout: 10000 }); // Triggers listeners
 ```
 
-### Example 6: Conditional Change Broadcasting
+---
+
+## Example 5: Conditional Change Broadcasting
+
+Control when changes are broadcast to listeners:
 
 ```javascript
+import LazyWatch from 'lazy-watch';
+
 class SmartState {
   constructor(initialState) {
     this.state = new LazyWatch(initialState);
@@ -649,6 +307,8 @@ state.internalUpdate({ internal: 42 }); // No broadcast
 state.publicUpdate({ count: 1 }); // Broadcasts to subscribers
 ```
 
+---
+
 ## Advanced Topics
 
 ### Memory Management
@@ -661,7 +321,7 @@ class MyComponent {
   constructor() {
     this.state = new LazyWatch({ count: 0 });
   }
-  
+
   destroy() {
     LazyWatch.dispose(this.state); // Important!
   }
@@ -670,11 +330,16 @@ class MyComponent {
 
 ### Performance Considerations
 
-- Changes are batched automatically using `setImmediate`
-- Nested proxies are cached for efficiency
-- Deep cloning only occurs when necessary
-- Use `LazyWatch.patch()` instead of `LazyWatch.overwrite()` when you only need to update specific properties
-- Use the `throttle` option to reduce emit frequency for high-frequency updates (e.g., mouse tracking, real-time data streams)
+- **Batching**: Changes are automatically batched using `setImmediate`
+- **Proxy Caching**: Nested proxies are cached for efficiency
+- **Deep Cloning**: Only occurs when necessary during patching
+- **Method Choice**: Use `LazyWatch.patch()` instead of `LazyWatch.overwrite()` when you only need to update specific properties
+- **Throttling**: Use the `throttle` option to reduce emit frequency for high-frequency updates:
+
+```javascript
+// Good for mouse tracking, real-time data streams, etc.
+const watched = new LazyWatch({ x: 0, y: 0 }, { throttle: 16 }); // ~60fps
+```
 
 ### Error Handling
 
@@ -691,14 +356,43 @@ LazyWatch.on(watched, () => {
   console.log('This still runs');
 });
 
-watched.value = 1; // Both listeners execute
+watched.value = 1; // Both listeners execute, error is logged
 ```
+
+### Nested Proxy Listeners
+
+You can register listeners on nested objects or arrays within a watched object. Nested listeners receive **path-relative diffs** - only the changes relevant to that subtree:
+
+```javascript
+const data = new LazyWatch({
+  user: { name: 'Alice', age: 30 },
+  settings: { theme: 'dark' }
+});
+
+// Root listener receives full diffs
+LazyWatch.on(data, changes => {
+  console.log('Root:', changes); // { user: { age: 31 } }
+});
+
+// Nested listener receives path-relative diffs
+LazyWatch.on(data.user, changes => {
+  console.log('User:', changes); // { age: 31 }
+});
+
+data.user.age = 31;
+```
+
+This is particularly useful when different components manage different sections of your application state.
+
+---
 
 ## TypeScript
 
 Full TypeScript support is included:
 
 ```typescript
+import LazyWatch from 'lazy-watch';
+
 interface User {
   name: string;
   age: number;
@@ -719,3 +413,37 @@ LazyWatch.on(watched, (changes) => {
 watched.age = 31; // ✓ OK
 watched.invalid = true; // ✗ TypeScript error
 ```
+
+### Generic Type Support
+
+LazyWatch preserves the type of your watched object:
+
+```typescript
+interface AppState {
+  count: number;
+  user: {
+    name: string;
+    permissions: string[];
+  };
+}
+
+const state = new LazyWatch<AppState>({
+  count: 0,
+  user: {
+    name: 'Bob',
+    permissions: ['read']
+  }
+});
+
+// All operations are type-checked
+state.count = 10; // ✓
+state.user.permissions.push('write'); // ✓
+state.user.email = 'test@example.com'; // ✗ Error
+```
+
+---
+
+## See Also
+
+- [README](README.md) - Installation, API documentation, and basic examples
+- [GitHub Repository](https://github.com/luffs/lazy-watch)

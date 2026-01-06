@@ -274,7 +274,7 @@ LazyWatch.patchObject(obj2, { b: null, c: 30 });
 
 ## Examples
 
-For more comprehensive examples and advanced use cases, see [EXAMPLES.md](EXAMPLES.md).
+> **💡 Looking for more examples?** Check out [EXAMPLES.md](EXAMPLES.md) for comprehensive real-world use cases including state management, undo/redo systems, form validation, and more advanced patterns.
 
 ### Basic Object Watching
 
@@ -401,7 +401,7 @@ To run the tests:
 npm test
 ```
 
-This will execute the test suite using Jest, which verifies the functionality of LazyWatch including object creation, change detection, event emission, and patching.
+This will execute the test suite using a custom test runner, which verifies the functionality of LazyWatch including object creation, change detection, event emission, and patching.
 
 ## Contributing
 
