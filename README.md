@@ -391,7 +391,7 @@ delete UI.junk;
 
 ## How It Works
 
-LazyWatch uses JavaScript Proxies to intercept property access, assignment, and deletion operations. When changes are detected, they are collected into a diff object. Using a polyfill for `setImmediate`, these changes are then emitted asynchronously in the next event loop tick, allowing multiple changes to be batched together.
+LazyWatch uses JavaScript Proxies to intercept property access, assignment, and deletion operations. When changes are detected, they are collected into a diff object. Using `queueMicrotask`, these changes are then emitted asynchronously in the next microtask, allowing multiple changes to be batched together.
 
 ## Testing
 

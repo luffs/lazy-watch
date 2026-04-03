@@ -330,7 +330,7 @@ class MyComponent {
 
 ### Performance Considerations
 
-- **Batching**: Changes are automatically batched using `setImmediate`
+- **Batching**: Changes are automatically batched using `queueMicrotask`
 - **Proxy Caching**: Nested proxies are cached for efficiency
 - **Deep Cloning**: Only occurs when necessary during patching
 - **Method Choice**: Use `LazyWatch.patch()` instead of `LazyWatch.overwrite()` when you only need to update specific properties
