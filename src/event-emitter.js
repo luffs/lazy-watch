@@ -2,20 +2,18 @@
 export class EventEmitter {
   #listeners = [];
   #diffTracker;
-  #immediateId = null;
+  #microtaskGeneration = 0;
   #timeoutId = null;
-  #context;
   #throttle;
   #debounce;
   #lastEmitTime = 0;
   #paused = false;
 
-  constructor(diffTracker, context, options = {}) {
+  constructor(diffTracker, options = {}) {
     if (!diffTracker) {
       throw new TypeError('EventEmitter requires a DiffTracker instance');
     }
     this.#diffTracker = diffTracker;
-    this.#context = context;
     this.#throttle = options.throttle || 0;
     this.#debounce = options.debounce || 0;
   }
@@ -63,7 +61,7 @@ export class EventEmitter {
 
       if (timeSinceLastEmit >= this.#throttle) {
         // Enough time has passed, emit immediately (on next tick)
-        this.#immediateId = this.#context.setImmediate(() => this.#emit());
+        this.#scheduleMicrotask();
       } else {
         // Not enough time has passed, schedule for later
         const delay = this.#throttle - timeSinceLastEmit;
@@ -71,7 +69,7 @@ export class EventEmitter {
       }
     } else {
       // No throttling or debouncing, emit immediately (on next tick)
-      this.#immediateId = this.#context.setImmediate(() => this.#emit());
+      this.#scheduleMicrotask();
     }
   }
 
@@ -125,10 +123,22 @@ export class EventEmitter {
   }
 
   /**
+   * Schedule a microtask for emission, cancelling any previous one
+   */
+  #scheduleMicrotask() {
+    const generation = ++this.#microtaskGeneration;
+    queueMicrotask(() => {
+      if (this.#microtaskGeneration === generation) {
+        this.#emit();
+      }
+    });
+  }
+
+  /**
    * Clear any pending emits
    */
   #clearPending() {
-    this.#context.clearImmediate(this.#immediateId);
+    this.#microtaskGeneration++;
     clearTimeout(this.#timeoutId);
   }
 

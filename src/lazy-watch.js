@@ -1,17 +1,8 @@
 
 import {Utils} from "./utils.js";
 import {EventEmitter} from "./event-emitter.js";
-import {setImmediatePolyfill} from "./set-immediate-polyfill.js";
 import {DiffTracker} from "./diff-tracker.js";
 import {ProxyHandler, LAZYWATCH_INSTANCE, PROXY_TARGET} from "./proxy-handler.js";
-
-
-// main.js - Main LazyWatch class
-const context = typeof self === 'undefined'
-  ? (typeof global === 'undefined' ? globalThis : global)
-  : self;
-
-export const setImmediatePolyfillStatus = setImmediatePolyfill(context);
 
 /**
  * LazyWatch - A reactive proxy-based object change tracker
@@ -51,7 +42,7 @@ export class LazyWatch {
    */
   constructor(original, options = {}) {
     this.#diffTracker = new DiffTracker();
-    this.#eventEmitter = new EventEmitter(this.#diffTracker, context, options);
+    this.#eventEmitter = new EventEmitter(this.#diffTracker, options);
     this.#proxyHandler = new ProxyHandler(original, this.#diffTracker, this.#eventEmitter);
     this.#proxy = this.#proxyHandler.createRootProxy(this);
 

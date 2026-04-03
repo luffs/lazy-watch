@@ -28,16 +28,6 @@ export interface UtilsInterface {
 }
 
 /**
- * Status of the setImmediate polyfill
- */
-export interface SetImmediatePolyfillStatus {
-    /**
-     * Whether setImmediate was polyfilled (true) or native (false)
-     */
-    polyfilled: boolean;
-}
-
-/**
  * Configuration options for LazyWatch
  */
 export interface LazyWatchConstructorOptions {
@@ -306,11 +296,6 @@ export class LazyWatch<T extends object = any> {
 }
 
 /**
- * Status of the setImmediate polyfill
- */
-export const setImmediatePolyfillStatus: SetImmediatePolyfillStatus;
-
-/**
  * Utility functions
  */
 export const Utils: UtilsInterface;
@@ -343,7 +328,7 @@ export class DiffTracker {
  * Not exposed in public API but included for completeness
  */
 export class EventEmitter {
-    constructor(diffTracker: DiffTracker, context: any, options?: LazyWatchConstructorOptions);
+    constructor(diffTracker: DiffTracker, options?: LazyWatchConstructorOptions);
     on(listener: ChangeListener): void;
     off(listener: ChangeListener): void;
     scheduleEmit(): void;
@@ -367,13 +352,6 @@ export class ProxyHandler {
     dispose(): void;
 }
 
-/**
- * Polyfill for setImmediate
- * @param context - The global context to add setImmediate to
- * @returns Status object indicating if polyfill was applied
- */
-export function setImmediatePolyfill(context: any): SetImmediatePolyfillStatus;
-
 // Type helpers for better IntelliSense
 
 /**
@@ -382,17 +360,3 @@ export function setImmediatePolyfill(context: any): SetImmediatePolyfillStatus;
 export type WatchedProxy<T> = T extends object ? {
     [K in keyof T]: T[K] extends object ? WatchedProxy<T[K]> : T[K];
 } : T;
-
-
-// Augment global context with setImmediate types if needed
-declare global {
-    interface Window {
-        setImmediate(callback: (...args: any[]) => void, ...args: any[]): number;
-        clearImmediate(id: number): void;
-    }
-
-    interface Global {
-        setImmediate(callback: (...args: any[]) => void, ...args: any[]): number;
-        clearImmediate(id: number): void;
-    }
-}
