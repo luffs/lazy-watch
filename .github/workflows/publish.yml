@@ -21,7 +21,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4.4.0
         with:
-          node-version: 22
+          node-version: 24
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install dependencies
@@ -29,6 +29,9 @@ jobs:
 
       - name: Run tests
         run: npm test
+
+      - name: Update npm
+        run: npm install -g npm@latest
 
       - name: Publish to npm (with provenance)
         # With trusted publishing enabled for this repo in npm, no token is needed.
