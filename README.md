@@ -272,6 +272,46 @@ LazyWatch.patchObject(obj2, { b: null, c: 30 });
 - Merging configuration objects
 - Synchronizing state between watched and non-watched objects
 
+### Array Diffs and Shape Drift
+
+Array changes are emitted as index-keyed fragments rather than full arrays:
+
+```js
+const data = new LazyWatch({ items: ['a'] });
+data.items.push('b');
+// Emits: { items: { 1: 'b', length: 2 } }
+```
+
+Applied to a replica that already has `items` as an array, the fragment merges
+in-place. But when replicas disagree about which fields exist — typically after
+a schema migration, or with clients running different versions — a fragment can
+arrive where there is no array to merge into. `patch`, `overwrite`, and
+`patchObject` detect this case and revive the fragment into a real array instead
+of storing it verbatim as a plain object:
+
+```js
+const receiver = new LazyWatch({}); // never saw `items` before
+LazyWatch.patch(receiver, { items: { 1: 'b', length: 2 } });
+Array.isArray(receiver.items); // true — not { 1: 'b', length: 2 }
+```
+
+Detection requires the fragment to carry a numeric `length` plus at least one
+index key, and only applies where the target has no existing container — an
+existing plain object is always merged as an object (target shape wins), and
+data like `{ length: 5 }` alone is never converted. Array diffs emitted by this
+version always include `length`, so fragments are self-describing on the wire.
+
+For repairing data that older versions stored in the corrupted object form, the
+detection and revival helpers are exposed:
+
+```js
+LazyWatch.Utils.isArrayDiff({ 0: 'a', length: 1 }); // true
+LazyWatch.Utils.reviveArrayDiffs(storedState);      // deep-revives, copy-on-write
+```
+
+For best results, keep replicas structurally aligned: initialize new fields
+everywhere (e.g. `task.assignees ??= []`) before mutating them.
+
 ## Examples
 
 > **💡 Looking for more examples?** Check out [EXAMPLES.md](EXAMPLES.md) for comprehensive real-world use cases including state management, undo/redo systems, form validation, and more advanced patterns.

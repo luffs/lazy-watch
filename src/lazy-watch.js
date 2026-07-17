@@ -132,10 +132,13 @@ export class LazyWatch {
         // Recursively patch nested objects
         LazyWatch.patchObject(target[prop], resolvedSource[prop]);
       } else {
+        // No container to merge into: revive index-keyed array diffs so they
+        // become real arrays instead of being stored as plain objects.
+        const sourceValue = Utils.reviveArrayDiffs(resolvedSource[prop]);
         // Clone if it's an object/array to match LazyWatch behavior
-        const clonedValue = Utils.isObjectOrArray(resolvedSource[prop])
-          ? Utils.deepClone(resolvedSource[prop])
-          : resolvedSource[prop];
+        const clonedValue = Utils.isObjectOrArray(sourceValue)
+          ? Utils.deepClone(sourceValue)
+          : sourceValue;
         target[prop] = clonedValue;
       }
     }

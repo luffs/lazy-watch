@@ -140,6 +140,14 @@ export class ProxyHandler {
     diff[prop] = clonedValue;
     target[prop] = clonedValue;
 
+    // Array fragments always carry `length`, so receivers can tell them apart
+    // from plain objects even when the field doesn't exist on their side.
+    // (push() never records length itself: the index assignment auto-updates
+    // it, making the explicit set a no-op.)
+    if (Array.isArray(target) && prop !== 'length' && /^\d+$/.test(String(prop))) {
+      diff.length = target.length;
+    }
+
     this.#eventEmitter.scheduleEmit();
   }
 
@@ -181,18 +189,26 @@ export class ProxyHandler {
       } else if (Utils.isObjectOrArray(rawTarget[prop]) && Utils.isObjectOrArray(rawSource[prop])) {
         this.overwrite(rawTarget[prop], rawSource[prop], [...path, prop]);
       } else if (rawTarget[prop] !== rawSource[prop]) {
+        // The target has no container to merge into here, so an index-keyed
+        // array diff would be stored verbatim as a plain object — revive such
+        // fragments into real arrays first.
+        const sourceValue = Utils.reviveArrayDiffs(rawSource[prop]);
         // Handle nested nulls
-        if (Utils.isObjectOrArray(rawSource[prop])) {
-          for (const key in rawSource[prop]) {
-            if (rawSource[prop][key] === null) {
-              delete rawSource[prop][key];
+        if (Utils.isObjectOrArray(sourceValue)) {
+          for (const key in sourceValue) {
+            if (sourceValue[key] === null) {
+              delete sourceValue[key];
             }
           }
         }
         // Record the change in diff
-        const clonedValue = Utils.isObjectOrArray(rawSource[prop]) ? Utils.deepClone(rawSource[prop]) : rawSource[prop];
+        const clonedValue = Utils.isObjectOrArray(sourceValue) ? Utils.deepClone(sourceValue) : sourceValue;
         getDiff()[prop] = clonedValue;
         rawTarget[prop] = clonedValue;
+        // Keep array fragments self-describing (see #recordChange).
+        if (Array.isArray(rawTarget) && /^\d+$/.test(String(prop))) {
+          getDiff().length = rawTarget.length;
+        }
         hasChanges = true;
       }
     }

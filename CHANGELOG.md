@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
+## [2.6.0] - 2026-07-17
+
+- fix: Applying an index-keyed array diff (e.g. `{ 1: 'b', length: 2 }`) to a target
+  that lacks the field no longer stores the fragment verbatim as a plain object —
+  `patch`, `overwrite`, and `patchObject` now revive such fragments into real arrays,
+  so replicas with shape drift converge instead of silently corrupting
+- feat: Array diffs always include `length`, making array fragments self-describing
+  on the wire (previously `push()` could emit a fragment without it)
+- feat: Expose `Utils.isArrayDiff` and `Utils.reviveArrayDiffs` for applications that
+  need to repair data corrupted by earlier versions
+- tests: Cover missing-field revival, nested fragments, existing-array merging,
+  false-positive guards, and replica convergence under shape drift
+
 ## [2.4.7] - 2025-12-21
 
 - feat: Add `LazyWatch.patchObject` static method for patching normal (non-proxy) objects
