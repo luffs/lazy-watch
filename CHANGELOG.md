@@ -12,6 +12,9 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
 - feat: Add `LazyWatch.snapshot(watched)` — a deep-cloned plain copy of the
   current state (no proxy, no shared references), safe to mutate or serialize.
   Works on the root proxy or any nested proxy (snapshotting that subtree)
+- docs: EXAMPLES.md gains a WebSocket mirroring example — snapshot on
+  (re)connect, plain diffs while connected, echo suppression for bidirectional
+  sync, and a closure-scoped sequence number pattern for non-TCP transports
 - ci: The test workflow gains a benchmark job — the full suite (~16s) runs on
   every push and pull request, with results published to the job summary
 - refactor: Shrink `Utils.deepClone`'s manual fallback (used when

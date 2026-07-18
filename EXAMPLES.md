@@ -6,9 +6,10 @@ This document provides comprehensive real-world examples demonstrating how to us
 
 - [State Management](#example-1-state-management)
 - [Real-time Sync](#example-2-real-time-sync)
-- [Form Validation](#example-3-form-validation)
-- [Silent Initialization](#example-4-silent-initialization)
-- [Conditional Change Broadcasting](#example-5-conditional-change-broadcasting)
+- [WebSocket Mirroring with Reconnect Resync](#example-3-websocket-mirroring-with-reconnect-resync)
+- [Form Validation](#example-4-form-validation)
+- [Silent Initialization](#example-5-silent-initialization)
+- [Conditional Change Broadcasting](#example-6-conditional-change-broadcasting)
 - [Advanced Topics](#advanced-topics)
 - [TypeScript](#typescript)
 
@@ -111,7 +112,133 @@ sync.data.todos.push({ id: 1, text: 'Buy milk', done: false });
 
 ---
 
-## Example 3: Form Validation
+## Example 3: WebSocket Mirroring with Reconnect Resync
+
+Mirror a watched object to other processes over WebSockets. The pattern rests
+on two transport facts:
+
+- **While a socket is connected**, TCP already delivers messages exactly once,
+  in order — plain diffs are safe with no sequence numbers or acknowledgements.
+- **Loss only happens at connection boundaries.** When a socket dies you cannot
+  know which in-flight diffs were lost, and diffs are deltas — they must be
+  applied exactly once, in order, or replicas silently diverge (structural
+  `$splice` ops in particular corrupt an array if applied against the wrong
+  state). So never try to replay missed diffs: on every (re)connect, start
+  from a fresh snapshot instead. It covers a gap of any size.
+
+`flush()`, `snapshot()`, and `overwrite()` are exactly the pieces this needs.
+
+**Server (owns the state):**
+
+```javascript
+import LazyWatch from 'lazy-watch';
+import { WebSocketServer } from 'ws';
+
+const state = new LazyWatch({ users: {}, todos: [] });
+const wss = new WebSocketServer({ port: 8080 });
+
+wss.on('connection', ws => {
+  // A new connection knows nothing yet. Flush first so batched changes are
+  // emitted (to the already-connected clients) before the snapshot is taken —
+  // every diff sent after this point is a delta against exactly this snapshot.
+  LazyWatch.flush(state);
+  ws.send(JSON.stringify({ type: 'snapshot', data: LazyWatch.snapshot(state) }));
+
+  // For the lifetime of this socket, plain diffs are all it takes
+  const stop = LazyWatch.on(state, diff => {
+    ws.send(JSON.stringify({ type: 'diff', data: diff }));
+  });
+  ws.on('close', stop);
+});
+
+// Server-side mutations broadcast automatically
+state.todos.push({ text: 'hello', done: false });
+```
+
+**Client (holds a mirror):**
+
+```javascript
+import LazyWatch from 'lazy-watch';
+
+const mirror = new LazyWatch({});
+
+// Applied diffs are re-emitted by the mirror (that's what makes relay chains
+// work), so local listeners react to remote changes like any other change
+LazyWatch.on(mirror, diff => render(diff));
+
+function connect() {
+  const ws = new WebSocket('ws://localhost:8080');
+
+  ws.onmessage = event => {
+    const { type, data } = JSON.parse(event.data);
+    if (type === 'snapshot') {
+      // overwrite, not patch: deletes anything that drifted while offline
+      LazyWatch.overwrite(mirror, data);
+    } else {
+      LazyWatch.patch(mirror, data);
+    }
+  };
+
+  // On reconnect the server's snapshot covers whatever was missed
+  ws.onclose = () => setTimeout(connect, 1000);
+}
+
+connect();
+```
+
+### Bidirectional edits
+
+Because applying a diff re-emits it, a naive "send every diff to the other
+side" echoes remote changes straight back where they came from — an infinite
+loop between two mirrors. Suppress the echo with a flag, using `flush()` to
+force the emit to happen *synchronously* while the flag is still set (the
+normal microtask batching would fire the listener after the flag is cleared):
+
+```javascript
+let applyingRemote = false;
+
+LazyWatch.on(mirror, diff => {
+  render(diff);
+  if (!applyingRemote) {
+    ws.send(JSON.stringify({ type: 'diff', data: diff }));
+  }
+});
+
+ws.onmessage = event => {
+  const { type, data } = JSON.parse(event.data);
+  LazyWatch.flush(mirror); // send local changes still batched, before flagging
+  applyingRemote = true;
+  try {
+    if (type === 'snapshot') LazyWatch.overwrite(mirror, data);
+    else LazyWatch.patch(mirror, data);
+    LazyWatch.flush(mirror); // emit the applied diff now, while flagged
+  } finally {
+    applyingRemote = false;
+  }
+};
+```
+
+Note that concurrent edits to the same property resolve last-writer-wins by
+arrival order — this pattern gives you reliable state transport, not conflict
+resolution.
+
+### Non-TCP transports
+
+Over transports without TCP's guarantees — at-least-once brokers that can
+redeliver (e.g. MQTT QoS 1), unreliable WebRTC data channels — add a sequence
+number in the listener's closure:
+
+```javascript
+let seq = 0;
+LazyWatch.on(state, diff => channel.send(JSON.stringify({ seq: seq++, diff })));
+```
+
+Receivers discard duplicates (`seq <= last`) and treat any gap as "request a
+fresh snapshot" — a delta stream can never skip ahead.
+
+---
+
+## Example 4: Form Validation
 
 Create a form with automatic validation on changes:
 
@@ -176,7 +303,7 @@ form.data.email = 'user@example.com';  // Valid
 
 ---
 
-## Example 4: Silent Initialization
+## Example 5: Silent Initialization
 
 Load initial configuration without triggering change listeners:
 
@@ -240,7 +367,7 @@ configManager.updateConfig({ timeout: 10000 }); // Triggers listeners
 
 ---
 
-## Example 5: Conditional Change Broadcasting
+## Example 6: Conditional Change Broadcasting
 
 Control when changes are broadcast to listeners:
 
