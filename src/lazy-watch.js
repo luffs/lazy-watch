@@ -123,6 +123,12 @@ export class LazyWatch {
    * @param {Object} source - The source object with values to merge
    */
   static patchObject(target, source) {
+    // Reject Map/Set/typed arrays etc. anywhere in the source
+    Utils.assertSupported(LazyWatch.resolveIfProxy(source));
+    LazyWatch.#patchObjectInto(target, source);
+  }
+
+  static #patchObjectInto(target, source) {
     const resolvedSource = LazyWatch.resolveIfProxy(source);
 
     for (const prop in resolvedSource) {
@@ -130,7 +136,7 @@ export class LazyWatch {
         delete target[prop];
       } else if (Utils.isObjectOrArray(target[prop]) && Utils.isObjectOrArray(resolvedSource[prop])) {
         // Recursively patch nested objects
-        LazyWatch.patchObject(target[prop], resolvedSource[prop]);
+        LazyWatch.#patchObjectInto(target[prop], resolvedSource[prop]);
       } else {
         // No container to merge into: revive index-keyed array diffs so they
         // become real arrays instead of being stored as plain objects.

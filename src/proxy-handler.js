@@ -13,9 +13,10 @@ export class ProxyHandler {
   #patchMode = false;
 
   constructor(original, diffTracker, eventEmitter) {
-    if (!original || typeof original !== 'object') {
-      throw new TypeError('LazyWatch requires an object or array');
+    if (!Utils.isObjectOrArray(original)) {
+      throw new TypeError('LazyWatch requires a plain object or array (Map, Set, Date, etc. cannot be deep-watched)');
     }
+    Utils.assertSupported(original);
     this.#original = original;
     this.#diffTracker = diffTracker;
     this.#eventEmitter = eventEmitter;
@@ -69,6 +70,9 @@ export class ProxyHandler {
       set: (target, prop, value, receiver) => {
         // Resolve if value is a proxy
         value = this.resolveIfProxy(value);
+
+        // Reject Map/Set/typed arrays etc. anywhere in the assigned value
+        Utils.assertSupported(value, [...path, prop]);
 
         const currentValue = target[prop];
         const currentIsObject = Utils.isObjectOrArray(currentValue);
@@ -160,6 +164,12 @@ export class ProxyHandler {
   overwrite(target, source, path = []) {
     if (!source || typeof source !== 'object') {
       throw new TypeError('Source must be an object');
+    }
+
+    // Validate external entry only; recursive calls and the set trap have
+    // already validated their subtrees.
+    if (path.length === 0) {
+      Utils.assertSupported(this.resolveIfProxy(source));
     }
 
     // Get the target object (resolve proxy if needed)

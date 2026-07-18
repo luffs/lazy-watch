@@ -1293,6 +1293,76 @@ runner.test('overwrite should revive array diffs when the target lacks the field
   LazyWatch.dispose(watched);
 });
 
+runner.test('should throw when watching a Map or Set directly', () => {
+  assertThrows(() => new LazyWatch(new Map()));
+  assertThrows(() => new LazyWatch(new Set()));
+  assertThrows(() => new LazyWatch(new Date()));
+});
+
+runner.test('should throw when the initial object contains a collection', () => {
+  assertThrows(() => new LazyWatch({ users: new Map() }));
+  assertThrows(() => new LazyWatch({ deep: { nested: { ids: new Set() } } }));
+  assertThrows(() => new LazyWatch({ bytes: new Uint8Array(4) }));
+  assertThrows(() => new LazyWatch({ items: [new WeakMap()] }));
+});
+
+runner.test('should throw when assigning a collection into watched state', () => {
+  const watched = new LazyWatch({});
+  assertThrows(() => { watched.users = new Map(); });
+  assertThrows(() => { watched.ids = new Set(); });
+  assertThrows(() => { watched.buf = new ArrayBuffer(8); });
+  // Nested inside an assigned object
+  assertThrows(() => { watched.data = { deep: { users: new Map() } }; });
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should throw when patch/overwrite/patchObject source contains a collection', () => {
+  const watched = new LazyWatch({ a: 1 });
+  assertThrows(() => LazyWatch.patch(watched, { users: new Map() }));
+  assertThrows(() => LazyWatch.overwrite(watched, { deep: { ids: new Set() } }));
+  assertThrows(() => LazyWatch.patchObject({}, { users: new Map() }));
+  assertEquals(watched.a, 1, 'watched state should be untouched after rejection');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('rejection errors should name the type and offending path', () => {
+  try {
+    new LazyWatch({ deep: { users: new Map() } });
+    throw new Error('should have thrown');
+  } catch (e) {
+    assertTrue(e instanceof TypeError, 'should be a TypeError');
+    assertTrue(e.message.includes('Map'), `message should name the type: ${e.message}`);
+    assertTrue(e.message.includes('deep.users'), `message should name the path: ${e.message}`);
+  }
+});
+
+runner.test('Date and RegExp should work as leaf values', () => {
+  const watched = new LazyWatch({
+    when: new Date('2026-01-01'),
+    pattern: /ab+c/
+  });
+
+  assertTrue(watched.when instanceof Date, 'value should still be a Date');
+  assertEquals(watched.when.getFullYear(), 2026, 'Date methods should work through the proxy');
+  assertTrue(watched.pattern.test('abbc'), 'RegExp.test should work through the proxy');
+
+  LazyWatch.dispose(watched);
+});
+
+runner.test('replacing a leaf value should emit a diff', async () => {
+  const watched = new LazyWatch({ when: new Date(0) });
+  let changes = null;
+  LazyWatch.on(watched, diff => { changes = diff; });
+
+  watched.when = new Date('2026-01-01');
+  await wait(10);
+
+  assertTrue(changes !== null, 'replacing a Date should emit');
+  assertTrue(changes.when instanceof Date, 'diff should contain the Date');
+  assertEquals(changes.when.getFullYear(), 2026);
+  LazyWatch.dispose(watched);
+});
+
 // Usage examples
 console.log('\n=== LazyWatch Usage Examples ===\n');
 

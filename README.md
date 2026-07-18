@@ -329,6 +329,40 @@ LazyWatch.Utils.reviveArrayDiffs(storedState);      // deep-revives, copy-on-wri
 For best results, keep replicas structurally aligned: initialize new fields
 everywhere (e.g. `task.assignees ??= []`) before mutating them.
 
+### Supported Values
+
+Watched state must be JSON-shaped data: plain objects, arrays, and primitives,
+plus `Date` and `RegExp` as **leaf values** — they are returned as-is (methods
+work normally) and tracked only on wholesale replacement:
+
+```js
+const state = new LazyWatch({ when: new Date() });
+state.when.setHours(0);      // works, but NOT tracked (in-place mutation)
+state.when = new Date();     // tracked — emits { when: Date }
+```
+
+Collections that mutate through internal slots — `Map`, `Set`, `WeakMap`,
+`WeakSet`, `Promise`, `ArrayBuffer`, and typed arrays — are **rejected with a
+`TypeError`** wherever they enter watched state: the constructor, property
+assignment, and `patch`/`overwrite`/`patchObject`. Their mutations
+(`map.set(...)`) bypass the proxy entirely and would silently desync replicas,
+and they don't survive JSON serialization anyway — so LazyWatch fails loudly
+instead of half-tracking them:
+
+```js
+new LazyWatch({ users: new Map() });
+// TypeError: LazyWatch cannot track Map at "users": in-place mutations
+// bypass the proxy and would silently desync. Use a plain object or array instead.
+
+const state = new LazyWatch({});
+state.users = new Map();          // throws TypeError
+LazyWatch.patch(state, { ids: new Set() }); // throws TypeError
+```
+
+Validation runs before any mutation, so a rejected `patch`/`overwrite` leaves
+the watched state untouched. Use plain objects instead of Maps
+(`{ [id]: value }`) and arrays instead of Sets.
+
 ## Examples
 
 > **💡 Looking for more examples?** Check out [EXAMPLES.md](EXAMPLES.md) for comprehensive real-world use cases including state management, undo/redo systems, form validation, and more advanced patterns.

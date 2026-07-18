@@ -1,10 +1,60 @@
 // utils.js - Utility functions
 export const Utils = {
   /**
-   * Check if value is an object or array (excluding Date)
+   * Check if value is an object or array that can be deep-watched.
+   * Objects with internal slots (Date, RegExp, and the rejected collection
+   * types) can't sit behind a Proxy — their methods throw "called on
+   * incompatible receiver" — so they are never proxied or merged. Date and
+   * RegExp are allowed as leaf values (replaced wholesale); the collection
+   * types are rejected entirely, see `assertSupported`.
    */
   isObjectOrArray(val) {
-    return val && typeof val === 'object' && !(val instanceof Date);
+    if (!val || typeof val !== 'object') return false;
+    if (Array.isArray(val)) return true;
+    return !(
+      val instanceof Date ||
+      val instanceof RegExp ||
+      this.rejectedTypeName(val)
+    );
+  },
+
+  /**
+   * Name of the rejected collection type, or null if the value is allowed.
+   * These types mutate through internal slots (map.set, arr[0] = x on typed
+   * arrays, ...), so changes bypass the proxy traps entirely and would
+   * silently desync replicas — LazyWatch rejects them instead of
+   * half-tracking them.
+   */
+  rejectedTypeName(val) {
+    if (val instanceof Map) return 'Map';
+    if (val instanceof Set) return 'Set';
+    if (val instanceof WeakMap) return 'WeakMap';
+    if (val instanceof WeakSet) return 'WeakSet';
+    if (val instanceof Promise) return 'Promise';
+    if (val instanceof ArrayBuffer) return 'ArrayBuffer';
+    if (ArrayBuffer.isView(val)) return val.constructor.name || 'TypedArray';
+    return null;
+  },
+
+  /**
+   * Deep-check a value entering watched state; throws a TypeError naming the
+   * offending path if it contains a rejected type. Date and RegExp pass as
+   * leaf values and are not walked into. Cycle-safe.
+   */
+  assertSupported(value, path = [], seen = new WeakSet()) {
+    if (!value || typeof value !== 'object') return;
+    const rejected = this.rejectedTypeName(value);
+    if (rejected) {
+      const at = path.length ? ` at "${path.map(String).join('.')}"` : '';
+      throw new TypeError(
+        `LazyWatch cannot track ${rejected}${at}: in-place mutations bypass the proxy and would silently desync. Use a plain object or array instead.`
+      );
+    }
+    if (!this.isObjectOrArray(value) || seen.has(value)) return;
+    seen.add(value);
+    for (const key of Object.keys(value)) {
+      this.assertSupported(value[key], [...path, key], seen);
+    }
   },
 
   /**

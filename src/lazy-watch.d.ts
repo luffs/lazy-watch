@@ -25,9 +25,25 @@ export type Patch<T> = {
  */
 export interface UtilsInterface {
     /**
-     * Check if a value is an object or array (excluding Date)
+     * Check if a value is a plain object or array that can be deep-watched.
+     * Returns false for Date and RegExp (leaf values — replaced wholesale,
+     * never proxied or merged) and for the rejected collection types
      */
     isObjectOrArray(val: any): boolean;
+
+    /**
+     * Name of the rejected collection type (Map, Set, WeakMap, WeakSet,
+     * Promise, ArrayBuffer, typed arrays), or null if the value is allowed
+     * in watched state
+     */
+    rejectedTypeName(val: any): string | null;
+
+    /**
+     * Deep-check a value entering watched state; throws a TypeError naming
+     * the offending path if it contains a rejected collection type.
+     * Date and RegExp pass as leaf values. Cycle-safe
+     */
+    assertSupported(value: any, path?: Array<string | number>): void;
 
     /**
      * True for index-keyed array diff fragments, e.g. { 1: 'b', length: 2 }:
@@ -85,7 +101,8 @@ export interface LazyWatchStatic {
      * @param original - The object or array to watch
      * @param options - Configuration options
      * @returns A proxy that tracks changes to the original object
-     * @throws {TypeError} If original is not an object or array
+     * @throws {TypeError} If original is not a plain object or array, or
+     * contains a rejected collection type (Map, Set, typed arrays, ...)
      *
      * @example
      * const user = { name: 'Alice', age: 30 };
