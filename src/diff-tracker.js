@@ -40,7 +40,7 @@ export class DiffTracker {
    */
   getPendingDiff() {
     // Return a deep clone to prevent external modifications
-    return JSON.parse(JSON.stringify(this.#masterDiff));
+    return structuredClone(this.#masterDiff);
   }
 
   /**

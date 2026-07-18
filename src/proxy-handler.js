@@ -4,6 +4,10 @@ import {Utils} from "./utils.js";
 export const PROXY_TARGET = Symbol('LazyWatch.ProxyTarget');
 export const LAZYWATCH_INSTANCE = Symbol('LazyWatch.Instance');
 
+// Array methods whose per-index trap writes are collapsed into compact
+// `$splice` diff ops. push/pop are already cheap (tail-only) and stay as-is.
+const STRUCTURAL_ARRAY_METHODS = new Set(['splice', 'unshift', 'shift']);
+
 export class ProxyHandler {
   #original;
   #cache = new WeakMap();
@@ -11,6 +15,8 @@ export class ProxyHandler {
   #diffTracker;
   #eventEmitter;
   #patchMode = false;
+  #instance = null;
+  #suppress = false;
 
   constructor(original, diffTracker, eventEmitter) {
     if (!Utils.isObjectOrArray(original)) {
@@ -26,9 +32,12 @@ export class ProxyHandler {
    * Create the root proxy
    */
   createRootProxy(lazyWatchInstance) {
+    this.#instance = lazyWatchInstance;
     const proxy = this.#createProxy(this.#original, [], lazyWatchInstance);
     // Store the target reference using a symbol
     this.#cache.set(proxy, this.#original);
+    // Map the original to its proxy so #proxyFor works for the root too
+    this.#cache.set(this.#original, proxy);
     // Store the path for this proxy
     this.#proxyPaths.set(proxy, []);
     return proxy;
@@ -39,7 +48,7 @@ export class ProxyHandler {
    */
   #createProxy(obj, path, lazyWatchInstance) {
     return new Proxy(obj, {
-      get: (target, prop) => {
+      get: (target, prop, receiver) => {
         // Allow access to the proxy marker
         if (prop === PROXY_TARGET) {
           return target;
@@ -51,6 +60,12 @@ export class ProxyHandler {
         }
 
         const value = target[prop];
+
+        // Intercept structural array methods to record compact $splice ops
+        if (Array.isArray(target) && STRUCTURAL_ARRAY_METHODS.has(prop) &&
+          value === Array.prototype[prop]) {
+          return (...args) => this.#structuralArrayOp(target, prop, args, path, receiver);
+        }
 
         if (Utils.isObjectOrArray(value)) {
           // Get proxy from cache, or create and cache it
@@ -98,14 +113,126 @@ export class ProxyHandler {
 
       deleteProperty: (target, prop) => {
         if (prop in target) {
-          const diff = this.#diffTracker.getDiffObject(path);
+          const diff = this.#diff(path);
           diff[prop] = null;
           delete target[prop];
-          this.#eventEmitter.scheduleEmit();
+          this.#scheduleEmit();
         }
         return true;
       }
     });
+  }
+
+  /**
+   * Diff node for a path; during suppressed structural ops, recording is
+   * redirected to a throwaway object so the mutation still happens but
+   * leaves no per-index entries behind.
+   */
+  #diff(path) {
+    return this.#suppress ? {} : this.#diffTracker.getDiffObject(path);
+  }
+
+  #scheduleEmit() {
+    if (!this.#suppress) this.#eventEmitter.scheduleEmit();
+  }
+
+  /**
+   * Intercepted splice/unshift/shift on a watched array.
+   *
+   * Records a single compact `$splice` op instead of per-index writes when
+   * the array's diff node is clean; otherwise falls back to plain
+   * trap-driven recording (correct, just larger). The mutation itself
+   * always runs as the native method through the proxy, because the
+   * trap-driven slot-merge semantics is what keeps cached child-proxy
+   * paths valid — raw splicing would move elements and stale them.
+   */
+  #structuralArrayOp(target, method, args, path, receiver) {
+    const native = Array.prototype[method];
+    const len = target.length;
+
+    // Normalize the call into one splice op: [start, deleteCount, items]
+    let start = 0;
+    let deleteCount = 0;
+    let items = [];
+    if (method === 'unshift') {
+      items = args;
+    } else if (method === 'shift') {
+      deleteCount = Math.min(1, len);
+    } else { // splice
+      const rel = args.length ? Math.trunc(args[0]) || 0 : 0;
+      start = rel < 0 ? Math.max(len + rel, 0) : Math.min(rel, len);
+      if (args.length === 1) {
+        deleteCount = len - start;
+      } else if (args.length > 1) {
+        deleteCount = Math.min(Math.max(Math.trunc(args[1]) || 0, 0), len - start);
+      }
+      items = args.slice(2);
+    }
+    items = items.map(item => this.resolveIfProxy(item));
+
+    // No mutation: run the method only for its return value
+    if (deleteCount === 0 && items.length === 0) {
+      return native.apply(receiver, args);
+    }
+
+    // Compact recording is only safe when the array's diff node carries no
+    // pending index/nested changes: receivers apply $splice before merging
+    // the node's other keys, so earlier writes must not share a node with
+    // a later op. Consecutive ops append to the same $splice list.
+    const node = this.#diffTracker.getDiffObject(path);
+    const clean = Object.keys(node).every(key => key === '$splice' || key === 'length');
+    if (!clean) {
+      return native.apply(receiver, args);
+    }
+
+    // Validate before mutating so a rejected item leaves state untouched
+    for (const item of items) {
+      Utils.assertSupported(item, [...path, method]);
+    }
+
+    this.#suppress = true;
+    let result;
+    try {
+      result = native.apply(receiver, args);
+    } finally {
+      this.#suppress = false;
+    }
+
+    if (!node.$splice) node.$splice = [];
+    node.$splice.push([
+      start,
+      deleteCount,
+      items.map(item => Utils.isObjectOrArray(item) ? Utils.deepClone(item) : item)
+    ]);
+    node.length = target.length;
+    this.#eventEmitter.scheduleEmit();
+    return result;
+  }
+
+  /**
+   * Apply received $splice ops to a target array. Ops run through the
+   * array's own proxy, so the mutation is recorded (compactly, via the
+   * interception above) and re-emitted for listeners downstream of this
+   * instance.
+   */
+  #applySpliceOps(rawTarget, ops, path) {
+    const proxy = this.#proxyFor(rawTarget, path);
+    for (const op of ops) {
+      proxy.splice(op[0], op[1], ...(op[2] || []));
+    }
+  }
+
+  /**
+   * Get or create the proxy for a raw object already inside the watched tree
+   */
+  #proxyFor(value, path) {
+    let proxy = this.#cache.get(value);
+    if (!proxy) {
+      proxy = this.#createProxy(value, path, this.#instance);
+      this.#cache.set(value, proxy);
+      this.#proxyPaths.set(proxy, path);
+    }
+    return proxy;
   }
 
   /**
@@ -116,7 +243,7 @@ export class ProxyHandler {
 
     if (value.length !== currentLength) {
       // Clean diff object from indices beyond new length
-      const diff = this.#diffTracker.getDiffObject([...path]);
+      const diff = this.#diff([...path]);
       for (const key in diff) {
         if (parseInt(key, 10) >= value.length) {
           delete diff[key];
@@ -129,7 +256,7 @@ export class ProxyHandler {
    * Record a change in the diff
    */
   #recordChange(target, prop, value, path) {
-    const diff = this.#diffTracker.getDiffObject(path);
+    const diff = this.#diff(path);
 
     // Handle array index updates when length was previously set
     if (typeof diff.length === 'number') {
@@ -152,7 +279,7 @@ export class ProxyHandler {
       diff.length = target.length;
     }
 
-    this.#eventEmitter.scheduleEmit();
+    this.#scheduleEmit();
   }
 
   /**
@@ -181,10 +308,17 @@ export class ProxyHandler {
     // Helper to get diff object only when needed
     const getDiff = () => {
       if (!diff) {
-        diff = this.#diffTracker.getDiffObject(path);
+        diff = this.#diff(path);
       }
       return diff;
     };
+
+    // Apply compact structural array ops first; the node's remaining keys
+    // are merged afterwards, matching the sender-side ordering guarantee.
+    if (Array.isArray(rawTarget) && Array.isArray(rawSource.$splice)) {
+      this.#applySpliceOps(rawTarget, rawSource.$splice, path);
+      hasChanges = true;
+    }
 
     // Track array length changes
     if (Array.isArray(rawTarget) && Array.isArray(rawSource) && rawTarget.length !== rawSource.length) {
@@ -194,6 +328,9 @@ export class ProxyHandler {
     }
 
     for (const prop in rawSource) {
+      // $splice was applied above (or dropped when the target isn't an array:
+      // target shape wins, same as other drift cases)
+      if (prop === '$splice') continue;
       if (rawSource[prop] === null) {
         delete rawTarget[prop];
       } else if (Utils.isObjectOrArray(rawTarget[prop]) && Utils.isObjectOrArray(rawSource[prop])) {
@@ -237,7 +374,7 @@ export class ProxyHandler {
     }
 
     if (hasChanges) {
-      this.#eventEmitter.scheduleEmit();
+      this.#scheduleEmit();
     }
   }
 

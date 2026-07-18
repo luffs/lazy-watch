@@ -299,6 +299,25 @@ data.items.push('b');
 // Emits: { items: { 1: 'b', length: 2 } }
 ```
 
+Structural mutations — `splice`, `unshift`, and `shift` — are emitted as
+compact `$splice` ops instead of re-emitting every shifted index:
+
+```js
+const data = new LazyWatch({ items: ['b', 'c'] });
+data.items.unshift('a');
+// Emits: { items: { $splice: [[0, 0, ['a']]], length: 3 } }
+// (not { 0: 'a', 1: 'b', 2: 'c', length: 3 })
+```
+
+Each op is `[start, deleteCount, items]`, applied by `patch`/`overwrite`/
+`patchObject` **before** the fragment's index keys, so an op followed by index
+or nested writes in the same batch stays correct. Consecutive structural ops
+in one batch append to the same `$splice` list; if index writes are already
+pending on that array when a structural op happens, LazyWatch falls back to
+per-index recording for that batch (larger, but always correct). On a
+1,000-item array of objects, prepending one item emits ~68 bytes instead of
+~34 KB.
+
 Applied to a replica that already has `items` as an array, the fragment merges
 in-place. But when replicas disagree about which fields exist — typically after
 a schema migration, or with clients running different versions — a fragment can

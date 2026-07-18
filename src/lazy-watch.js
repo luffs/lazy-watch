@@ -131,7 +131,21 @@ export class LazyWatch {
   static #patchObjectInto(target, source) {
     const resolvedSource = LazyWatch.resolveIfProxy(source);
 
+    // Apply compact structural array ops before merging the node's other
+    // keys, matching the sender-side ordering guarantee. Op items are full
+    // values, cloned to prevent reference sharing.
+    if (Array.isArray(target) && Array.isArray(resolvedSource.$splice)) {
+      for (const op of resolvedSource.$splice) {
+        const items = (op[2] || []).map(item =>
+          Utils.isObjectOrArray(item) ? Utils.deepClone(item) : item
+        );
+        target.splice(op[0], op[1], ...items);
+      }
+    }
+
     for (const prop in resolvedSource) {
+      // Handled above (or dropped when the target isn't an array)
+      if (prop === '$splice') continue;
       if (resolvedSource[prop] === null) {
         delete target[prop];
       } else if (Utils.isObjectOrArray(target[prop]) && Utils.isObjectOrArray(resolvedSource[prop])) {

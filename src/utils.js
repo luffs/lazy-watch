@@ -58,16 +58,25 @@ export const Utils = {
   },
 
   /**
-   * True for index-keyed array diff fragments, e.g. { 1: 'b', length: 2 }:
-   * a plain object whose keys are all array indices plus a numeric `length`.
-   * At least one index key is required, so plain data like { length: 5 }
-   * is never mistaken for an array diff.
+   * True for array diff fragments: a plain object whose keys are all array
+   * indices and/or a `$splice` op list, plus a numeric `length` —
+   * e.g. { 1: 'b', length: 2 } or { $splice: [[0, 0, ['a']]], length: 3 }.
+   * At least one index or `$splice` key is required, so plain data like
+   * { length: 5 } is never mistaken for an array diff.
    */
   isArrayDiff(val) {
     if (!val || typeof val !== 'object' || Array.isArray(val)) return false;
     if (!Number.isInteger(val.length) || val.length < 0) return false;
-    const keys = Object.keys(val);
-    return keys.length > 1 && keys.every(key => key === 'length' || /^\d+$/.test(key));
+    let hasContent = false;
+    for (const key of Object.keys(val)) {
+      if (key === 'length') continue;
+      if (key === '$splice' || /^\d+$/.test(key)) {
+        hasContent = true;
+        continue;
+      }
+      return false;
+    }
+    return hasContent;
   },
 
   /**
@@ -83,10 +92,21 @@ export const Utils = {
     if (!this.isObjectOrArray(value)) return value;
 
     if (this.isArrayDiff(value)) {
-      const arr = new Array(value.length);
-      for (const key of Object.keys(value)) {
-        if (key !== 'length') arr[Number(key)] = this.reviveArrayDiffs(value[key]);
+      const arr = [];
+      // Replay structural ops first, then index writes, then final length —
+      // the same order receivers with an existing array use. Op items are
+      // full values (not diff fragments), so they are not revived.
+      if (Array.isArray(value.$splice)) {
+        for (const op of value.$splice) {
+          arr.splice(op[0], op[1], ...(op[2] || []));
+        }
       }
+      for (const key of Object.keys(value)) {
+        if (key !== 'length' && key !== '$splice') {
+          arr[Number(key)] = this.reviveArrayDiffs(value[key]);
+        }
+      }
+      arr.length = value.length;
       return arr;
     }
 

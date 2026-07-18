@@ -1363,6 +1363,225 @@ runner.test('replacing a leaf value should emit a diff', async () => {
   LazyWatch.dispose(watched);
 });
 
+// --- Compact $splice array ops ---
+
+// Helper: assert two LazyWatch trees have identical raw state
+function assertConverged(a, b, message = 'replicas should converge') {
+  assertEquals(
+    JSON.parse(JSON.stringify(LazyWatch.resolveIfProxy(a))),
+    JSON.parse(JSON.stringify(LazyWatch.resolveIfProxy(b))),
+    message
+  );
+}
+
+runner.test('unshift should emit a compact $splice op', async () => {
+  const watched = new LazyWatch({ items: Array.from({ length: 100 }, (_, i) => i) });
+  let diff = null;
+  LazyWatch.on(watched, d => { diff = d; });
+
+  watched.items.unshift(-1);
+  await wait(10);
+
+  assertEquals(Object.keys(diff.items).sort(), ['$splice', 'length'], 'diff should only contain $splice and length');
+  assertEquals(diff.items.$splice, [[0, 0, [-1]]]);
+  assertEquals(diff.items.length, 101);
+  assertEquals(watched.items[0], -1);
+  assertEquals(watched.items.length, 101);
+  LazyWatch.dispose(watched);
+});
+
+runner.test('shift and splice should emit compact ops with correct return values', async () => {
+  const watched = new LazyWatch({ items: ['a', 'b', 'c', 'd'] });
+  let diff = null;
+  LazyWatch.on(watched, d => { diff = d; });
+
+  const shifted = watched.items.shift();
+  await wait(10);
+  assertEquals(shifted, 'a', 'shift should return the removed element');
+  assertEquals(diff.items.$splice, [[0, 1, []]]);
+  assertEquals(diff.items.length, 3);
+
+  const removed = watched.items.splice(1, 2, 'X');
+  await wait(10);
+  assertEquals(JSON.parse(JSON.stringify(removed)), ['c', 'd'], 'splice should return removed elements');
+  assertEquals(diff.items.$splice, [[1, 2, ['X']]]);
+  assertEquals(JSON.parse(JSON.stringify(LazyWatch.resolveIfProxy(watched.items))), ['b', 'X']);
+  LazyWatch.dispose(watched);
+});
+
+runner.test('negative splice indices should be normalized in the op', async () => {
+  const watched = new LazyWatch({ items: [1, 2, 3, 4] });
+  let diff = null;
+  LazyWatch.on(watched, d => { diff = d; });
+
+  watched.items.splice(-1, 1); // remove last
+  await wait(10);
+  assertEquals(diff.items.$splice, [[3, 1, []]]);
+  assertEquals(JSON.parse(JSON.stringify(LazyWatch.resolveIfProxy(watched.items))), [1, 2, 3]);
+  LazyWatch.dispose(watched);
+});
+
+runner.test('$splice diffs should converge a patched mirror', async () => {
+  const init = () => ({ items: [{ id: 0 }, { id: 1 }, { id: 2 }] });
+  const src = new LazyWatch(init());
+  const dst = new LazyWatch(init());
+  LazyWatch.on(src, d => LazyWatch.patch(dst, d));
+
+  src.items.unshift({ id: -1 });
+  await wait(10);
+  assertConverged(src, dst, 'after unshift');
+
+  src.items.splice(2, 1, { id: 'x' }, { id: 'y' });
+  await wait(10);
+  assertConverged(src, dst, 'after splice replace');
+
+  src.items.shift();
+  await wait(10);
+  assertConverged(src, dst, 'after shift');
+
+  LazyWatch.dispose(src);
+  LazyWatch.dispose(dst);
+});
+
+runner.test('consecutive ops in one batch should append to $splice and converge', async () => {
+  const init = () => ({ items: [1, 2, 3] });
+  const src = new LazyWatch(init());
+  const dst = new LazyWatch(init());
+  let diff = null;
+  LazyWatch.on(src, d => { diff = d; LazyWatch.patch(dst, d); });
+
+  src.items.unshift(0);
+  src.items.unshift(-1);
+  src.items.shift();
+  await wait(10);
+
+  assertEquals(diff.items.$splice, [[0, 0, [0]], [0, 0, [-1]], [0, 1, []]]);
+  assertConverged(src, dst);
+  LazyWatch.dispose(src);
+  LazyWatch.dispose(dst);
+});
+
+runner.test('op followed by index and nested writes in one batch should converge', async () => {
+  const init = () => ({ items: [{ id: 0 }, { id: 1 }] });
+  const src = new LazyWatch(init());
+  const dst = new LazyWatch(init());
+  let diff = null;
+  LazyWatch.on(src, d => { diff = d; LazyWatch.patch(dst, d); });
+
+  src.items.unshift({ id: -1 });
+  src.items[2] = { id: 'replaced' };   // post-op index
+  src.items[0].id = 'mutated';         // post-op nested write
+  await wait(10);
+
+  assertTrue(Array.isArray(diff.items.$splice), 'op should still be compact');
+  assertConverged(src, dst);
+  LazyWatch.dispose(src);
+  LazyWatch.dispose(dst);
+});
+
+runner.test('index write before an op in one batch should fall back but converge', async () => {
+  const init = () => ({ items: [1, 2, 3] });
+  const src = new LazyWatch(init());
+  const dst = new LazyWatch(init());
+  let diff = null;
+  LazyWatch.on(src, d => { diff = d; LazyWatch.patch(dst, d); });
+
+  src.items[1] = 'changed'; // dirty node before the op
+  src.items.unshift(0);
+  await wait(10);
+
+  assertTrue(!diff.items.$splice, 'op should fall back to per-index recording');
+  assertConverged(src, dst);
+  LazyWatch.dispose(src);
+  LazyWatch.dispose(dst);
+});
+
+runner.test('a relaying mirror should re-emit $splice compactly', async () => {
+  const init = () => ({ items: [1, 2, 3] });
+  const src = new LazyWatch(init());
+  const mid = new LazyWatch(init());
+  const relayed = [];
+  LazyWatch.on(src, d => LazyWatch.patch(mid, d));
+  LazyWatch.on(mid, d => relayed.push(d));
+
+  src.items.unshift(0);
+  await wait(20);
+
+  assertTrue(relayed.length > 0, 'mirror should re-emit');
+  assertTrue(relayed.some(d => d.items && Array.isArray(d.items.$splice)),
+    'relayed diff should be compact');
+  LazyWatch.dispose(src);
+  LazyWatch.dispose(mid);
+});
+
+runner.test('patchObject should apply $splice ops to plain objects', () => {
+  const plain = { items: ['a', 'b', 'c'] };
+  LazyWatch.patchObject(plain, { items: { $splice: [[1, 1, ['X', 'Y']]], length: 4 } });
+  assertEquals(plain.items, ['a', 'X', 'Y', 'c']);
+});
+
+runner.test('$splice fragments should revive into arrays when the target lacks the field', () => {
+  const watched = new LazyWatch({});
+  LazyWatch.patch(watched, { items: { $splice: [[0, 0, ['a', 'b']]], length: 2 } });
+  assertTrue(Array.isArray(LazyWatch.resolveIfProxy(watched.items)), 'items should be a real array');
+  assertEquals(JSON.parse(JSON.stringify(LazyWatch.resolveIfProxy(watched.items))), ['a', 'b']);
+  LazyWatch.dispose(watched);
+});
+
+runner.test('structural ops should reject collection items before mutating', () => {
+  const watched = new LazyWatch({ items: [1, 2, 3] });
+  assertThrows(() => watched.items.unshift(new Map()));
+  assertThrows(() => watched.items.splice(1, 0, { deep: new Set() }));
+  assertEquals(JSON.parse(JSON.stringify(LazyWatch.resolveIfProxy(watched.items))), [1, 2, 3],
+    'state should be untouched after rejection');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('no-op structural calls should not emit', async () => {
+  const watched = new LazyWatch({ items: [1, 2, 3] });
+  let called = false;
+  LazyWatch.on(watched, () => { called = true; });
+
+  watched.items.splice(1, 0);   // no delete, no insert
+  watched.items.splice(0, 0);   // no delete, no insert at head
+  await wait(10);
+
+  assertEquals(called, false, 'no-op splice should not emit');
+  assertEquals(JSON.parse(JSON.stringify(LazyWatch.resolveIfProxy(watched.items))), [1, 2, 3]);
+  LazyWatch.dispose(watched);
+});
+
+runner.test('random mixed array operations should converge (fuzz)', async () => {
+  const init = () => ({ items: [] });
+  const src = new LazyWatch(init());
+  const dst = new LazyWatch(init());
+  LazyWatch.on(src, d => LazyWatch.patch(dst, d));
+
+  let seed = 42;
+  const rnd = n => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) % n;
+
+  for (let round = 0; round < 30; round++) {
+    const opsThisRound = 1 + rnd(4);
+    for (let i = 0; i < opsThisRound; i++) {
+      const len = src.items.length;
+      switch (rnd(7)) {
+        case 0: src.items.push({ v: rnd(100) }); break;
+        case 1: src.items.unshift({ v: rnd(100) }); break;
+        case 2: if (len) src.items.shift(); break;
+        case 3: if (len) src.items.splice(rnd(len), rnd(2) + 1); break;
+        case 4: src.items.splice(rnd(len + 1), 0, { v: rnd(100) }); break;
+        case 5: if (len) src.items[rnd(len)] = { v: rnd(100) }; break;
+        case 6: if (len) { const el = src.items[rnd(len)]; if (el && typeof el === 'object') el.v = rnd(100); } break;
+      }
+    }
+    await wait(5); // emit + patch between rounds
+    assertConverged(src, dst, `round ${round}`);
+  }
+
+  LazyWatch.dispose(src);
+  LazyWatch.dispose(dst);
+});
+
 // Usage examples
 console.log('\n=== LazyWatch Usage Examples ===\n');
 

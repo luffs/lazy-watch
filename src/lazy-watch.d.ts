@@ -4,7 +4,9 @@
  * Represents the changes detected by LazyWatch
  * Keys are property names, values are the new values (null for deletions).
  * Array changes appear as index-keyed fragments carrying a numeric `length`,
- * e.g. { 1: 'b', length: 2 }.
+ * e.g. { 1: 'b', length: 2 }. Structural array mutations (splice, unshift,
+ * shift) appear as compact op lists applied before the fragment's index keys:
+ * { $splice: [[start, deleteCount, items]], length: n }.
  */
 export type ChangeSet = Record<string, any>;
 
