@@ -20,7 +20,7 @@ npm run benchmark        # full suite (~16s)
 npm run benchmark:core   # core performance only
 npm run benchmark:memory # memory usage only
 ```
-CI (`.github/workflows/test.yml`) runs tests on Node 20/22/24, the TypeScript definition checks, and the full benchmark suite (results appear in the job summary) on every push and pull request.
+CI (`.github/workflows/test.yml`) runs tests on Node 22/24/26 and Bun (invoked as `bun ./test/tests.js` — plain `bun test` would run Bun's own test runner instead of this project's), the TypeScript definition checks, and the full benchmark suite (results appear in the job summary) on every push and pull request.
 
 ## Configuration Options
 

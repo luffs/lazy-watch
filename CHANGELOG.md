@@ -34,6 +34,10 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
   explicit non-goal, with pointers to Yjs/Automerge for those cases
 - ci: The test workflow gains a benchmark job — the full suite (~16s) runs on
   every push and pull request, with results published to the job summary
+- ci: Test matrix drops Node 20 (EOL April 2026) and adds Node 26 (Current)
+  and Bun, covering oldest-supported LTS, active LTS, Current, and Bun;
+  `actions/checkout` and `actions/setup-node` bumped to v5 (the v4 actions
+  run on Node 20 internally, which GitHub deprecated on its runners)
 - refactor: Shrink `Utils.deepClone`'s manual fallback (used when
   `structuredClone` is missing or throws) to the types that can actually occur
   in watched state: plain objects, arrays, Date, and RegExp. Functions are now
