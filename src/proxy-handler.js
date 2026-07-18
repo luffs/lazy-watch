@@ -61,6 +61,11 @@ export class ProxyHandler {
 
         const value = target[prop];
 
+        // Reserved names resolve to prototype machinery — never proxy them
+        if (Utils.isUnsafeKey(prop)) {
+          return value;
+        }
+
         // Intercept structural array methods to record compact $splice ops
         if (Array.isArray(target) && STRUCTURAL_ARRAY_METHODS.has(prop) &&
           value === Array.prototype[prop]) {
@@ -83,19 +88,40 @@ export class ProxyHandler {
       },
 
       set: (target, prop, value, receiver) => {
+        // Assigning these would mutate prototypes, not data
+        if (Utils.isUnsafeKey(prop)) {
+          throw new TypeError(
+            `LazyWatch cannot set reserved property name "${prop}": it collides with the prototype machinery.`
+          );
+        }
+
         // Resolve if value is a proxy
         value = this.resolveIfProxy(value);
 
-        // Reject Map/Set/typed arrays etc. anywhere in the assigned value
+        // Reject Map/Set/typed arrays, non-finite numbers, and reserved
+        // names anywhere in the assigned value
         Utils.assertSupported(value, [...path, prop]);
+
+        // Assigning undefined would silently vanish from JSON diffs on the
+        // wire; treat it as a deletion to match the null-means-delete
+        // convention. (Array length falls through to the native error.)
+        if (value === undefined && !(Array.isArray(target) && prop === 'length')) {
+          if (prop in target) {
+            const diff = this.#diff(path);
+            diff[prop] = null;
+            delete target[prop];
+            this.#scheduleEmit();
+          }
+          return true;
+        }
 
         const currentValue = target[prop];
         const currentIsObject = Utils.isObjectOrArray(currentValue);
         const valueIsObject = Utils.isObjectOrArray(value);
 
-        // Handle array length changes
-        if (Array.isArray(target) && Array.isArray(value) && prop === 'length') {
-          this.#handleArrayLengthChange(target, value, path, receiver);
+        // Trim stale diff indices when an array is truncated
+        if (Array.isArray(target) && prop === 'length' && typeof value === 'number') {
+          this.#handleArrayLengthChange(target, value, path);
         }
 
         // When assigning a new array to a property, treat it as replacement not merge
@@ -236,16 +262,14 @@ export class ProxyHandler {
   }
 
   /**
-   * Handle array length changes
+   * When an array is truncated, drop pending diff entries for indices
+   * beyond the new length — they would be trimmed by the receiver anyway
    */
-  #handleArrayLengthChange(target, value, path, receiver) {
-    const currentLength = target.length;
-
-    if (value.length !== currentLength) {
-      // Clean diff object from indices beyond new length
-      const diff = this.#diff([...path]);
+  #handleArrayLengthChange(target, newLength, path) {
+    if (newLength !== target.length) {
+      const diff = this.#diff(path);
       for (const key in diff) {
-        if (parseInt(key, 10) >= value.length) {
+        if (parseInt(key, 10) >= newLength) {
           delete diff[key];
         }
       }
@@ -329,10 +353,17 @@ export class ProxyHandler {
 
     for (const prop in rawSource) {
       // $splice was applied above (or dropped when the target isn't an array:
-      // target shape wins, same as other drift cases)
-      if (prop === '$splice') continue;
-      if (rawSource[prop] === null) {
-        delete rawTarget[prop];
+      // target shape wins, same as other drift cases). Reserved names in
+      // hostile wire data are never applied — writing them would mutate
+      // prototypes instead of data.
+      if (prop === '$splice' || Utils.isUnsafeKey(prop)) continue;
+      if (rawSource[prop] === null || rawSource[prop] === undefined) {
+        // Record the deletion so relaying mirrors propagate it downstream
+        if (prop in rawTarget) {
+          getDiff()[prop] = null;
+          delete rawTarget[prop];
+          hasChanges = true;
+        }
       } else if (Utils.isObjectOrArray(rawTarget[prop]) && Utils.isObjectOrArray(rawSource[prop])) {
         this.overwrite(rawTarget[prop], rawSource[prop], [...path, prop]);
       } else if (rawTarget[prop] !== rawSource[prop]) {

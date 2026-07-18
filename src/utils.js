@@ -1,5 +1,19 @@
 // utils.js - Utility functions
+
+// Property names that collide with the prototype machinery. Writing them
+// through the appliers would mutate prototypes instead of data (prototype
+// pollution), so they are rejected on the way into watched state and
+// skipped when applying received diffs.
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 export const Utils = {
+  /**
+   * True for property names that are rejected in watched state because
+   * assigning them collides with the prototype machinery
+   */
+  isUnsafeKey(key) {
+    return UNSAFE_KEYS.has(key);
+  },
   /**
    * Check if value is an object or array that can be deep-watched.
    * Objects with internal slots (Date, RegExp, and the rejected collection
@@ -38,21 +52,32 @@ export const Utils = {
 
   /**
    * Deep-check a value entering watched state; throws a TypeError naming the
-   * offending path if it contains a rejected type. Date and RegExp pass as
-   * leaf values and are not walked into. Cycle-safe.
+   * offending path if it contains a rejected type, a non-finite number, or
+   * a reserved property name. Date and RegExp pass as leaf values and are
+   * not walked into. Cycle-safe.
    */
   assertSupported(value, path = [], seen = new WeakSet()) {
+    const at = () => path.length ? ` at "${path.map(String).join('.')}"` : '';
+    if (typeof value === 'number' && !Number.isFinite(value)) {
+      throw new TypeError(
+        `LazyWatch cannot track non-finite number ${value}${at()}: JSON serializes it as null, which receivers interpret as a deletion.`
+      );
+    }
     if (!value || typeof value !== 'object') return;
     const rejected = this.rejectedTypeName(value);
     if (rejected) {
-      const at = path.length ? ` at "${path.map(String).join('.')}"` : '';
       throw new TypeError(
-        `LazyWatch cannot track ${rejected}${at}: in-place mutations bypass the proxy and would silently desync. Use a plain object or array instead.`
+        `LazyWatch cannot track ${rejected}${at()}: in-place mutations bypass the proxy and would silently desync. Use a plain object or array instead.`
       );
     }
     if (!this.isObjectOrArray(value) || seen.has(value)) return;
     seen.add(value);
     for (const key of Object.keys(value)) {
+      if (this.isUnsafeKey(key)) {
+        throw new TypeError(
+          `LazyWatch cannot use reserved property name "${key}"${at()}: it collides with the prototype machinery.`
+        );
+      }
       this.assertSupported(value[key], [...path, key], seen);
     }
   },
@@ -112,6 +137,8 @@ export const Utils = {
 
     let out = value;
     for (const key of Object.keys(value)) {
+      // Reserved names in hostile wire data are never revived or written
+      if (this.isUnsafeKey(key)) continue;
       const revived = this.reviveArrayDiffs(value[key]);
       if (revived !== value[key]) {
         if (out === value) out = Array.isArray(value) ? value.slice() : { ...value };

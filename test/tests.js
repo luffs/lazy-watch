@@ -146,7 +146,9 @@ runner.test('should detect array changes', async () => {
 
   await wait(50);
 
-  assertEquals(changesCaught, { items: { 0: 10, 1: 3, 2: null, length: 2 } });
+  // The truncation cleanup drops the redundant `2: null` entry — the
+  // receiver's length assignment trims that index anyway
+  assertEquals(changesCaught, { items: { 0: 10, 1: 3, length: 2 } });
   LazyWatch.dispose(watched);
 });
 
@@ -1580,6 +1582,105 @@ runner.test('random mixed array operations should converge (fuzz)', async () => 
 
   LazyWatch.dispose(src);
   LazyWatch.dispose(dst);
+});
+
+// --- Prototype pollution, wire-safety, and relay fixes ---
+
+runner.test('patch should reject prototype pollution attempts and leave state untouched', () => {
+  const watched = new LazyWatch({ a: 1 });
+  assertThrows(() => LazyWatch.patch(watched, JSON.parse('{"__proto__": {"polluted": true}}')));
+  assertThrows(() => LazyWatch.patch(watched, JSON.parse('{"nested": {"__proto__": {"polluted": true}}}')));
+  assertThrows(() => LazyWatch.patch(watched, JSON.parse('{"constructor": {"prototype": {"polluted": true}}}')));
+  assertEquals({}.polluted, undefined, 'Object.prototype must not be polluted');
+  assertEquals(watched.a, 1, 'state should be untouched');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('patchObject and overwrite should reject prototype pollution attempts', () => {
+  const plain = { a: 1 };
+  assertThrows(() => LazyWatch.patchObject(plain, JSON.parse('{"__proto__": {"polluted": true}}')));
+  const watched = new LazyWatch({ a: 1 });
+  assertThrows(() => LazyWatch.overwrite(watched, JSON.parse('{"a": 2, "__proto__": {"polluted": true}}')));
+  assertEquals({}.polluted, undefined, 'Object.prototype must not be polluted');
+  assertEquals(watched.a, 1, 'overwrite should be rejected atomically');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('should throw when writing reserved property names into watched state', () => {
+  const watched = new LazyWatch({});
+  assertThrows(() => { watched['__proto__'] = { polluted: true }; });
+  assertThrows(() => { watched.data = JSON.parse('{"__proto__": {"x": 1}}'); });
+  assertThrows(() => new LazyWatch(JSON.parse('{"constructor": {"x": 1}}')));
+  assertEquals({}.polluted, undefined);
+  LazyWatch.dispose(watched);
+});
+
+runner.test('assigning undefined should delete and sync as null', async () => {
+  const src = new LazyWatch({ x: 1, y: 2 });
+  const dst = new LazyWatch({ x: 1, y: 2 });
+  let diff = null;
+  LazyWatch.on(src, d => { diff = d; LazyWatch.patch(dst, JSON.parse(JSON.stringify(d))); });
+
+  src.y = undefined;
+  await wait(10);
+
+  assertEquals(diff, { y: null }, 'undefined should be emitted as a null deletion');
+  assertTrue(!('y' in LazyWatch.resolveIfProxy(src)), 'sender should delete the property');
+  assertTrue(!('y' in LazyWatch.resolveIfProxy(dst)), 'receiver should delete the property');
+  LazyWatch.dispose(src);
+  LazyWatch.dispose(dst);
+});
+
+runner.test('should reject NaN and Infinity values', () => {
+  const watched = new LazyWatch({ n: 1 });
+  assertThrows(() => { watched.n = NaN; });
+  assertThrows(() => { watched.n = Infinity; });
+  assertThrows(() => { watched.data = { deep: -Infinity }; });
+  assertThrows(() => new LazyWatch({ n: NaN }));
+  assertThrows(() => LazyWatch.patch(watched, { n: NaN }));
+  assertEquals(watched.n, 1, 'state should be untouched after rejection');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('deletions should propagate through a patch relay chain', async () => {
+  const init = () => ({ x: 1, y: 2 });
+  const A = new LazyWatch(init());
+  const B = new LazyWatch(init());
+  const C = new LazyWatch(init());
+  LazyWatch.on(A, d => LazyWatch.patch(B, d));
+  LazyWatch.on(B, d => LazyWatch.patch(C, d));
+
+  delete A.x;
+  await wait(20);
+
+  assertEquals(Object.keys(LazyWatch.resolveIfProxy(B)), ['y'], 'B should apply the deletion');
+  assertEquals(Object.keys(LazyWatch.resolveIfProxy(C)), ['y'], 'C should hear about the deletion from B');
+  LazyWatch.dispose(A);
+  LazyWatch.dispose(B);
+  LazyWatch.dispose(C);
+});
+
+runner.test('truncating an array should drop stale pending diff indices', async () => {
+  const watched = new LazyWatch({ items: [1, 2, 3] });
+  let diff = null;
+  LazyWatch.on(watched, d => { diff = d; });
+
+  watched.items[4] = 'x';   // extends to length 5
+  watched.items.length = 2; // truncate below the pending write
+  await wait(10);
+
+  assertTrue(!('4' in diff.items), 'stale index beyond new length should be dropped');
+  assertEquals(diff.items.length, 2);
+  LazyWatch.dispose(watched);
+});
+
+runner.test('getPendingDiff should preserve Date values', () => {
+  const watched = new LazyWatch({ when: new Date(0) });
+  watched.when = new Date('2026-01-01');
+  const pending = LazyWatch.getPendingDiff(watched);
+  assertTrue(pending.when instanceof Date, 'pending diff should keep Date instances');
+  assertEquals(pending.when.getFullYear(), 2026);
+  LazyWatch.dispose(watched);
 });
 
 // Usage examples

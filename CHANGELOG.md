@@ -4,6 +4,74 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
+## [3.1.0] - 2026-07-18
+
+- security: Block prototype pollution through received diffs. `__proto__`,
+  `constructor`, and `prototype` are now reserved property names: writes into
+  watched state reject them with a `TypeError`, `patch`/`overwrite`/`patchObject`
+  refuse diffs containing them before touching any state, the appliers and
+  `Utils.reviveArrayDiffs` skip them as defense-in-depth, and the `get` trap no
+  longer wraps them in proxies (previously `watched.__proto__` returned a
+  watchable proxy of `Object.prototype`). Prior to this fix, a malicious or
+  corrupt diff such as `{"__proto__": {...}}` applied via `patch` polluted
+  `Object.prototype` in the receiving process
+- fix: `NaN` and `±Infinity` are rejected with a `TypeError` at write time —
+  JSON serializes them as `null`, which receivers interpret as a deletion,
+  silently desyncing replicas
+- fix: Assigning `undefined` is normalized to a deletion (emitted as
+  `{ prop: null }`) — JSON drops `undefined` values from diffs, so the old
+  behavior left receivers permanently out of sync
+- fix: Deletions applied by `overwrite`/`patch` are recorded in the receiver's
+  own diff, so relay chains (A → B → C) propagate them; previously the middle
+  replica applied a deletion without re-emitting it
+- fix: Truncating an array (`arr.length = n`) now drops pending diff entries
+  for indices beyond the new length (the cleanup branch was unreachable due to
+  an incorrect guard), producing smaller diffs
+- fix: `LazyWatch.getPendingDiff` uses a structured clone instead of a JSON
+  round-trip, so `Date` leaf values keep their type
+- tests: Cover pollution vectors across all appliers, reserved-name rejection,
+  `undefined`/`NaN` wire round-trips, relay-chain deletions, truncation
+  cleanup, and `Date` preservation (88 tests total)
+
+## [3.0.0] - 2026-07-18
+
+- feat!: Structural array mutations (`splice`, `unshift`, `shift`) are emitted
+  as compact `$splice` ops (`[start, deleteCount, items]` triples applied
+  before a fragment's index keys) instead of per-index writes — prepending one
+  item to a 1,000-element array now emits ~68 bytes instead of ~34 KB.
+  Consecutive ops in a batch append to one op list; if index writes are
+  already pending on the array, the op falls back to per-index recording so
+  ordering stays correct. Received ops are applied through the receiver's own
+  proxy, so relaying mirrors re-emit them compactly, and
+  `Utils.reviveArrayDiffs` replays ops when the receiving side lacks the array
+  entirely. **Breaking (wire format):** pre-3.0 receivers would merge a
+  `$splice` key verbatim into their arrays — all replicas must run ≥ 3.0.0
+- feat!: Watched state is validated. `Map`, `Set`, `WeakMap`, `WeakSet`,
+  `Promise`, `ArrayBuffer`, and typed arrays are rejected with a `TypeError`
+  at every entry point (constructor, assignment, `patch`/`overwrite`/
+  `patchObject`) — their internal-slot mutations bypass the proxy and would
+  silently desync replicas. `Date` and `RegExp` remain supported as leaf
+  values (methods work; only wholesale replacement is tracked). Validation
+  runs before any mutation, so rejected operations leave state untouched.
+  New helpers: `Utils.assertSupported`, `Utils.rejectedTypeName`
+- fix: `main` field pointed at a nonexistent `src/index.js`; both `main` and
+  `exports` now resolve to `src/lazy-watch.js`, with `types` exposed in the
+  `exports` map
+- types: Rewrite `lazy-watch.d.ts` — `LazyWatch` is declared as a const with a
+  construct signature returning the watched type itself (the old
+  `constructor(): T` annotation was invalid TypeScript, leaving proxies typed
+  as an empty class), phantom exports that don't exist at runtime
+  (`Utils`, `DiffTracker`, `EventEmitter`, `ProxyHandler`) are removed, and
+  `patch`/`overwrite`/`patchObject` accept `Patch<T>` (recursive partial with
+  `null` deletions) instead of `Partial<T>`. Compile-time type tests
+  (`npm run test:types`) guard both accepted and rejected usage
+- chore: Add ISC `LICENSE` file, GitHub Actions test workflow (Node 20/22/24
+  plus type-check job), non-zero exit code from the test runner on failure,
+  and a `files` allowlist so the npm tarball ships only `src`, README, and
+  LICENSE (plus `keywords`, `engines`, `sideEffects` metadata)
+- docs: Document the `debounce` option, supported values, and the `$splice`
+  wire format
+
 ## [2.6.0] - 2026-07-17
 
 - fix: Applying an index-keyed array diff (e.g. `{ 1: 'b', length: 2 }`) to a target

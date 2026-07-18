@@ -144,9 +144,11 @@ export class LazyWatch {
     }
 
     for (const prop in resolvedSource) {
-      // Handled above (or dropped when the target isn't an array)
-      if (prop === '$splice') continue;
-      if (resolvedSource[prop] === null) {
+      // $splice handled above (or dropped when the target isn't an array);
+      // reserved names are never applied — writing them would mutate
+      // prototypes instead of data
+      if (prop === '$splice' || Utils.isUnsafeKey(prop)) continue;
+      if (resolvedSource[prop] === null || resolvedSource[prop] === undefined) {
         delete target[prop];
       } else if (Utils.isObjectOrArray(target[prop]) && Utils.isObjectOrArray(resolvedSource[prop])) {
         // Recursively patch nested objects

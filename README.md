@@ -382,6 +382,19 @@ Validation runs before any mutation, so a rejected `patch`/`overwrite` leaves
 the watched state untouched. Use plain objects instead of Maps
 (`{ [id]: value }`) and arrays instead of Sets.
 
+A few more wire-safety rules, all enforced with a `TypeError` at write time:
+
+- **`NaN` and `±Infinity` are rejected** — JSON serializes them as `null`,
+  which receivers would interpret as a deletion, silently desyncing replicas
+- **Assigning `undefined` deletes the property** — JSON drops `undefined`
+  values entirely, so the assignment is normalized to the null-means-delete
+  convention and emitted as `{ prop: null }`
+- **`__proto__`, `constructor`, and `prototype` are reserved** — writing them
+  would mutate prototypes instead of data. They are rejected on the way into
+  watched state, and `patch`/`overwrite`/`patchObject` refuse diffs containing
+  them, so a malicious or corrupt diff received over the network cannot cause
+  prototype pollution
+
 ## Examples
 
 > **💡 Looking for more examples?** Check out [EXAMPLES.md](EXAMPLES.md) for comprehensive real-world use cases including state management, undo/redo systems, form validation, and more advanced patterns.

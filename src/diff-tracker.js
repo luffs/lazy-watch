@@ -1,4 +1,6 @@
 // diff-tracker.js - Handles diff tracking
+import {Utils} from "./utils.js";
+
 export class DiffTracker {
   #masterDiff = {};
 
@@ -40,7 +42,8 @@ export class DiffTracker {
    */
   getPendingDiff() {
     // Return a deep clone to prevent external modifications
-    return structuredClone(this.#masterDiff);
+    // (structured clone, not JSON, so Date leaves survive intact)
+    return Utils.deepClone(this.#masterDiff);
   }
 
   /**
