@@ -38,3 +38,31 @@ jobs:
 
       - name: Type-check TypeScript definitions
         run: npm run test:types
+
+  benchmark:
+    name: Benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4.4.0
+        with:
+          node-version: 24
+
+      - name: Run benchmark suite
+        # Explicit bash shell enables pipefail, so a benchmark failure is not
+        # masked by tee's exit code
+        shell: bash
+        run: node --expose-gc ./benchmark/index.js --all | tee benchmark-output.txt
+
+      - name: Publish results to job summary
+        if: always()
+        run: |
+          {
+            echo '### Benchmark results'
+            echo '```'
+            cat benchmark-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

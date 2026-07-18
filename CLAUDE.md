@@ -14,6 +14,14 @@ npm test
 ```
 This executes the test suite in `test/tests.js` using a custom test runner (not Jest). The runner sets a non-zero exit code when any test fails.
 
+**Running benchmarks:**
+```bash
+npm run benchmark        # full suite (~16s)
+npm run benchmark:core   # core performance only
+npm run benchmark:memory # memory usage only
+```
+CI (`.github/workflows/test.yml`) runs tests on Node 20/22/24, the TypeScript definition checks, and the full benchmark suite (results appear in the job summary) on every push and pull request.
+
 ## Configuration Options
 
 LazyWatch accepts an optional second parameter with configuration options:
