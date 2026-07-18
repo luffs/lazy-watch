@@ -14,6 +14,13 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
   `LazyWatch.once(watched, listener, options)` is shorthand for
   `on(..., { once: true })`; nested-proxy once-listeners are only consumed by
   batches that touch their subtree
+- feat: Symbol-keyed properties are local-only metadata — stored on the
+  underlying object but never recorded, emitted, or synced; exempt from value
+  validation and never proxied. Previously symbol writes were half-tracked:
+  recorded into the diff (where JSON silently dropped them) and leaking symbol
+  keys into emitted diff objects
+- ci: The publish workflow also runs the TypeScript definition tests; README
+  gains a CI badge
 - security: Block prototype pollution through received diffs. `__proto__`,
   `constructor`, and `prototype` are now reserved property names: writes into
   watched state reject them with a `TypeError`, `patch`/`overwrite`/`patchObject`

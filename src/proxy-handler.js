@@ -59,6 +59,12 @@ export class ProxyHandler {
           return lazyWatchInstance;
         }
 
+        // Other symbol-keyed values are local-only metadata: returned raw,
+        // never proxied or tracked
+        if (typeof prop === 'symbol') {
+          return target[prop];
+        }
+
         const value = target[prop];
 
         // Reserved names resolve to prototype machinery — never proxy them
@@ -88,6 +94,15 @@ export class ProxyHandler {
       },
 
       set: (target, prop, value, receiver) => {
+        // Symbol-keyed properties are local-only metadata: stored on the
+        // target but never recorded, emitted, or synced (JSON cannot carry
+        // them anyway). They are also exempt from value validation, since
+        // their values never reach the wire.
+        if (typeof prop === 'symbol') {
+          target[prop] = this.resolveIfProxy(value);
+          return true;
+        }
+
         // Assigning these would mutate prototypes, not data
         if (Utils.isUnsafeKey(prop)) {
           throw new TypeError(
@@ -138,6 +153,12 @@ export class ProxyHandler {
       },
 
       deleteProperty: (target, prop) => {
+        // Symbol-keyed properties are local-only: deleted without recording
+        if (typeof prop === 'symbol') {
+          delete target[prop];
+          return true;
+        }
+
         if (prop in target) {
           const diff = this.#diff(path);
           diff[prop] = null;

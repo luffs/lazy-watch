@@ -109,6 +109,7 @@ LazyWatch provides utility methods that work on normal objects (non-proxies):
 - `NaN`/`±Infinity` are rejected (JSON would serialize them as `null` = deletion); assigning `undefined` is normalized to a deletion (emitted as `null`)
 - `__proto__`/`constructor`/`prototype` are reserved names: rejected at write time via `Utils.isUnsafeKey`, skipped by the appliers as defense-in-depth, and never proxied by the `get` trap — this blocks prototype pollution from hostile wire diffs
 - Deletions applied by `overwrite`/`patch` are recorded in the receiver's own diff so relay chains (A → B → C) propagate them
+- Symbol-keyed properties are local-only metadata: stored on the target but never recorded/emitted/synced, exempt from validation (a Map under a symbol key is allowed), and never proxied — a deliberate escape hatch for per-replica bookkeeping
 
 ### Array Handling
 - Array mutations (push, index writes) are tracked via length and index changes

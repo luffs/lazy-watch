@@ -1817,6 +1817,74 @@ runner.test('a throwing once listener should still be removed', async () => {
   LazyWatch.dispose(watched);
 });
 
+// --- Symbol-keyed properties: local-only metadata ---
+
+runner.test('symbol-keyed writes should be stored but never emitted', async () => {
+  const watched = new LazyWatch({ a: 1 });
+  const SYM = Symbol('meta');
+  let calls = 0;
+  LazyWatch.on(watched, () => { calls++; });
+
+  watched[SYM] = 'local-only';
+  await wait(10);
+
+  assertEquals(calls, 0, 'symbol write should not emit');
+  assertEquals(watched[SYM], 'local-only', 'symbol value should be stored');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('symbol keys should never leak into emitted diffs', async () => {
+  const watched = new LazyWatch({ a: 1 });
+  const SYM = Symbol('meta');
+  let diff = null;
+  LazyWatch.on(watched, d => { diff = d; });
+
+  watched[SYM] = 'local-only';
+  watched.a = 2; // real change flushes the batch
+  await wait(10);
+
+  assertEquals(diff, { a: 2 });
+  assertEquals(Object.getOwnPropertySymbols(diff).length, 0,
+    'emitted diff must not carry symbol keys');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('symbol-keyed values should be exempt from validation and not proxied', async () => {
+  const watched = new LazyWatch({ a: 1 });
+  const SYM = Symbol('cache');
+  let calls = 0;
+  LazyWatch.on(watched, () => { calls++; });
+
+  // Local-only values never reach the wire, so even a Map is fine here
+  watched[SYM] = new Map([['k', 'v']]);
+  assertEquals(watched[SYM].get('k'), 'v', 'Map methods should work (value not proxied)');
+
+  // Mutating an object stored under a symbol is invisible to tracking
+  const OBJ = Symbol('obj');
+  watched[OBJ] = { nested: 1 };
+  watched[OBJ].nested = 2;
+  await wait(10);
+
+  assertEquals(calls, 0, 'symbol-keyed values should never trigger emits');
+  assertEquals(watched[OBJ].nested, 2);
+  LazyWatch.dispose(watched);
+});
+
+runner.test('deleting a symbol-keyed property should not emit', async () => {
+  const SYM = Symbol('meta');
+  const watched = new LazyWatch({ a: 1 });
+  watched[SYM] = 'x';
+  let calls = 0;
+  LazyWatch.on(watched, () => { calls++; });
+
+  delete watched[SYM];
+  await wait(10);
+
+  assertEquals(calls, 0, 'symbol delete should not emit');
+  assertEquals(watched[SYM], undefined);
+  LazyWatch.dispose(watched);
+});
+
 // Usage examples
 console.log('\n=== LazyWatch Usage Examples ===\n');
 

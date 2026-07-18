@@ -1,6 +1,7 @@
 # LazyWatch
 
 [![npm version](https://img.shields.io/npm/v/lazy-watch.svg)](https://www.npmjs.com/package/lazy-watch)
+[![CI](https://github.com/luffs/lazy-watch/actions/workflows/test.yml/badge.svg)](https://github.com/luffs/lazy-watch/actions/workflows/test.yml)
 [![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](https://opensource.org/licenses/ISC)
 
 Deep watch JavaScript objects using Proxy and emit diffs asynchronously. LazyWatch efficiently tracks changes to objects (including nested properties and arrays) and batches multiple changes into a single update event.
@@ -434,6 +435,22 @@ A few more wire-safety rules, all enforced with a `TypeError` at write time:
   watched state, and `patch`/`overwrite`/`patchObject` refuse diffs containing
   them, so a malicious or corrupt diff received over the network cannot cause
   prototype pollution
+
+**Symbol-keyed properties are local-only metadata.** JSON cannot carry symbol
+keys, so instead of half-tracking them, LazyWatch treats them as a deliberate
+escape hatch: writes are stored on the underlying object but never recorded,
+emitted, or synced, and their values are exempt from validation (you may even
+stash a `Map` there) and are never proxied:
+
+```js
+const state = new LazyWatch({ items: [] });
+const CACHE = Symbol('cache');
+
+state[CACHE] = new Map();   // fine — never emitted, never synced
+state[CACHE].set('k', 'v'); // methods work; the value is not proxied
+```
+
+Use this for per-replica bookkeeping that should never travel with the data.
 
 ## Examples
 

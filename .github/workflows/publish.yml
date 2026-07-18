@@ -30,6 +30,9 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Type-check TypeScript definitions
+        run: npm run test:types
+
       - name: Update npm
         run: npm install -g npm@latest
 
