@@ -10,7 +10,10 @@ const STRUCTURAL_ARRAY_METHODS = new Set(['splice', 'unshift', 'shift']);
 
 export class ProxyHandler {
   #original;
-  #cache = new WeakMap();
+  // Raw target object -> its proxy. Ensures each object in the tree gets
+  // exactly one proxy, so identity checks and cached paths stay stable.
+  #proxies = new WeakMap();
+  // Proxy -> its path from the root, for path-relative listeners
   #proxyPaths = new WeakMap();
   #diffTracker;
   #eventEmitter;
@@ -34,11 +37,7 @@ export class ProxyHandler {
   createRootProxy(lazyWatchInstance) {
     this.#instance = lazyWatchInstance;
     const proxy = this.#createProxy(this.#original, [], lazyWatchInstance);
-    // Store the target reference using a symbol
-    this.#cache.set(proxy, this.#original);
-    // Map the original to its proxy so #proxyFor works for the root too
-    this.#cache.set(this.#original, proxy);
-    // Store the path for this proxy
+    this.#proxies.set(this.#original, proxy);
     this.#proxyPaths.set(proxy, []);
     return proxy;
   }
@@ -80,11 +79,11 @@ export class ProxyHandler {
 
         if (Utils.isObjectOrArray(value)) {
           // Get proxy from cache, or create and cache it
-          let childProxy = this.#cache.get(value);
+          let childProxy = this.#proxies.get(value);
           if (!childProxy) {
             const childPath = [...path, prop];
             childProxy = this.#createProxy(value, childPath, lazyWatchInstance);
-            this.#cache.set(value, childProxy);
+            this.#proxies.set(value, childProxy);
             this.#proxyPaths.set(childProxy, childPath);
           }
           return childProxy;
@@ -114,8 +113,12 @@ export class ProxyHandler {
         value = this.resolveIfProxy(value);
 
         // Reject Map/Set/typed arrays, non-finite numbers, and reserved
-        // names anywhere in the assigned value
-        Utils.assertSupported(value, [...path, prop]);
+        // names anywhere in the assigned value. Guarded so plain primitive
+        // writes skip the validation call and its path allocation entirely.
+        if ((value !== null && typeof value === 'object') ||
+          (typeof value === 'number' && !Number.isFinite(value))) {
+          Utils.assertSupported(value, [...path, prop]);
+        }
 
         // Assigning undefined would silently vanish from JSON diffs on the
         // wire; treat it as a deletion to match the null-means-delete
@@ -233,8 +236,10 @@ export class ProxyHandler {
     }
 
     // Validate before mutating so a rejected item leaves state untouched
+    // (assertSupported restores the path array, so it is safe to reuse)
+    const itemPath = [...path, method];
     for (const item of items) {
-      Utils.assertSupported(item, [...path, method]);
+      Utils.assertSupported(item, itemPath);
     }
 
     this.#suppress = true;
@@ -273,10 +278,10 @@ export class ProxyHandler {
    * Get or create the proxy for a raw object already inside the watched tree
    */
   #proxyFor(value, path) {
-    let proxy = this.#cache.get(value);
+    let proxy = this.#proxies.get(value);
     if (!proxy) {
       proxy = this.#createProxy(value, path, this.#instance);
-      this.#cache.set(value, proxy);
+      this.#proxies.set(value, proxy);
       this.#proxyPaths.set(proxy, path);
     }
     return proxy;
@@ -467,6 +472,7 @@ export class ProxyHandler {
    * Clean up resources
    */
   dispose() {
-    this.#cache = new WeakMap();
+    this.#proxies = new WeakMap();
+    this.#proxyPaths = new WeakMap();
   }
 }

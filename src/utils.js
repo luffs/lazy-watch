@@ -6,6 +6,9 @@
 // skipped when applying received diffs.
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
+// Error-path helper: renders a path prefix for validation messages
+const pathLabel = path => path.length ? ` at "${path.map(String).join('.')}"` : '';
+
 export const Utils = {
   /**
    * True for property names that are rejected in watched state because
@@ -55,19 +58,23 @@ export const Utils = {
    * offending path if it contains a rejected type, a non-finite number, or
    * a reserved property name. Date and RegExp pass as leaf values and are
    * not walked into. Cycle-safe.
+   *
+   * Perf note: the walk mutates `path` push/pop-style instead of copying it
+   * per key, and only renders it into a string on the (cold) error path.
+   * The array is restored before returning; on a throw it is abandoned
+   * mid-walk, which is fine — every caller passes a fresh array.
    */
   assertSupported(value, path = [], seen = new WeakSet()) {
-    const at = () => path.length ? ` at "${path.map(String).join('.')}"` : '';
     if (typeof value === 'number' && !Number.isFinite(value)) {
       throw new TypeError(
-        `LazyWatch cannot track non-finite number ${value}${at()}: JSON serializes it as null, which receivers interpret as a deletion.`
+        `LazyWatch cannot track non-finite number ${value}${pathLabel(path)}: JSON serializes it as null, which receivers interpret as a deletion.`
       );
     }
     if (!value || typeof value !== 'object') return;
     const rejected = this.rejectedTypeName(value);
     if (rejected) {
       throw new TypeError(
-        `LazyWatch cannot track ${rejected}${at()}: in-place mutations bypass the proxy and would silently desync. Use a plain object or array instead.`
+        `LazyWatch cannot track ${rejected}${pathLabel(path)}: in-place mutations bypass the proxy and would silently desync. Use a plain object or array instead.`
       );
     }
     if (!this.isObjectOrArray(value) || seen.has(value)) return;
@@ -75,10 +82,12 @@ export const Utils = {
     for (const key of Object.keys(value)) {
       if (this.isUnsafeKey(key)) {
         throw new TypeError(
-          `LazyWatch cannot use reserved property name "${key}"${at()}: it collides with the prototype machinery.`
+          `LazyWatch cannot use reserved property name "${key}"${pathLabel(path)}: it collides with the prototype machinery.`
         );
       }
-      this.assertSupported(value[key], [...path, key], seen);
+      path.push(key);
+      this.assertSupported(value[key], path, seen);
+      path.pop();
     }
   },
 

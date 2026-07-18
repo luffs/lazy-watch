@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
+## [3.1.1] - 2026-07-18
+
+- perf: Cut per-write allocations on the hot path — primitive assignments skip
+  the validation call (and its path-array allocation) entirely, and
+  `Utils.assertSupported` walks objects with a single push/pop path array and
+  builds error strings only on the (cold) failure path, instead of allocating
+  a path copy and a closure per node visited. Write-path benchmarks improve
+  roughly 5-20% depending on the operation; reads are unchanged
+- refactor: Split the bidirectional proxy cache into two named WeakMaps
+  (`#proxies`: target → proxy, `#proxyPaths`: proxy → path) and remove a
+  write-only root mapping nothing ever read; `dispose()` now clears both
+
 ## [3.1.0] - 2026-07-18
 
 - feat: Add `LazyWatch.flush(watched)` — synchronously emit pending changes,
