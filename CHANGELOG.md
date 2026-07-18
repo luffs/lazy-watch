@@ -28,6 +28,10 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
 - docs: EXAMPLES.md gains a WebSocket mirroring example — snapshot on
   (re)connect, plain diffs while connected, echo suppression for bidirectional
   sync, and a closure-scoped sequence number pattern for non-TCP transports
+- docs: README gains a "Scope and Non-Goals" section — LazyWatch targets
+  single-writer-per-property / server-ordered sync with last-writer-wins
+  resolution; concurrent multi-writer conflict resolution (CRDTs/OT) is an
+  explicit non-goal, with pointers to Yjs/Automerge for those cases
 - ci: The test workflow gains a benchmark job — the full suite (~16s) runs on
   every push and pull request, with results published to the job summary
 - refactor: Shrink `Utils.deepClone`'s manual fallback (used when

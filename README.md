@@ -18,6 +18,27 @@ Deep watch JavaScript objects using Proxy and emit diffs asynchronously. LazyWat
 - 📦 Efficient patching mechanism
 - 🌐 Works in browsers and Node.js
 
+## Scope and Non-Goals
+
+LazyWatch is built for **single-writer-per-property or server-ordered sync**:
+UI state, dashboards, mirrors of authoritative state, and relay chains where
+one side owns a given piece of data at a time (or a server imposes the order,
+as in the [WebSocket example](EXAMPLES.md#example-3-websocket-mirroring-with-reconnect-resync)).
+Within that scope its diffs are plain human-readable JSON with zero metadata
+overhead, and conflicts resolve **last-writer-wins by arrival order** — the
+last diff applied to a property is the value everyone keeps. The same applies
+to undo: inverse diffs revert *state*, not *intent*, so reverting a change
+after someone else touched the same property overwrites their change too.
+
+**Non-goal: concurrent conflict resolution.** If two parties can edit the
+same field at the same time — collaborative text editing, offline-first
+multi-writer documents — and neither edit may be lost, that requires CRDTs or
+operational transforms (causality metadata, element identity, tombstones),
+which LazyWatch deliberately omits to stay small and its wire format plain.
+For those use cases, embed a purpose-built library such as
+[Yjs](https://yjs.dev) or [Automerge](https://automerge.org) for the shared
+document, and use LazyWatch for the surrounding application state.
+
 ## Installation
 
 ```bash
