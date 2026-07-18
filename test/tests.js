@@ -31,6 +31,10 @@ class TestRunner {
     }
 
     console.log(`\n${this.passed} passed, ${this.failed} failed`);
+
+    if (this.failed > 0 && typeof process !== 'undefined') {
+      process.exitCode = 1;
+    }
   }
 }
 

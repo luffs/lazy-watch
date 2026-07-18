@@ -2,7 +2,9 @@
 
 /**
  * Represents the changes detected by LazyWatch
- * Keys are property paths, values are the new values (null for deletions)
+ * Keys are property names, values are the new values (null for deletions).
+ * Array changes appear as index-keyed fragments carrying a numeric `length`,
+ * e.g. { 1: 'b', length: 2 }.
  */
 export type ChangeSet = Record<string, any>;
 
@@ -12,13 +14,33 @@ export type ChangeSet = Record<string, any>;
 export type ChangeListener = (changes: ChangeSet) => void;
 
 /**
- * Utility functions used by LazyWatch
+ * A partial update for T. Values may be `null` to delete the property.
+ */
+export type Patch<T> = {
+    [K in keyof T]?: (T[K] extends object ? Patch<T[K]> : T[K]) | null;
+};
+
+/**
+ * Utility functions exposed as `LazyWatch.Utils`
  */
 export interface UtilsInterface {
     /**
      * Check if a value is an object or array (excluding Date)
      */
     isObjectOrArray(val: any): boolean;
+
+    /**
+     * True for index-keyed array diff fragments, e.g. { 1: 'b', length: 2 }:
+     * a plain object whose keys are all array indices plus a numeric `length`
+     */
+    isArrayDiff(val: any): boolean;
+
+    /**
+     * Return the value with any array-diff-shaped nodes converted into real
+     * arrays, recursively. Copy-on-write: containers are copied only where a
+     * conversion happens
+     */
+    reviveArrayDiffs(value: any): any;
 
     /**
      * Deep clone an object with support for various types
@@ -50,34 +72,13 @@ export interface LazyWatchConstructorOptions {
 }
 
 /**
- * LazyWatch - A reactive proxy-based object change tracker
+ * The LazyWatch constructor and its static API.
  *
- * The constructor returns a Proxy that behaves like the original object
- * but tracks all changes. Use static methods to interact with the proxy.
- *
- * @template T - The type of the object being watched
- *
- * @example
- * ```typescript
- * interface User {
- *   name: string;
- *   age: number;
- * }
- *
- * const user: User = { name: 'Alice', age: 30 };
- * const watched = new LazyWatch(user);
- *
- * LazyWatch.on(watched, (changes) => {
- *   console.log('User changed:', changes);
- * });
- *
- * watched.age = 31; // Triggers listener
- *
- * LazyWatch.dispose(watched);
- * ```
+ * Declared as an interface with a construct signature (rather than a class)
+ * because `new LazyWatch(obj)` returns a proxy typed as the watched object
+ * itself, which a class declaration cannot express.
  */
-export class LazyWatch<T extends object = any> {
-
+export interface LazyWatchStatic {
     /**
      * Create a new LazyWatch instance
      * Returns a proxy that can be used directly like the original object
@@ -85,43 +86,38 @@ export class LazyWatch<T extends object = any> {
      * @param options - Configuration options
      * @returns A proxy that tracks changes to the original object
      * @throws {TypeError} If original is not an object or array
+     *
+     * @example
+     * const user = { name: 'Alice', age: 30 };
+     * const watched = new LazyWatch(user);
+     * LazyWatch.on(watched, changes => console.log(changes));
+     * watched.age = 31; // Triggers listener
      */
-    // @ts-ignore
-    constructor(original: T, options?: LazyWatchConstructorOptions): T;
+    new <T extends object>(original: T, options?: LazyWatchConstructorOptions): T;
 
     /**
      * Add a change listener to a LazyWatch proxy
-     * @param watched - The LazyWatch proxy returned from the constructor
+     * Listeners registered on nested proxies receive path-relative diffs
+     * @param watched - The LazyWatch proxy (or a nested proxy within it)
      * @param listener - Callback function that receives changes
      * @throws {TypeError} If listener is not a function
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
-     *
-     * @example
-     * const watched = new LazyWatch({ count: 0 });
-     * LazyWatch.on(watched, (changes) => {
-     *   console.log('Changes:', changes);
-     * });
      */
-    static on<T extends object>(watched: T, listener: ChangeListener): void;
+    on(watched: object, listener: ChangeListener): void;
 
     /**
      * Remove a change listener from a LazyWatch proxy
      * @param watched - The LazyWatch proxy
      * @param listener - The listener to remove
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
-     *
-     * @example
-     * const listener = (changes) => console.log(changes);
-     * LazyWatch.on(watched, listener);
-     * LazyWatch.off(watched, listener);
      */
-    static off<T extends object>(watched: T, listener: ChangeListener): void;
+    off(watched: object, listener: ChangeListener): void;
 
     /**
      * Overwrite the watched object with new values
      * Deletes properties not present in source (unless target is array)
      * @param watched - The LazyWatch proxy
-     * @param source - The new values
+     * @param source - The new values (may be a diff received from a listener)
      * @throws {TypeError} If source is not an object
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
      *
@@ -130,12 +126,12 @@ export class LazyWatch<T extends object = any> {
      * LazyWatch.overwrite(watched, { a: 10, d: 4 });
      * // watched is now { a: 10, d: 4 } - b and c are deleted
      */
-    static overwrite<T extends object>(watched: T, source: Partial<T>): void;
+    overwrite<T extends object>(watched: T, source: Patch<T> | ChangeSet): void;
 
     /**
      * Patch (merge) new values without deleting missing properties
      * @param watched - The LazyWatch proxy
-     * @param source - The values to merge
+     * @param source - The values to merge (may be a diff received from a listener)
      * @throws {TypeError} If source is not an object
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
      *
@@ -144,14 +140,13 @@ export class LazyWatch<T extends object = any> {
      * LazyWatch.patch(watched, { a: 10, d: 4 });
      * // watched is now { a: 10, b: 2, c: 3, d: 4 } - b and c remain
      */
-    static patch<T extends object>(watched: T, source: Partial<T>): void;
+    patch<T extends object>(watched: T, source: Patch<T> | ChangeSet): void;
 
     /**
      * Patch (merge) new values into a normal (non-proxy) object without deleting missing properties
      * This utility method applies LazyWatch's patching semantics to regular objects
      * @param target - A normal object or array (not a LazyWatch proxy)
      * @param source - The values to merge into the target
-     * @throws {TypeError} If target or source is not an object
      *
      * @example
      * const normalObj = { a: 1, b: 2, c: { d: 3 } };
@@ -164,35 +159,21 @@ export class LazyWatch<T extends object = any> {
      * LazyWatch.patchObject(obj, { b: null, c: 30 });
      * // obj is now { a: 1, c: 30 }
      */
-    static patchObject<T extends object>(target: T, source: Partial<T>): void;
+    patchObject<T extends object>(target: T, source: Patch<T> | ChangeSet): void;
 
     /**
      * Resolve a proxy to its original target
      * @param obj - Potentially a proxy object
      * @returns The original target or the input if not a proxy
-     *
-     * @example
-     * const original = { count: 0 };
-     * const watched = new LazyWatch(original);
-     * const resolved = LazyWatch.resolveIfProxy(watched);
-     * // resolved === original
      */
-    static resolveIfProxy<T>(obj: T): T;
+    resolveIfProxy<T>(obj: T): T;
 
     /**
      * Check if an object is a LazyWatch proxy
      * @param obj - The object to check
-     * @returns True if the object is a LazyWatch proxy, false otherwise
-     *
-     * @example
-     * const watched = new LazyWatch({ count: 0 });
-     * const normal = { count: 0 };
-     * console.log(LazyWatch.isProxy(watched)); // true
-     * console.log(LazyWatch.isProxy(normal));  // false
-     * LazyWatch.dispose(watched);
-     * console.log(LazyWatch.isProxy(watched)); // false (disposed)
+     * @returns True if the object is a LazyWatch proxy (and not disposed), false otherwise
      */
-    static isProxy(obj: any): boolean;
+    isProxy(obj: any): boolean;
 
     /**
      * Get a copy of the current pending diff without consuming it
@@ -200,67 +181,36 @@ export class LazyWatch<T extends object = any> {
      * @param watched - The LazyWatch proxy
      * @returns A copy of the pending changes
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
-     *
-     * @example
-     * const watched = new LazyWatch({ count: 0 });
-     * watched.count = 1;
-     * watched.count = 2;
-     * const pending = LazyWatch.getPendingDiff(watched); // { count: 2 }
-     * // Changes are still pending and will be emitted to listeners
      */
-    static getPendingDiff<T extends object>(watched: T): ChangeSet;
+    getPendingDiff(watched: object): ChangeSet;
 
     /**
      * Pause event emissions
      * Changes continue to be tracked but listeners won't be notified until resumed
      * @param watched - The LazyWatch proxy
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
-     *
-     * @example
-     * const watched = new LazyWatch({ count: 0 });
-     * LazyWatch.on(watched, (changes) => console.log(changes));
-     * LazyWatch.pause(watched);
-     * watched.count = 1; // No listener notification
-     * watched.count = 2; // Still no notification
-     * LazyWatch.resume(watched); // Listener is called with { count: 2 }
      */
-    static pause<T extends object>(watched: T): void;
+    pause(watched: object): void;
 
     /**
      * Resume event emissions
-     * If there are pending changes, they will be emitted immediately
+     * If there are pending changes, they will be emitted
      * @param watched - The LazyWatch proxy
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
-     *
-     * @example
-     * const watched = new LazyWatch({ count: 0 });
-     * LazyWatch.on(watched, (changes) => console.log(changes));
-     * LazyWatch.pause(watched);
-     * watched.count = 1;
-     * LazyWatch.resume(watched); // Listener is called immediately with { count: 1 }
      */
-    static resume<T extends object>(watched: T): void;
+    resume(watched: object): void;
 
     /**
      * Check if event emissions are paused
      * @param watched - The LazyWatch proxy
      * @returns True if paused, false otherwise
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
-     *
-     * @example
-     * const watched = new LazyWatch({ count: 0 });
-     * console.log(LazyWatch.isPaused(watched)); // false
-     * LazyWatch.pause(watched);
-     * console.log(LazyWatch.isPaused(watched)); // true
-     * LazyWatch.resume(watched);
-     * console.log(LazyWatch.isPaused(watched)); // false
      */
-    static isPaused<T extends object>(watched: T): boolean;
+    isPaused(watched: object): boolean;
 
     /**
      * Execute a callback while suppressing event emissions
      * Any changes made during the callback are tracked and returned as a diff
-     *
      * @param watched - The LazyWatch proxy
      * @param callback - Function to execute silently
      * @returns A diff object containing any changes made during the callback
@@ -272,91 +222,56 @@ export class LazyWatch<T extends object = any> {
      *   watched.count = 1;
      *   watched.name = 'test';
      * });
-     * // diff = { count: 1, name: 'test' }
-     * // No event listeners are triggered
+     * // diff = { count: 1, name: 'test' }, no listeners triggered
      */
-    static silent<T extends object>(watched: T, callback: () => void): ChangeSet;
+    silent(watched: object, callback: () => void): ChangeSet;
 
     /**
      * Clean up resources and remove all listeners
-     * After disposal, the proxy cannot be used anymore
+     * After disposal, static methods on the proxy throw errors
      * @param watched - The LazyWatch proxy
-     *
-     * @example
-     * const watched = new LazyWatch({ count: 0 });
-     * // ... use watched ...
-     * LazyWatch.dispose(watched);
      */
-    static dispose<T extends object>(watched: T): void;
+    dispose(watched: object): void;
 
     /**
      * Utility functions
      */
-    static Utils: UtilsInterface;
+    Utils: UtilsInterface;
 }
 
 /**
- * Utility functions
+ * LazyWatch - A reactive proxy-based object change tracker
+ *
+ * The constructor returns a Proxy that behaves like the original object
+ * but tracks all changes. Use the static methods to interact with the proxy.
+ *
+ * @example
+ * ```typescript
+ * interface User {
+ *   name: string;
+ *   age: number;
+ * }
+ *
+ * const user: User = { name: 'Alice', age: 30 };
+ * const watched = new LazyWatch(user); // typed as User
+ *
+ * LazyWatch.on(watched, (changes) => {
+ *   console.log('User changed:', changes);
+ * });
+ *
+ * watched.age = 31; // Triggers listener
+ *
+ * LazyWatch.dispose(watched);
+ * ```
  */
-export const Utils: UtilsInterface;
+export const LazyWatch: LazyWatchStatic;
 
 /**
  * Symbol used internally to access the proxy target
  */
-export const PROXY_TARGET: symbol;
+export const PROXY_TARGET: unique symbol;
 
 /**
  * Symbol used internally to access the LazyWatch instance
  */
-export const LAZYWATCH_INSTANCE: symbol;
-
-/**
- * DiffTracker - Handles diff tracking internally
- * Not exposed in public API but included for completeness
- */
-export class DiffTracker {
-    constructor();
-    getDiffObject(path?: string[]): Record<string, any>;
-    consumeDiff(): ChangeSet;
-    hasPendingChanges(): boolean;
-    getPendingDiff(): ChangeSet;
-    clear(): void;
-}
-
-/**
- * EventEmitter - Handles event emission with batching
- * Not exposed in public API but included for completeness
- */
-export class EventEmitter {
-    constructor(diffTracker: DiffTracker, options?: LazyWatchConstructorOptions);
-    on(listener: ChangeListener): void;
-    off(listener: ChangeListener): void;
-    scheduleEmit(): void;
-    pause(): void;
-    resume(): void;
-    isPaused(): boolean;
-    forceEmit(): void;
-    dispose(): void;
-}
-
-/**
- * ProxyHandler - Handles proxy creation and management
- * Not exposed in public API but included for completeness
- */
-export class ProxyHandler {
-    constructor(original: any, diffTracker: DiffTracker, eventEmitter: EventEmitter);
-    createRootProxy(lazyWatchInstance: any): any;
-    overwrite(target: any, source: any): void;
-    patch(target: any, source: any): void;
-    resolveIfProxy(obj: any): any;
-    dispose(): void;
-}
-
-// Type helpers for better IntelliSense
-
-/**
- * Extract the proxy type with proper nested tracking
- */
-export type WatchedProxy<T> = T extends object ? {
-    [K in keyof T]: T[K] extends object ? WatchedProxy<T[K]> : T[K];
-} : T;
+export const LAZYWATCH_INSTANCE: unique symbol;

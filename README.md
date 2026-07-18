@@ -51,6 +51,22 @@ UI.count = 3;
 // After 50ms, logs once: { diff: { count: 3 } }
 ```
 
+### With Debouncing
+
+```js
+// Create a watched object with 100ms debounce
+const UI = new LazyWatch({}, { debounce: 100 });
+
+LazyWatch.on(UI, diff => console.log({ diff }));
+
+// Each change resets the timer; the diff is emitted once
+// 100ms after the last change
+UI.count = 1;
+UI.count = 2;
+UI.count = 3;
+// After 100ms of inactivity, logs once: { diff: { count: 3 } }
+```
+
 ## API Reference
 
 ### Creating Watched Objects
@@ -65,6 +81,7 @@ Creates a proxy around the original object that tracks all changes.
 - `originalObject` - The object or array to watch
 - `options` (optional) - Configuration options
   - `throttle` - Minimum time in milliseconds between emits (default: 0). When set, the first change emits immediately, but subsequent changes within the throttle window are batched together.
+  - `debounce` - Time in milliseconds to wait for additional changes before emitting (default: 0). Each new change resets the timer, so the diff is emitted once things go quiet. If both `throttle` and `debounce` are set, `debounce` takes precedence.
 
 ### Listening for Changes
 

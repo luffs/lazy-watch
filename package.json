@@ -3,10 +3,36 @@
   "version": "2.6.0",
   "description": "Deep watch objects (using Proxy) and emit diff asynchronously.",
   "type": "module",
-  "main": "./src/index.js",
-  "exports": "./src/lazy-watch.js",
+  "main": "./src/lazy-watch.js",
+  "types": "./src/lazy-watch.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/lazy-watch.d.ts",
+      "default": "./src/lazy-watch.js"
+    }
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=16"
+  },
+  "keywords": [
+    "proxy",
+    "watch",
+    "observe",
+    "diff",
+    "reactive",
+    "state",
+    "sync",
+    "change-tracking"
+  ],
   "scripts": {
     "test": "node ./test/tests.js",
+    "test:types": "npx -y -p typescript tsc --project test/tsconfig.json",
     "benchmark": "node --expose-gc ./benchmark/index.js",
     "benchmark:core": "node --expose-gc ./benchmark/index.js --core",
     "benchmark:memory": "node --expose-gc ./benchmark/index.js --memory",
