@@ -29,6 +29,17 @@ LazyWatch.on(watched, changes => {
 LazyWatch.on(watched.profile, () => {});
 LazyWatch.off(watched, () => {});
 
+// Listener options: once and AbortSignal
+const controller = new AbortController();
+LazyWatch.on(watched, () => {}, { signal: controller.signal, once: true });
+LazyWatch.once(watched, () => {}, { signal: controller.signal });
+LazyWatch.flush(watched);
+
+// @ts-expect-error - once() does not accept a nested once option
+LazyWatch.once(watched, () => {}, { once: false });
+// @ts-expect-error - signal must be an AbortSignal
+LazyWatch.on(watched, () => {}, { signal: 'abort' });
+
 // @ts-expect-error - listener must be a function
 LazyWatch.on(watched, 'not a function');
 

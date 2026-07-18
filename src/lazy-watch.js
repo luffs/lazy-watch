@@ -75,12 +75,29 @@ export class LazyWatch {
    * Add a change listener
    * @param {Object} watched - The LazyWatch proxy
    * @param {Function} listener - Callback function that receives changes
+   * @param {Object} [options] - Listener options
+   * @param {boolean} [options.once=false] - Remove the listener after its first invocation
+   * @param {AbortSignal} [options.signal] - Removes the listener when aborted;
+   *   an already-aborted signal never adds the listener
    */
-  static on(watched, listener) {
+  static on(watched, listener, options) {
     const instance = LazyWatch.#getInstance(watched);
     instance.#checkDisposed();
     const path = instance.#proxyHandler.getProxyPath(watched);
-    instance.#eventEmitter.on(listener, path);
+    instance.#eventEmitter.on(listener, path, options);
+  }
+
+  /**
+   * Add a change listener that is removed after its first invocation.
+   * For listeners on nested proxies, "first invocation" means the first
+   * batch that actually touches their subtree.
+   * @param {Object} watched - The LazyWatch proxy
+   * @param {Function} listener - Callback function that receives changes
+   * @param {Object} [options] - Listener options
+   * @param {AbortSignal} [options.signal] - Removes the listener when aborted
+   */
+  static once(watched, listener, options = {}) {
+    LazyWatch.on(watched, listener, { ...options, once: true });
   }
 
   /**
@@ -217,6 +234,22 @@ export class LazyWatch {
 
     // Fallback to WeakMap check (which won't find disposed proxies)
     return LazyWatch.#instances.has(obj);
+  }
+
+  /**
+   * Synchronously emit any pending changes to all listeners.
+   * Bypasses microtask batching, throttle, debounce, and pause state.
+   * Does nothing if there are no pending changes.
+   * @param {Object} watched - The LazyWatch proxy
+   * @throws {Error} If the instance has been disposed
+   * @example
+   * watched.count = 1;
+   * LazyWatch.flush(watched); // listener fires now, not on the next microtask
+   */
+  static flush(watched) {
+    const instance = LazyWatch.#getInstance(watched);
+    instance.#checkDisposed();
+    instance.#eventEmitter.forceEmit();
   }
 
   /**

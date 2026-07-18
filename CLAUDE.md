@@ -55,6 +55,8 @@ The codebase follows a modular architecture with clear separation of concerns:
    - Error handling prevents one failing listener from affecting others
    - Supports throttling (`options.throttle`) and debouncing (`options.debounce`)
    - Tracks `lastEmitTime` and uses `setTimeout` for delayed emits when throttling or debouncing
+   - Listener options: `{ once }` (removed after first invocation; nested-path listeners only consume on batches touching their subtree) and `{ signal }` (AbortSignal removal, addEventListener semantics)
+   - `LazyWatch.flush(watched)` exposes `forceEmit()`: synchronous emit bypassing batching, throttle, debounce, and pause
 
 5. **Utils** (`src/utils.js`) - Helper functions for type checking and cloning
    - `isObjectOrArray()` determines if value should be proxied; returns false for leaf values

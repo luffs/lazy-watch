@@ -1683,6 +1683,140 @@ runner.test('getPendingDiff should preserve Date values', () => {
   LazyWatch.dispose(watched);
 });
 
+// --- flush(), once(), and AbortSignal listeners ---
+
+runner.test('flush should emit pending changes synchronously', () => {
+  const watched = new LazyWatch({ count: 0 });
+  let received = null;
+  LazyWatch.on(watched, diff => { received = diff; });
+
+  watched.count = 1;
+  assertEquals(received, null, 'nothing emitted before flush');
+  LazyWatch.flush(watched);
+  assertEquals(received, { count: 1 }, 'flush should emit synchronously');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('flush should bypass debounce and pause, and be a no-op when clean', async () => {
+  const watched = new LazyWatch({ count: 0 }, { debounce: 5000 });
+  let calls = 0;
+  LazyWatch.on(watched, () => { calls++; });
+
+  watched.count = 1;
+  LazyWatch.flush(watched);
+  assertEquals(calls, 1, 'flush should bypass the debounce timer');
+
+  LazyWatch.flush(watched);
+  assertEquals(calls, 1, 'flush with no pending changes should not emit');
+
+  LazyWatch.pause(watched);
+  watched.count = 2;
+  LazyWatch.flush(watched);
+  assertEquals(calls, 2, 'flush should bypass pause');
+  LazyWatch.resume(watched);
+
+  await wait(10);
+  assertEquals(calls, 2, 'no stray emits after flush');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('once should fire a single time and then be removed', async () => {
+  const watched = new LazyWatch({ count: 0 });
+  let calls = 0;
+  LazyWatch.once(watched, () => { calls++; });
+
+  watched.count = 1;
+  await wait(10);
+  watched.count = 2;
+  await wait(10);
+
+  assertEquals(calls, 1, 'once listener should fire exactly once');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('once on a nested proxy should wait for its subtree', async () => {
+  const watched = new LazyWatch({ user: { name: 'a' }, other: 1 });
+  let received = null;
+  LazyWatch.once(watched.user, diff => { received = diff; });
+
+  watched.other = 2; // unrelated change must not consume the once-listener
+  await wait(10);
+  assertEquals(received, null, 'unrelated change should not consume once()');
+
+  watched.user.name = 'b';
+  await wait(10);
+  assertEquals(received, { name: 'b' });
+
+  received = null;
+  watched.user.name = 'c';
+  await wait(10);
+  assertEquals(received, null, 'once listener should be gone after firing');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('once listeners should also be removed via off()', async () => {
+  const watched = new LazyWatch({ count: 0 });
+  let calls = 0;
+  const listener = () => { calls++; };
+  LazyWatch.once(watched, listener);
+  LazyWatch.off(watched, listener);
+
+  watched.count = 1;
+  await wait(10);
+  assertEquals(calls, 0, 'off should remove a once listener before it fires');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('AbortSignal should remove listeners on abort', async () => {
+  const watched = new LazyWatch({ count: 0 });
+  let calls = 0;
+  const controller = new AbortController();
+  LazyWatch.on(watched, () => { calls++; }, { signal: controller.signal });
+
+  watched.count = 1;
+  await wait(10);
+  assertEquals(calls, 1, 'listener should fire before abort');
+
+  controller.abort();
+  watched.count = 2;
+  await wait(10);
+  assertEquals(calls, 1, 'listener should not fire after abort');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('an already-aborted signal should never add the listener', async () => {
+  const watched = new LazyWatch({ count: 0 });
+  let calls = 0;
+  const controller = new AbortController();
+  controller.abort();
+  LazyWatch.on(watched, () => { calls++; }, { signal: controller.signal });
+
+  watched.count = 1;
+  await wait(10);
+  assertEquals(calls, 0);
+  LazyWatch.dispose(watched);
+});
+
+runner.test('a throwing once listener should still be removed', async () => {
+  const watched = new LazyWatch({ count: 0 });
+  let calls = 0;
+  const origError = console.error;
+  console.error = () => {}; // silence the expected listener-error log
+  try {
+    LazyWatch.once(watched, () => { calls++; throw new Error('boom'); });
+
+    watched.count = 1;
+    await wait(10);
+    watched.count = 2;
+    await wait(10);
+  } finally {
+    console.error = origError;
+  }
+
+  assertEquals(calls, 1, 'throwing once listener should fire exactly once');
+  LazyWatch.dispose(watched);
+});
+
 // Usage examples
 console.log('\n=== LazyWatch Usage Examples ===\n');
 

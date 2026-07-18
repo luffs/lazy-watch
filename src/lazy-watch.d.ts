@@ -68,6 +68,25 @@ export interface UtilsInterface {
 }
 
 /**
+ * Options for change listeners
+ */
+export interface ListenerOptions {
+    /**
+     * Remove the listener after its first invocation. For listeners on
+     * nested proxies, "first invocation" means the first batch that
+     * actually touches their subtree
+     * @default false
+     */
+    once?: boolean;
+
+    /**
+     * Removes the listener when aborted; an already-aborted signal
+     * never adds the listener (matching addEventListener semantics)
+     */
+    signal?: AbortSignal;
+}
+
+/**
  * Configuration options for LazyWatch
  */
 export interface LazyWatchConstructorOptions {
@@ -119,10 +138,21 @@ export interface LazyWatchStatic {
      * Listeners registered on nested proxies receive path-relative diffs
      * @param watched - The LazyWatch proxy (or a nested proxy within it)
      * @param listener - Callback function that receives changes
+     * @param options - Listener options (once, AbortSignal)
      * @throws {TypeError} If listener is not a function
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
      */
-    on(watched: object, listener: ChangeListener): void;
+    on(watched: object, listener: ChangeListener, options?: ListenerOptions): void;
+
+    /**
+     * Add a change listener that is removed after its first invocation
+     * @param watched - The LazyWatch proxy (or a nested proxy within it)
+     * @param listener - Callback function that receives changes
+     * @param options - Listener options (AbortSignal)
+     * @throws {TypeError} If listener is not a function
+     * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
+     */
+    once(watched: object, listener: ChangeListener, options?: Omit<ListenerOptions, 'once'>): void;
 
     /**
      * Remove a change listener from a LazyWatch proxy
@@ -202,6 +232,15 @@ export interface LazyWatchStatic {
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
      */
     getPendingDiff(watched: object): ChangeSet;
+
+    /**
+     * Synchronously emit any pending changes to all listeners.
+     * Bypasses microtask batching, throttle, debounce, and pause state.
+     * Does nothing if there are no pending changes
+     * @param watched - The LazyWatch proxy
+     * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
+     */
+    flush(watched: object): void;
 
     /**
      * Pause event emissions

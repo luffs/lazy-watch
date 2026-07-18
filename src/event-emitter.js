@@ -22,12 +22,21 @@ export class EventEmitter {
    * Add a change listener
    * @param {Function} listener - The listener function
    * @param {Array} path - The path of the proxy this listener is registered on
+   * @param {Object} [options] - Listener options
+   * @param {boolean} [options.once=false] - Remove the listener after its first invocation
+   * @param {AbortSignal} [options.signal] - Removes the listener when aborted
    */
-  on(listener, path = []) {
+  on(listener, path = [], options = {}) {
     if (typeof listener !== 'function') {
       throw new TypeError('Listener must be a function');
     }
-    this.#listeners.push({ listener, path });
+    const { once = false, signal } = options;
+    if (signal) {
+      // Match addEventListener semantics: an already-aborted signal never adds
+      if (signal.aborted) return;
+      signal.addEventListener('abort', () => this.off(listener), { once: true });
+    }
+    this.#listeners.push({ listener, path, once });
   }
 
   /**
@@ -82,18 +91,27 @@ export class EventEmitter {
     this.#lastEmitTime = performance.now();
 
     const diff = this.#diffTracker.consumeDiff();
-    this.#listeners.forEach(({ listener, path }) => {
+    let removeFired = false;
+    this.#listeners.forEach(entry => {
       try {
         // Filter the diff based on the listener's path
-        const filteredDiff = this.#filterDiffByPath(diff, path);
+        const filteredDiff = this.#filterDiffByPath(diff, entry.path);
         // Only call the listener if there are changes relevant to their path
         if (filteredDiff && Object.keys(filteredDiff).length > 0) {
-          listener(filteredDiff);
+          // Mark before invoking so a throwing once-listener is still removed
+          if (entry.once) {
+            entry.fired = true;
+            removeFired = true;
+          }
+          entry.listener(filteredDiff);
         }
       } catch (e) {
         console.error('Error in LazyWatch listener:', e);
       }
     });
+    if (removeFired) {
+      this.#listeners = this.#listeners.filter(entry => !entry.fired);
+    }
   }
 
   /**

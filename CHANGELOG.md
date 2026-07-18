@@ -6,6 +6,14 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
 
 ## [3.1.0] - 2026-07-18
 
+- feat: Add `LazyWatch.flush(watched)` — synchronously emit pending changes,
+  bypassing microtask batching, throttle, debounce, and pause state
+- feat: `LazyWatch.on` accepts an options object: `{ once }` removes the
+  listener after its first invocation, `{ signal }` removes it when an
+  `AbortSignal` aborts (an already-aborted signal never adds the listener).
+  `LazyWatch.once(watched, listener, options)` is shorthand for
+  `on(..., { once: true })`; nested-proxy once-listeners are only consumed by
+  batches that touch their subtree
 - security: Block prototype pollution through received diffs. `__proto__`,
   `constructor`, and `prototype` are now reserved property names: writes into
   watched state reject them with a `TypeError`, `patch`/`overwrite`/`patchObject`

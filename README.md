@@ -86,10 +86,29 @@ Creates a proxy around the original object that tracks all changes.
 ### Listening for Changes
 
 ```js
-LazyWatch.on(watchedObject, callback);
+LazyWatch.on(watchedObject, callback, options);
 ```
 
 Registers a callback function that will be called with a diff object whenever changes are made to the watched object.
+
+**Options** (all optional):
+- `once` - Remove the listener after its first invocation
+- `signal` - An `AbortSignal` that removes the listener when aborted. An already-aborted signal never adds the listener (matching `addEventListener` semantics)
+
+```js
+const controller = new AbortController();
+LazyWatch.on(watched, callback, { signal: controller.signal });
+// later: removes the listener
+controller.abort();
+```
+
+#### One-shot Listeners
+
+```js
+LazyWatch.once(watchedObject, callback, options);
+```
+
+Shorthand for `on(..., { once: true })` — the listener is removed after its first invocation. For listeners on nested proxies, "first invocation" means the first batch that actually touches their subtree; unrelated changes don't consume it.
 
 #### Nested Proxy Listeners
 
@@ -153,6 +172,27 @@ LazyWatch.off(watchedObject, callback);
 ```
 
 Removes a previously registered callback function.
+
+### Flushing Pending Changes
+
+```js
+LazyWatch.flush(watchedObject);
+```
+
+Synchronously emits any pending changes to all listeners, bypassing microtask
+batching, throttle, debounce, and pause state. Does nothing when there are no
+pending changes. Useful before serializing state, unloading a page, or any
+time you need listeners up to date *now*:
+
+```js
+const data = new LazyWatch({ count: 0 }, { debounce: 500 });
+LazyWatch.on(data, diff => sendToServer(diff));
+
+data.count = 1;
+window.addEventListener('beforeunload', () => {
+  LazyWatch.flush(data); // don't lose the last diff to the debounce timer
+});
+```
 
 ### Pausing and Resuming Event Emissions
 
