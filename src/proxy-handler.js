@@ -440,8 +440,11 @@ export class ProxyHandler {
    */
   patch(target, source) {
     this.#patchMode = true;
-    this.overwrite(target, source);
-    this.#patchMode = false;
+    try {
+      this.overwrite(target, source);
+    } finally {
+      this.#patchMode = false;
+    }
   }
 
   /**

@@ -1885,6 +1885,240 @@ runner.test('deleting a symbol-keyed property should not emit', async () => {
   LazyWatch.dispose(watched);
 });
 
+// --- patch atomicity and nested-listener subtree semantics ---
+
+runner.test('a throwing patch should not corrupt later overwrite semantics', () => {
+  const watched = new LazyWatch({ a: 1, b: 2 });
+  assertThrows(() => LazyWatch.patch(watched, { c: new Map() }));
+
+  // overwrite must still delete missing properties after the failed patch
+  LazyWatch.overwrite(watched, { a: 10 });
+  assertEquals(watched.a, 10);
+  assertTrue(!('b' in LazyWatch.resolveIfProxy(watched)),
+    'overwrite should still delete missing properties after a failed patch');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('nested listener should receive null when its subtree is deleted', async () => {
+  const watched = new LazyWatch({ user: { name: 'x' }, other: 1 });
+  let received = 'never-called';
+  LazyWatch.on(watched.user, d => { received = d; });
+
+  delete watched.user;
+  await wait(10);
+
+  assertEquals(received, null, 'subtree deletion should notify with null');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('nested listener should receive the leaf value when its subtree is replaced', async () => {
+  const watched = new LazyWatch({ user: { name: 'x' } });
+  let received = 'never-called';
+  LazyWatch.on(watched.user, d => { received = d; });
+
+  watched.user = 'hello';
+  await wait(10);
+
+  assertEquals(received, 'hello', 'wholesale replacement should deliver the new value');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('nested listener should receive null when an ancestor is deleted or replaced', async () => {
+  const watched = new LazyWatch({ a: { b: { c: 1 } } });
+  let received = 'never-called';
+  LazyWatch.on(watched.a.b, d => { received = d; });
+
+  watched.a = 5; // ancestor replaced by a leaf destroys the b subtree
+  await wait(10);
+
+  assertEquals(received, null, 'ancestor replacement should notify with null');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('falsy leaf replacements should still notify nested listeners', async () => {
+  const watched = new LazyWatch({ flag: { on: true } });
+  let received = 'never-called';
+  LazyWatch.on(watched.flag, d => { received = d; });
+
+  watched.flag = false;
+  await wait(10);
+
+  assertEquals(received, false, 'replacement by false should be delivered, not skipped');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('off should remove the registration on the given proxy, not just the first match', async () => {
+  const watched = new LazyWatch({ a: { x: 1 }, b: { y: 1 } });
+  const log = [];
+  const fn = d => log.push(d);
+  LazyWatch.on(watched.a, fn);
+  LazyWatch.on(watched.b, fn);
+
+  LazyWatch.off(watched.b, fn); // must remove the b registration, not a's
+  watched.b.y = 2;
+  watched.a.x = 2;
+  await wait(10);
+
+  assertEquals(log, [{ x: 2 }], 'a listener should survive, b listener should be gone');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('off on the root should not remove a nested registration of the same function', async () => {
+  const watched = new LazyWatch({ a: { x: 1 } });
+  let calls = 0;
+  const fn = () => { calls++; };
+  LazyWatch.on(watched.a, fn);
+
+  LazyWatch.off(watched, fn); // root path has no such registration
+  watched.a.x = 2;
+  await wait(10);
+
+  assertEquals(calls, 1, 'nested registration should survive off() on the root');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('aborting a signal should remove only its own registration of a shared function', async () => {
+  const watched = new LazyWatch({ a: { x: 1 }, b: { y: 1 } });
+  const log = [];
+  const fn = d => log.push(d);
+  const controller = new AbortController();
+  LazyWatch.on(watched.a, fn, { signal: controller.signal });
+  LazyWatch.on(watched.b, fn);
+
+  controller.abort(); // must remove the a registration, not b's
+  watched.a.x = 2;
+  watched.b.y = 2;
+  await wait(10);
+
+  assertEquals(log, [{ y: 2 }], 'b listener should survive the abort of a\'s signal');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('nested listeners should stay silent for untouched subtrees', async () => {
+  const watched = new LazyWatch({ user: { name: 'x' }, other: 1 });
+  let calls = 0;
+  LazyWatch.on(watched.user, () => { calls++; });
+
+  watched.other = 2;
+  delete watched.other;
+  await wait(10);
+
+  assertEquals(calls, 0, 'changes outside the subtree must not notify');
+  LazyWatch.dispose(watched);
+});
+
+// --- unsubscribe from on(), snapshot(), deepClone fallback ---
+
+runner.test('on should return an idempotent unsubscribe function', async () => {
+  const watched = new LazyWatch({ count: 0 });
+  let calls = 0;
+  const stop = LazyWatch.on(watched, () => { calls++; });
+
+  watched.count = 1;
+  await wait(10);
+  assertEquals(calls, 1);
+
+  stop();
+  watched.count = 2;
+  await wait(10);
+  assertEquals(calls, 1, 'unsubscribed listener should not fire');
+
+  stop(); // second call must be a harmless no-op
+  LazyWatch.dispose(watched);
+});
+
+runner.test('unsubscribe should remove only its own registration of a shared function', async () => {
+  const watched = new LazyWatch({ a: { x: 1 }, b: { y: 1 } });
+  const log = [];
+  const fn = d => log.push(d);
+  const stopA = LazyWatch.on(watched.a, fn);
+  LazyWatch.on(watched.b, fn);
+
+  stopA();
+  watched.a.x = 2;
+  watched.b.y = 2;
+  await wait(10);
+
+  assertEquals(log, [{ y: 2 }], 'only the a registration should be removed');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('once should return an unsubscribe that works before the first fire', async () => {
+  const watched = new LazyWatch({ count: 0 });
+  let calls = 0;
+  const stop = LazyWatch.once(watched, () => { calls++; });
+
+  stop();
+  watched.count = 1;
+  await wait(10);
+
+  assertEquals(calls, 0, 'unsubscribed once listener should never fire');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('on with an already-aborted signal should return a no-op unsubscribe', () => {
+  const watched = new LazyWatch({ count: 0 });
+  const controller = new AbortController();
+  controller.abort();
+  const stop = LazyWatch.on(watched, () => {}, { signal: controller.signal });
+
+  assertTrue(typeof stop === 'function', 'should still return a function');
+  stop(); // must not throw
+  LazyWatch.dispose(watched);
+});
+
+runner.test('snapshot should return an independent deep clone', async () => {
+  const watched = new LazyWatch({ user: { name: 'Alice', tags: ['a'] }, when: new Date(0) });
+  let calls = 0;
+  LazyWatch.on(watched, () => { calls++; });
+
+  const snap = LazyWatch.snapshot(watched);
+  assertEquals(snap, { user: { name: 'Alice', tags: ['a'] }, when: new Date(0) });
+  assertTrue(snap.when instanceof Date, 'Date leaves should keep their type');
+  assertTrue(!LazyWatch.isProxy(snap), 'snapshot should be a plain object, not a proxy');
+
+  // Mutating the snapshot must not touch the watched object or emit
+  snap.user.name = 'Bob';
+  snap.user.tags.push('b');
+  await wait(10);
+  assertEquals(calls, 0, 'snapshot mutations must not emit');
+  assertEquals(watched.user.name, 'Alice');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('snapshot of a nested proxy should clone just that subtree', () => {
+  const watched = new LazyWatch({ user: { name: 'Alice' }, other: 1 });
+  const snap = LazyWatch.snapshot(watched.user);
+  assertEquals(snap, { name: 'Alice' });
+  LazyWatch.dispose(watched);
+});
+
+runner.test('snapshot should throw after disposal', () => {
+  const watched = new LazyWatch({ a: 1 });
+  LazyWatch.dispose(watched);
+  assertThrows(() => LazyWatch.snapshot(watched));
+});
+
+runner.test('deepClone fallback should handle functions by reference', () => {
+  // structuredClone throws on functions, forcing the manual fallback path
+  const fn = () => 42;
+  const source = { fn, nested: { list: [1, { deep: true }], when: new Date(0) } };
+  const clone = LazyWatch.Utils.deepClone(source);
+
+  assertTrue(clone.fn === fn, 'functions should be copied by reference');
+  assertTrue(clone.nested !== source.nested, 'containers should be cloned');
+  assertTrue(clone.nested.list[1] !== source.nested.list[1], 'deep containers should be cloned');
+  assertTrue(clone.nested.when instanceof Date, 'Date should survive the fallback');
+  assertEquals(clone.nested.list, [1, { deep: true }]);
+});
+
+runner.test('deepClone fallback should handle cycles', () => {
+  const source = { fn: () => {} }; // function forces the manual path
+  source.self = source;
+  const clone = LazyWatch.Utils.deepClone(source);
+  assertTrue(clone.self === clone, 'cycle should point at the clone, not the source');
+});
+
 // Usage examples
 console.log('\n=== LazyWatch Usage Examples ===\n');
 

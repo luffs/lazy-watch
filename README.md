@@ -87,10 +87,16 @@ Creates a proxy around the original object that tracks all changes.
 ### Listening for Changes
 
 ```js
-LazyWatch.on(watchedObject, callback, options);
+const unsubscribe = LazyWatch.on(watchedObject, callback, options);
 ```
 
-Registers a callback function that will be called with a diff object whenever changes are made to the watched object.
+Registers a callback function that will be called with a diff object whenever changes are made to the watched object. Returns an idempotent **unsubscribe function** that removes exactly this registration:
+
+```js
+const stop = LazyWatch.on(watched, diff => render(diff));
+// later:
+stop(); // listener removed; calling stop() again is a harmless no-op
+```
 
 **Options** (all optional):
 - `once` - Remove the listener after its first invocation
@@ -166,13 +172,38 @@ app.user.name = 'Bob';      // Only user listener fires
 app.settings.lang = 'fr';   // Only settings listener fires
 ```
 
+**Subtree deletion and replacement:** when the subtree a nested listener is
+registered on is deleted — or replaced wholesale by a leaf value (string,
+number, boolean, `Date`, ...) — the listener is called with `null` for a
+deletion (matching the diff convention where `null` means delete) or with the
+new leaf value for a replacement. This also applies when an *ancestor* of the
+subtree is deleted or replaced by a leaf: the listener receives `null`.
+
+```js
+const app = new LazyWatch({ user: { name: 'Alice' } });
+
+LazyWatch.on(app.user, changes => {
+  // { name: 'Bob' }  — normal path-relative diff
+  // null             — after `delete app.user`
+  // 'offline'        — after `app.user = 'offline'`
+});
+```
+
+Note that listeners are bound to a *path*, not an object identity: if a new
+object is later assigned at the same path, the listener resumes receiving its
+diffs.
+
 ### Removing Listeners
 
 ```js
 LazyWatch.off(watchedObject, callback);
 ```
 
-Removes a previously registered callback function.
+Removes a previously registered callback function. Registrations are per
+proxy: the same function registered on the root and on a nested proxy are
+distinct registrations, and `off` removes only the one made on the proxy you
+pass. The same applies to `AbortSignal` removal — aborting a signal removes
+only the registration it was passed to.
 
 ### Flushing Pending Changes
 
@@ -193,6 +224,26 @@ data.count = 1;
 window.addEventListener('beforeunload', () => {
   LazyWatch.flush(data); // don't lose the last diff to the debounce timer
 });
+```
+
+### Taking Snapshots
+
+```js
+const state = LazyWatch.snapshot(watchedObject);
+```
+
+Returns a deep-cloned plain copy of the current state — no proxy, no shared
+references. Mutating or serializing the snapshot never affects the watched
+object or triggers listeners. Works on the root proxy or any nested proxy
+(snapshotting just that subtree):
+
+```js
+const app = new LazyWatch({ user: { name: 'Alice' }, count: 0 });
+
+const full = LazyWatch.snapshot(app);        // { user: { name: 'Alice' }, count: 0 }
+const sub = LazyWatch.snapshot(app.user);    // { name: 'Alice' }
+
+localStorage.setItem('state', JSON.stringify(full)); // safe to serialize
 ```
 
 ### Pausing and Resuming Event Emissions

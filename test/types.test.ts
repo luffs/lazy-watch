@@ -2,7 +2,7 @@
 // Run with: npx -p typescript tsc --project test/tsconfig.json
 // This file is never executed; tsc failing (including unused @ts-expect-error) is the test.
 import { LazyWatch, PROXY_TARGET, LAZYWATCH_INSTANCE } from '../src/lazy-watch.js';
-import type { ChangeSet, Patch } from '../src/lazy-watch.js';
+import type { ChangeSet, Patch, Unsubscribe } from '../src/lazy-watch.js';
 
 interface User {
   name: string;
@@ -28,6 +28,12 @@ LazyWatch.on(watched, changes => {
 });
 LazyWatch.on(watched.profile, () => {});
 LazyWatch.off(watched, () => {});
+
+// on/once return an unsubscribe function
+const stop: Unsubscribe = LazyWatch.on(watched, () => {});
+stop();
+const stopOnce: () => void = LazyWatch.once(watched, () => {});
+stopOnce();
 
 // Listener options: once and AbortSignal
 const controller = new AbortController();
@@ -65,6 +71,10 @@ LazyWatch.pause(watched);
 LazyWatch.resume(watched);
 const pending: ChangeSet = LazyWatch.getPendingDiff(watched);
 void pending;
+const snap: User = LazyWatch.snapshot(watched);
+void snap;
+const subSnap: { theme: string } = LazyWatch.snapshot(watched.profile);
+void subSnap;
 const diff: ChangeSet = LazyWatch.silent(watched, () => { watched.age = 33; });
 void diff;
 LazyWatch.dispose(watched);

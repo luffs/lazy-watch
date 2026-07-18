@@ -158,16 +158,22 @@ export const Utils = {
   },
 
   /**
-   * Deep clone an object with support for various types
+   * Deep clone a value.
+   *
+   * Uses structuredClone when available (Node 17+, all modern browsers) and
+   * falls back to manual cloning when it is missing or throws (e.g. the value
+   * contains a function). The manual path only handles what can occur in
+   * watched state — plain objects, arrays, Date and RegExp leaves — since the
+   * collection types are rejected by `assertSupported` before any clone
+   * happens. Functions are copied by reference. Cycle-safe on both paths.
    */
   deepClone(obj, hash = new WeakMap()) {
-    // Primitives
-    if (Object(obj) !== obj) return obj;
+    // Primitives, and functions (copied by reference)
+    if (Object(obj) !== obj || typeof obj === 'function') return obj;
 
     // Cyclic reference
     if (hash.has(obj)) return hash.get(obj);
 
-    // Use structuredClone if available (modern browsers/Node 17+)
     if (typeof structuredClone === 'function') {
       try {
         return structuredClone(obj);
@@ -176,32 +182,16 @@ export const Utils = {
       }
     }
 
-    let result;
+    if (obj instanceof Date) return new Date(obj);
+    if (obj instanceof RegExp) return new RegExp(obj.source, obj.flags);
 
-    if (obj instanceof Set) {
-      result = new Set(obj);
-    } else if (obj instanceof Map) {
-      result = new Map(Array.from(obj, ([key, val]) => [key, this.deepClone(val, hash)]));
-    } else if (obj instanceof Date) {
-      result = new Date(obj);
-    } else if (obj instanceof RegExp) {
-      result = new RegExp(obj.source, obj.flags);
-    } else if (ArrayBuffer.isView(obj)) {
-      // Handle typed arrays
-      result = new obj.constructor(obj);
-    } else if (obj instanceof ArrayBuffer) {
-      result = obj.slice(0);
-    } else if (obj.constructor) {
-      result = new obj.constructor();
-    } else {
-      result = Object.create(null);
-    }
-
+    // Plain objects and arrays. Like structuredClone, custom prototypes are
+    // not preserved.
+    const result = Array.isArray(obj) ? [] : {};
     hash.set(obj, result);
-
-    return Object.assign(
-      result,
-      ...Object.keys(obj).map(key => ({ [key]: this.deepClone(obj[key], hash) }))
-    );
+    for (const key of Object.keys(obj)) {
+      result[key] = this.deepClone(obj[key], hash);
+    }
+    return result;
   }
 };

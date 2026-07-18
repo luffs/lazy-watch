@@ -55,12 +55,14 @@ The codebase follows a modular architecture with clear separation of concerns:
    - Error handling prevents one failing listener from affecting others
    - Supports throttling (`options.throttle`) and debouncing (`options.debounce`)
    - Tracks `lastEmitTime` and uses `setTimeout` for delayed emits when throttling or debouncing
+   - `on()` returns an idempotent unsubscribe function scoped to that exact registration (a no-op function when the signal is already aborted); `off()` and abort removal are path-scoped, so the same callback on two proxies are distinct registrations
    - Listener options: `{ once }` (removed after first invocation; nested-path listeners only consume on batches touching their subtree) and `{ signal }` (AbortSignal removal, addEventListener semantics)
+   - Nested-path listeners receive path-relative diffs; when their subtree (or an ancestor) is deleted they are called with `null`, and when it is replaced wholesale by a leaf value they are called with that value. `#filterDiffByPath` uses `undefined` as the "batch didn't touch this path" sentinel (safe because diffs never store `undefined`)
    - `LazyWatch.flush(watched)` exposes `forceEmit()`: synchronous emit bypassing batching, throttle, debounce, and pause
 
 5. **Utils** (`src/utils.js`) - Helper functions for type checking and cloning
    - `isObjectOrArray()` determines if value should be proxied; returns false for leaf values
-   - `deepClone()` creates copies of objects/arrays for diff storage
+   - `deepClone()` creates copies of objects/arrays for diff storage; uses `structuredClone` when available, with a manual fallback covering only what watched state allows (plain objects, arrays, Date, RegExp; functions by reference). Also backs `LazyWatch.snapshot(watched)`, which returns an independent plain clone of the root or a nested subtree
 
 ### Data Flow
 

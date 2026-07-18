@@ -11,9 +11,21 @@
 export type ChangeSet = Record<string, any>;
 
 /**
- * Callback function for change notifications
+ * Idempotent function that removes exactly the listener registration
+ * it was returned for
  */
-export type ChangeListener = (changes: ChangeSet) => void;
+export type Unsubscribe = () => void;
+
+/**
+ * Callback function for change notifications.
+ *
+ * Root listeners always receive a diff object. Listeners registered on
+ * nested proxies receive path-relative diffs — and when their subtree (or an
+ * ancestor of it) is deleted they receive `null`; when it is replaced
+ * wholesale by a leaf value (string, number, boolean, Date, ...) they receive
+ * that value directly.
+ */
+export type ChangeListener = (changes: ChangeSet | null | any) => void;
 
 /**
  * A partial update for T. Values may be `null` to delete the property.
@@ -61,8 +73,10 @@ export interface UtilsInterface {
     reviveArrayDiffs(value: any): any;
 
     /**
-     * Deep clone an object with support for various types
-     * Uses structuredClone when available, falls back to manual cloning
+     * Deep clone a value. Uses structuredClone when available and falls back
+     * to manual cloning when it is missing or throws (e.g. the value contains
+     * a function). The manual path handles plain objects, arrays, Date and
+     * RegExp; functions are copied by reference. Cycle-safe
      */
     deepClone<T>(obj: T, hash?: WeakMap<any, any>): T;
 }
@@ -135,28 +149,35 @@ export interface LazyWatchStatic {
 
     /**
      * Add a change listener to a LazyWatch proxy
-     * Listeners registered on nested proxies receive path-relative diffs
+     * Listeners registered on nested proxies receive path-relative diffs;
+     * they receive `null` when their subtree (or an ancestor) is deleted,
+     * and the new leaf value when the subtree is replaced wholesale
      * @param watched - The LazyWatch proxy (or a nested proxy within it)
      * @param listener - Callback function that receives changes
      * @param options - Listener options (once, AbortSignal)
+     * @returns An idempotent unsubscribe function that removes exactly this registration
      * @throws {TypeError} If listener is not a function
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
      */
-    on(watched: object, listener: ChangeListener, options?: ListenerOptions): void;
+    on(watched: object, listener: ChangeListener, options?: ListenerOptions): Unsubscribe;
 
     /**
      * Add a change listener that is removed after its first invocation
      * @param watched - The LazyWatch proxy (or a nested proxy within it)
      * @param listener - Callback function that receives changes
      * @param options - Listener options (AbortSignal)
+     * @returns An idempotent unsubscribe function that removes exactly this registration
      * @throws {TypeError} If listener is not a function
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
      */
-    once(watched: object, listener: ChangeListener, options?: Omit<ListenerOptions, 'once'>): void;
+    once(watched: object, listener: ChangeListener, options?: Omit<ListenerOptions, 'once'>): Unsubscribe;
 
     /**
      * Remove a change listener from a LazyWatch proxy
-     * @param watched - The LazyWatch proxy
+     * Registrations are per proxy: the same function registered on the root
+     * and on a nested proxy are distinct, and `off` removes only the
+     * registration made on the proxy passed here
+     * @param watched - The LazyWatch proxy the listener was registered on
      * @param listener - The listener to remove
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
      */
@@ -223,6 +244,21 @@ export interface LazyWatchStatic {
      * @returns True if the object is a LazyWatch proxy (and not disposed), false otherwise
      */
     isProxy(obj: any): boolean;
+
+    /**
+     * Get a deep-cloned plain snapshot of the current state
+     * Works on the root proxy or any nested proxy (snapshotting that subtree).
+     * The result shares no references with the watched object, so it can be
+     * mutated or serialized freely without affecting tracking
+     * @param watched - The LazyWatch proxy (or a nested proxy within it)
+     * @returns A deep clone of the underlying data
+     * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
+     *
+     * @example
+     * const state = LazyWatch.snapshot(watched);
+     * localStorage.setItem('state', JSON.stringify(state));
+     */
+    snapshot<T extends object>(watched: T): T;
 
     /**
      * Get a copy of the current pending diff without consuming it

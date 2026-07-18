@@ -73,18 +73,27 @@ export class LazyWatch {
 
   /**
    * Add a change listener
+   *
+   * Listeners on nested proxies receive path-relative diffs; they receive
+   * `null` when their subtree (or an ancestor) is deleted, and the new leaf
+   * value when the subtree is replaced wholesale.
    * @param {Object} watched - The LazyWatch proxy
    * @param {Function} listener - Callback function that receives changes
    * @param {Object} [options] - Listener options
    * @param {boolean} [options.once=false] - Remove the listener after its first invocation
    * @param {AbortSignal} [options.signal] - Removes the listener when aborted;
    *   an already-aborted signal never adds the listener
+   * @returns {Function} An idempotent unsubscribe function that removes
+   *   exactly this registration
+   * @example
+   * const stop = LazyWatch.on(watched, diff => console.log(diff));
+   * stop(); // listener removed
    */
   static on(watched, listener, options) {
     const instance = LazyWatch.#getInstance(watched);
     instance.#checkDisposed();
     const path = instance.#proxyHandler.getProxyPath(watched);
-    instance.#eventEmitter.on(listener, path, options);
+    return instance.#eventEmitter.on(listener, path, options);
   }
 
   /**
@@ -95,20 +104,27 @@ export class LazyWatch {
    * @param {Function} listener - Callback function that receives changes
    * @param {Object} [options] - Listener options
    * @param {AbortSignal} [options.signal] - Removes the listener when aborted
+   * @returns {Function} An idempotent unsubscribe function that removes
+   *   exactly this registration
    */
   static once(watched, listener, options = {}) {
-    LazyWatch.on(watched, listener, { ...options, once: true });
+    return LazyWatch.on(watched, listener, { ...options, once: true });
   }
 
   /**
    * Remove a change listener
-   * @param {Object} watched - The LazyWatch proxy
+   *
+   * Removes the registration made on this specific proxy: the same function
+   * registered on the root and on a nested proxy are distinct registrations,
+   * and `off` on one leaves the other active.
+   * @param {Object} watched - The LazyWatch proxy the listener was registered on
    * @param {Function} listener - The listener to remove
    */
   static off(watched, listener) {
     const instance = LazyWatch.#getInstance(watched);
     instance.#checkDisposed();
-    instance.#eventEmitter.off(listener);
+    const path = instance.#proxyHandler.getProxyPath(watched);
+    instance.#eventEmitter.off(listener, path);
   }
 
   /**
@@ -199,6 +215,25 @@ export class LazyWatch {
     } catch (e) {
       return obj;
     }
+  }
+
+  /**
+   * Get a deep-cloned plain snapshot of the current state
+   *
+   * Works on the root proxy or any nested proxy (snapshotting that subtree).
+   * The result shares no references with the watched object, so it can be
+   * mutated or serialized freely without affecting tracking.
+   * @param {Object} watched - The LazyWatch proxy (or a nested proxy within it)
+   * @returns {Object|Array} A deep clone of the underlying data
+   * @throws {Error} If the instance has been disposed
+   * @example
+   * const state = LazyWatch.snapshot(watched);
+   * localStorage.setItem('state', JSON.stringify(state));
+   */
+  static snapshot(watched) {
+    const instance = LazyWatch.#getInstance(watched);
+    instance.#checkDisposed();
+    return Utils.deepClone(LazyWatch.resolveIfProxy(watched));
   }
 
   /**

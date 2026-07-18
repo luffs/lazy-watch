@@ -4,6 +4,45 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
+## [3.2.0] - 2026-07-18
+
+- feat: `LazyWatch.on` and `LazyWatch.once` return an idempotent unsubscribe
+  function that removes exactly that registration — `const stop = LazyWatch.on(...)`;
+  `stop()`. With an already-aborted signal a no-op function is returned
+- feat: Add `LazyWatch.snapshot(watched)` — a deep-cloned plain copy of the
+  current state (no proxy, no shared references), safe to mutate or serialize.
+  Works on the root proxy or any nested proxy (snapshotting that subtree)
+- refactor: Shrink `Utils.deepClone`'s manual fallback (used when
+  `structuredClone` is missing or throws) to the types that can actually occur
+  in watched state: plain objects, arrays, Date, and RegExp. Functions are now
+  copied by reference on the fallback path (previously they were mangled into
+  empty objects via `new obj.constructor()`), and the per-key object-spread
+  copy loop is replaced with a plain loop
+- fix: A `patch()` that throws mid-validation (e.g. a `Map` in the source) no
+  longer leaves the internal patch-mode flag set, which silently turned every
+  subsequent `overwrite()` on that instance into a merge that never deleted
+  missing properties
+- fix: Nested-proxy listeners are now notified when their subtree is deleted
+  (called with `null`, matching the null-means-delete diff convention) or
+  replaced wholesale by a leaf value (called with that value). Previously a
+  deletion or replacement by `null`/number/boolean silently skipped the
+  listener — a subscribed mirror kept stale state forever — while replacement
+  by a non-empty string accidentally invoked it with the raw string. An
+  ancestor being deleted or replaced by a leaf also notifies with `null`
+- fix: `Date`/`RegExp` leaf replacements of a watched subtree no longer skip
+  nested listeners (the old emptiness check treated them as empty diffs)
+- fix: `off()` now removes the registration made on the proxy it is called
+  with. Previously it removed the first registration of the function
+  regardless of path, so with the same callback on two nested proxies,
+  `off(w.b, fn)` could remove the `w.a` registration and leave `b` firing.
+  `AbortSignal` removal is likewise scoped to the registration the signal
+  was passed to
+- tests: Cover patch atomicity after rejection, subtree deletion/replacement
+  notification (including falsy leaves and ancestor destruction),
+  untouched-subtree silence, path-scoped `off()`/abort removal, unsubscribe
+  functions, snapshots (independence, subtrees, disposal), and the manual
+  `deepClone` fallback (function references, cycles)
+
 ## [3.1.1] - 2026-07-18
 
 - perf: Cut per-write allocations on the hot path — primitive assignments skip
