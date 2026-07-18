@@ -115,6 +115,11 @@ export class EventEmitter {
     this.#lastEmitTime = performance.now();
 
     const diff = this.#diffTracker.consumeDiff();
+    // Consumed in lockstep with the forward diff so the pair always
+    // describes the same batch
+    const inverse = this.#diffTracker.inverseEnabled
+      ? this.#diffTracker.consumeInverse()
+      : undefined;
     let removeFired = false;
     this.#listeners.forEach(entry => {
       try {
@@ -132,7 +137,10 @@ export class EventEmitter {
             entry.fired = true;
             removeFired = true;
           }
-          entry.listener(filteredDiff);
+          const filteredInverse = inverse === undefined
+            ? undefined
+            : this.#filterDiffByPath(inverse, entry.path);
+          entry.listener(filteredDiff, filteredInverse);
         }
       } catch (e) {
         console.error('Error in LazyWatch listener:', e);

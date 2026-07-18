@@ -28,6 +28,7 @@ export class LazyWatch {
   #proxyHandler;
   #proxy;
   #disposed = false;
+  #inTransaction = false;
 
   static #instances = new WeakMap();
 
@@ -37,11 +38,17 @@ export class LazyWatch {
    * @param {Object} options - Configuration options
    * @param {number} [options.throttle=0] - Minimum time in milliseconds between emits (default: 0)
    * @param {number} [options.debounce=0] - Time in milliseconds to wait for additional changes before emitting (default: 0)
+   * @param {boolean} [options.inverse=false] - Also record an inverse diff per
+   *   batch; listeners receive it as a second argument. Applying the inverse
+   *   with LazyWatch.patch restores the pre-batch state (undo). Costs extra
+   *   clones on the write path and disables compact $splice recording
+   *   (structural array ops fall back to per-index diffs — still correct)
    * @returns {Object} A proxy that tracks changes
    * @throws {TypeError} If original is not an object or array
    */
   constructor(original, options = {}) {
     this.#diffTracker = new DiffTracker();
+    this.#diffTracker.inverseEnabled = !!options.inverse;
     this.#eventEmitter = new EventEmitter(this.#diffTracker, options);
     this.#proxyHandler = new ProxyHandler(original, this.#diffTracker, this.#eventEmitter);
     this.#proxy = this.#proxyHandler.createRootProxy(this);
@@ -345,8 +352,65 @@ export class LazyWatch {
       callback()
     } finally {
       diff = instance.#diffTracker.consumeDiff()
+      // Keep the inverse in lockstep with the forward diff
+      instance.#diffTracker.consumeInverse()
     }
     return diff
+  }
+
+  /**
+   * Execute a callback atomically: if it throws, every change it made to the
+   * watched object is rolled back and nothing is emitted; if it succeeds, the
+   * changes emit as one normal batch and the callback's return value is
+   * returned.
+   *
+   * Pending changes from before the transaction are flushed (emitted
+   * synchronously) first, so the rollback covers exactly the callback's own
+   * changes. Works whether or not the instance was created with
+   * `{ inverse: true }` — inverse recording is enabled just for the duration.
+   * The callback must be synchronous; transactions cannot be nested.
+   *
+   * @param {Object} watched - The LazyWatch proxy
+   * @param {Function} callback - Function whose changes are applied atomically
+   * @returns {*} The callback's return value
+   * @throws {Error} If the instance has been disposed or a transaction is
+   *   already active; rethrows whatever the callback throws (after rollback)
+   * @example
+   * LazyWatch.transaction(watched, () => {
+   *   watched.balance -= 100;
+   *   applyFees(watched); // if this throws, balance is restored
+   * });
+   */
+  static transaction(watched, callback) {
+    const instance = LazyWatch.#getInstance(watched);
+    instance.#checkDisposed();
+    if (instance.#inTransaction) {
+      throw new Error('LazyWatch.transaction cannot be nested');
+    }
+    // Start from a clean batch boundary so the inverse covers exactly the
+    // callback's changes
+    instance.#eventEmitter.forceEmit();
+
+    const tracker = instance.#diffTracker;
+    const wasEnabled = tracker.inverseEnabled;
+    tracker.inverseEnabled = true;
+    instance.#inTransaction = true;
+    try {
+      return callback();
+    } catch (error) {
+      const inverse = tracker.consumeInverse();
+      tracker.consumeDiff(); // discard the forward diff; nothing may emit
+      instance.#proxyHandler.rollback(inverse);
+      throw error;
+    } finally {
+      instance.#inTransaction = false;
+      tracker.inverseEnabled = wasEnabled;
+      if (!wasEnabled) {
+        // The instance doesn't track inverses; drop the one recorded for
+        // the callback (after a rollback this is already empty)
+        tracker.consumeInverse();
+      }
+    }
   }
 
   /**

@@ -6,6 +6,19 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
 
 ## [3.2.0] - 2026-07-18
 
+- feat: Inverse diffs (undo) — `new LazyWatch(obj, { inverse: true })` records
+  the patch that undoes each batch; listeners receive it as a second argument
+  (path-relative for nested listeners). The inverse survives JSON round-trips
+  and applies with `patch`, locally or on a remote mirror. Recording follows
+  first-write-wins, gap-fill, and null-fill rules so a batch that mutates,
+  deletes, and recreates the same container still undoes exactly. With
+  inverse tracking on, structural array ops fall back from compact `$splice`
+  to per-index diffs (correct, just larger)
+- feat: Add `LazyWatch.transaction(watched, callback)` — applies the
+  callback's changes atomically on any instance: on throw, every change is
+  rolled back and nothing emits; on success, changes emit as one normal batch
+  and the callback's return value is returned. Pending pre-transaction
+  changes are flushed first; callbacks must be synchronous; nesting throws
 - feat: `LazyWatch.on` and `LazyWatch.once` return an idempotent unsubscribe
   function that removes exactly that registration — `const stop = LazyWatch.on(...)`;
   `stop()`. With an already-aborted signal a no-op function is returned

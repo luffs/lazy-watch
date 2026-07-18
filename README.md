@@ -14,6 +14,7 @@ Deep watch JavaScript objects using Proxy and emit diffs asynchronously. LazyWat
 - 🧩 Support for nested objects and arrays
 - ⏸️ Pause and resume event emissions
 - 🤫 Silent mutations without triggering events
+- ↩️ Opt-in inverse diffs (undo) and atomic transactions with rollback
 - 📦 Efficient patching mechanism
 - 🌐 Works in browsers and Node.js
 
@@ -324,6 +325,87 @@ console.log('Silent changes:', diff);
 - Initializing state without triggering listeners
 - Bulk updates where you want manual control over notifications
 - Testing or debugging scenarios where you need to inspect changes without side effects
+
+### Inverse Diffs (Undo)
+
+```js
+const watched = new LazyWatch(data, { inverse: true });
+```
+
+With the `inverse` option, every batch also records an **inverse diff** — a
+patch that undoes the batch. Listeners receive it as a second argument
+(path-relative for nested listeners, like the forward diff):
+
+```js
+const doc = new LazyWatch({ text: '', cursor: 0 }, { inverse: true });
+
+const undoStack = [];
+let undoing = false;
+
+LazyWatch.on(doc, (diff, inverse) => {
+  if (!undoing) undoStack.push(inverse);
+});
+
+function undo() {
+  const inverse = undoStack.pop();
+  if (!inverse) return;
+  undoing = true;
+  try {
+    LazyWatch.patch(doc, inverse);
+    LazyWatch.flush(doc); // emit synchronously, while the guard is set
+  } finally {
+    undoing = false;
+  }
+}
+
+doc.text = 'hello';
+doc.cursor = 5;
+// ...later:
+undo(); // doc is { text: '', cursor: 0 } again
+```
+
+The inverse is an ordinary diff: it survives `JSON.stringify`, applies with
+`LazyWatch.patch` (locally or on a remote mirror — undo works across the
+wire), and follows the null-means-delete convention. It captures the state
+from before the *first* change in the batch, so applying it after any number
+of changes to the same keys restores the true pre-batch values.
+
+**Trade-offs:** recording previous values costs extra clones on the write
+path, and compact `$splice` recording is disabled — structural array ops
+(`splice`/`unshift`/`shift`) fall back to per-index diffs, which are still
+correct, just larger.
+
+### Transactions
+
+```js
+const result = LazyWatch.transaction(watchedObject, callback);
+```
+
+Executes the callback atomically: if it throws, **every change it made is
+rolled back and nothing is emitted**; if it succeeds, the changes emit as one
+normal batch and the callback's return value is returned.
+
+```js
+const account = new LazyWatch({ balance: 500, history: [] });
+
+try {
+  LazyWatch.transaction(account, () => {
+    account.balance -= 100;
+    account.history.push({ amount: -100 });
+    validate(account); // throws on insufficient funds, bad state, ...
+  });
+} catch (e) {
+  // account.balance is 500 again, history is empty, listeners heard nothing
+}
+```
+
+Transactions work on any instance — `{ inverse: true }` is not required
+(inverse recording is enabled just for the callback's duration). Pending
+changes from before the transaction are flushed first, so the rollback covers
+exactly the callback's own changes. The callback must be synchronous, and
+transactions cannot be nested. Avoid calling `LazyWatch.flush` inside the
+callback: flushed changes are emitted immediately and leave the transaction's
+rollback scope.
 
 ### Applying Changes
 

@@ -77,6 +77,14 @@ const subSnap: { theme: string } = LazyWatch.snapshot(watched.profile);
 void subSnap;
 const diff: ChangeSet = LazyWatch.silent(watched, () => { watched.age = 33; });
 void diff;
+
+// Inverse diffs and transactions
+const inv = new LazyWatch({ n: 1 }, { inverse: true });
+LazyWatch.on(inv, (changes, inverse) => { void changes; void inverse; });
+const txResult: number = LazyWatch.transaction(inv, () => { inv.n = 2; return 42; });
+void txResult;
+LazyWatch.transaction(inv, () => {}); // void callbacks are fine
+LazyWatch.dispose(inv);
 LazyWatch.dispose(watched);
 
 // @ts-expect-error - primitives cannot be watched

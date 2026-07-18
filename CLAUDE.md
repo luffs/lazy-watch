@@ -56,6 +56,7 @@ The codebase follows a modular architecture with clear separation of concerns:
    - Maintains a master diff structure that mirrors the watched object's shape
    - `getDiffObject(path)` returns nested object at given path, creating if needed
    - `consumeDiff()` returns and clears the accumulated changes
+   - When `inverseEnabled` (set by the `inverse` constructor option, or temporarily by `LazyWatch.transaction`), also records a master inverse diff — a patch fragment that undoes the batch. `consumeInverse()` must be consumed in lockstep with `consumeDiff()`. Recording rules: first-write-wins (a key's inverse is its value before the batch's first change), gap-fill (deleting/replacing a container backfills its not-yet-recorded keys from the live value), null-fill (keys a replacement introduces are recorded as `null` so undo deletes them). A recorded leaf/null/wholesale-array entry is complete — recording below it is skipped
 
 4. **EventEmitter** (`src/event-emitter.js`) - Batches and emits change notifications
    - Schedules emission using `queueMicrotask` for async batching
@@ -120,6 +121,12 @@ LazyWatch provides utility methods that work on normal objects (non-proxies):
 - `__proto__`/`constructor`/`prototype` are reserved names: rejected at write time via `Utils.isUnsafeKey`, skipped by the appliers as defense-in-depth, and never proxied by the `get` trap — this blocks prototype pollution from hostile wire diffs
 - Deletions applied by `overwrite`/`patch` are recorded in the receiver's own diff so relay chains (A → B → C) propagate them
 - Symbol-keyed properties are local-only metadata: stored on the target but never recorded/emitted/synced, exempt from validation (a Map under a symbol key is allowed), and never proxied — a deliberate escape hatch for per-replica bookkeeping
+
+### Inverse Diffs and Transactions
+- `new LazyWatch(obj, { inverse: true })` records an inverse diff per batch; listeners receive it as a second argument (path-relative for nested listeners, filtered like the forward diff). Applying it with `patch` restores the pre-batch state; it survives JSON round-trips, so undo works on remote mirrors
+- Inverse tracking disables compact `$splice` recording: a `$splice` op cannot be correctly interleaved with per-key inverse entries (receivers apply `$splice` before a node's other keys, breaking chronological undo ordering), so structural array ops fall back to per-index trap recording — correct, just larger
+- `LazyWatch.transaction(watched, cb)` works on any instance: it flushes pending changes, enables inverse recording for the callback's duration, and on throw applies the inverse via `ProxyHandler.rollback()` (suppressed — records and emits nothing) and discards the forward diff. Synchronous callbacks only; nesting throws; `flush` inside the callback escapes the rollback scope
+- `ProxyHandler.#inverseActive()` gates all capture sites (`recordChange`, both delete paths, truncation, the `overwrite` applier branches); suppression covers structural-op internals and rollback itself
 
 ### Array Handling
 - Array mutations (push, index writes) are tracked via length and index changes

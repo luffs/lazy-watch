@@ -24,8 +24,13 @@ export type Unsubscribe = () => void;
  * ancestor of it) is deleted they receive `null`; when it is replaced
  * wholesale by a leaf value (string, number, boolean, Date, ...) they receive
  * that value directly.
+ *
+ * When the instance was created with `{ inverse: true }`, listeners receive
+ * a second argument: the inverse diff for the same batch (path-relative for
+ * nested listeners). Applying it with LazyWatch.patch restores the pre-batch
+ * state.
  */
-export type ChangeListener = (changes: ChangeSet | null | any) => void;
+export type ChangeListener = (changes: ChangeSet | null | any, inverse?: ChangeSet | any) => void;
 
 /**
  * A partial update for T. Values may be `null` to delete the property.
@@ -120,6 +125,17 @@ export interface LazyWatchConstructorOptions {
      * @note If both throttle and debounce are set, debounce takes precedence
      */
     debounce?: number;
+
+    /**
+     * Also record an inverse diff per batch; listeners receive it as a
+     * second argument. Applying the inverse with LazyWatch.patch restores
+     * the pre-batch state (undo).
+     * Costs extra clones on the write path, and disables compact $splice
+     * recording — structural array ops (splice/unshift/shift) fall back to
+     * per-index diffs, which are still correct, just larger
+     * @default false
+     */
+    inverse?: boolean;
 }
 
 /**
@@ -319,6 +335,28 @@ export interface LazyWatchStatic {
      * // diff = { count: 1, name: 'test' }, no listeners triggered
      */
     silent(watched: object, callback: () => void): ChangeSet;
+
+    /**
+     * Execute a callback atomically: if it throws, every change it made to
+     * the watched object is rolled back and nothing is emitted; if it
+     * succeeds, the changes emit as one normal batch and the callback's
+     * return value is returned.
+     * Pending changes from before the transaction are flushed first. Works
+     * whether or not the instance was created with `{ inverse: true }`.
+     * The callback must be synchronous; transactions cannot be nested
+     * @param watched - The LazyWatch proxy
+     * @param callback - Function whose changes are applied atomically
+     * @returns The callback's return value
+     * @throws {Error} If the instance has been disposed or a transaction is
+     * already active; rethrows whatever the callback throws (after rollback)
+     *
+     * @example
+     * LazyWatch.transaction(watched, () => {
+     *   watched.balance -= 100;
+     *   applyFees(watched); // if this throws, balance is restored
+     * });
+     */
+    transaction<R>(watched: object, callback: () => R): R;
 
     /**
      * Clean up resources and remove all listeners

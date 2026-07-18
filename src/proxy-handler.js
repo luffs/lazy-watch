@@ -125,6 +125,9 @@ export class ProxyHandler {
         // convention. (Array length falls through to the native error.)
         if (value === undefined && !(Array.isArray(target) && prop === 'length')) {
           if (prop in target) {
+            if (this.#inverseActive()) {
+              this.#diffTracker.recordInverse(path, prop, target[prop]);
+            }
             const diff = this.#diff(path);
             diff[prop] = null;
             delete target[prop];
@@ -163,6 +166,9 @@ export class ProxyHandler {
         }
 
         if (prop in target) {
+          if (this.#inverseActive()) {
+            this.#diffTracker.recordInverse(path, prop, target[prop]);
+          }
           const diff = this.#diff(path);
           diff[prop] = null;
           delete target[prop];
@@ -187,6 +193,27 @@ export class ProxyHandler {
   }
 
   /**
+   * True when pre-change values should be captured for the inverse diff.
+   * Suppression covers both structural-op internals and rollback itself.
+   */
+  #inverseActive() {
+    return this.#diffTracker.inverseEnabled && !this.#suppress;
+  }
+
+  /**
+   * Apply an inverse diff to restore pre-batch state, without recording or
+   * emitting anything. Used by LazyWatch.transaction() on failure.
+   */
+  rollback(inverse) {
+    this.#suppress = true;
+    try {
+      this.patch(this.#original, inverse);
+    } finally {
+      this.#suppress = false;
+    }
+  }
+
+  /**
    * Intercepted splice/unshift/shift on a watched array.
    *
    * Records a single compact `$splice` op instead of per-index writes when
@@ -199,6 +226,15 @@ export class ProxyHandler {
   #structuralArrayOp(target, method, args, path, receiver) {
     const native = Array.prototype[method];
     const len = target.length;
+
+    // Inverse tracking disables the compact form entirely: a $splice op
+    // cannot be correctly interleaved with per-key inverse entries
+    // (receivers apply $splice before a node's other keys, breaking
+    // chronological undo ordering), while plain trap-driven recording is
+    // handled exactly by the per-key inverse rules. Correct, just larger.
+    if (this.#diffTracker.inverseEnabled) {
+      return native.apply(receiver, args);
+    }
 
     // Normalize the call into one splice op: [start, deleteCount, items]
     let start = 0;
@@ -293,6 +329,15 @@ export class ProxyHandler {
    */
   #handleArrayLengthChange(target, newLength, path) {
     if (newLength !== target.length) {
+      // Truncation destroys elements; capture them (holes excluded) so the
+      // inverse can restore them. Growth records nothing here.
+      if (this.#inverseActive()) {
+        for (let i = newLength; i < target.length; i++) {
+          if (i in target) {
+            this.#diffTracker.recordInverse(path, String(i), target[i]);
+          }
+        }
+      }
       const diff = this.#diff(path);
       for (const key in diff) {
         if (parseInt(key, 10) >= newLength) {
@@ -318,6 +363,17 @@ export class ProxyHandler {
 
     // Only clone if it's an object/array
     const clonedValue = Utils.isObjectOrArray(value) ? Utils.deepClone(value) : value;
+    const isArrayIndex = Array.isArray(target) && prop !== 'length' && /^\d+$/.test(String(prop));
+
+    // Capture pre-change values before the writes below
+    if (this.#inverseActive()) {
+      this.#diffTracker.recordInverse(
+        path, prop, prop in target ? target[prop] : undefined, clonedValue);
+      if (isArrayIndex) {
+        this.#diffTracker.recordInverse(path, 'length', target.length);
+      }
+    }
+
     diff[prop] = clonedValue;
     target[prop] = clonedValue;
 
@@ -325,7 +381,7 @@ export class ProxyHandler {
     // from plain objects even when the field doesn't exist on their side.
     // (push() never records length itself: the index assignment auto-updates
     // it, making the explicit set a no-op.)
-    if (Array.isArray(target) && prop !== 'length' && /^\d+$/.test(String(prop))) {
+    if (isArrayIndex) {
       diff.length = target.length;
     }
 
@@ -372,6 +428,14 @@ export class ProxyHandler {
 
     // Track array length changes
     if (Array.isArray(rawTarget) && Array.isArray(rawSource) && rawTarget.length !== rawSource.length) {
+      if (this.#inverseActive()) {
+        for (let i = rawSource.length; i < rawTarget.length; i++) {
+          if (i in rawTarget) {
+            this.#diffTracker.recordInverse(path, String(i), rawTarget[i]);
+          }
+        }
+        this.#diffTracker.recordInverse(path, 'length', rawTarget.length);
+      }
       rawTarget.length = rawSource.length;
       getDiff().length = rawSource.length;
       hasChanges = true;
@@ -386,6 +450,9 @@ export class ProxyHandler {
       if (rawSource[prop] === null || rawSource[prop] === undefined) {
         // Record the deletion so relaying mirrors propagate it downstream
         if (prop in rawTarget) {
+          if (this.#inverseActive()) {
+            this.#diffTracker.recordInverse(path, prop, rawTarget[prop]);
+          }
           getDiff()[prop] = null;
           delete rawTarget[prop];
           hasChanges = true;
@@ -407,6 +474,13 @@ export class ProxyHandler {
         }
         // Record the change in diff
         const clonedValue = Utils.isObjectOrArray(sourceValue) ? Utils.deepClone(sourceValue) : sourceValue;
+        if (this.#inverseActive()) {
+          this.#diffTracker.recordInverse(
+            path, prop, prop in rawTarget ? rawTarget[prop] : undefined, clonedValue);
+          if (Array.isArray(rawTarget) && /^\d+$/.test(String(prop))) {
+            this.#diffTracker.recordInverse(path, 'length', rawTarget.length);
+          }
+        }
         getDiff()[prop] = clonedValue;
         rawTarget[prop] = clonedValue;
         // Keep array fragments self-describing (see #recordChange).
@@ -423,6 +497,9 @@ export class ProxyHandler {
         if (Object.hasOwnProperty.call(rawTarget, prop) &&
           (rawSource[prop] === null || rawSource[prop] === undefined)) {
           // Track deletion in diff
+          if (this.#inverseActive()) {
+            this.#diffTracker.recordInverse(path, prop, rawTarget[prop]);
+          }
           getDiff()[prop] = null;
           delete rawTarget[prop];
           hasChanges = true;
