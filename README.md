@@ -627,9 +627,9 @@ corrupt receivers:
 - **An object diff following a deletion or leaf write** — sequentially the
   object lands on nothing and becomes the exact new value, but a single
   composed diff would *merge* into the receiver's stale container, leaving
-  old keys alive. (Array values escape this: they are self-describing via
-  `length`, so array fragments after a deletion revive into real arrays
-  and compose fine.)
+  old keys alive. (Array values escape this: receivers apply
+  [real arrays wholesale](#array-diffs-and-shape-drift), so array
+  fragments after a deletion revive into real arrays and compose fine.)
 - **`$splice` ops following index writes on the same array** — receivers
   apply a fragment's ops before its index keys, which would reorder
   history.
