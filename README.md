@@ -738,6 +738,24 @@ per-index recording for that batch (larger, but always correct). On a
 1,000-item array of objects, prepending one item emits ~68 bytes instead of
 ~34 KB.
 
+**Real arrays are wholesale values.** Index-keyed fragments are the *merge*
+form; when a diff carries an actual array (as emitted for
+`obj.list = [...]` replacements), receivers replace their array outright —
+elements included, since a replacement's elements are full values, not
+sub-diffs:
+
+```js
+const mirror = new LazyWatch({ list: [{ a: 1 }] });
+LazyWatch.patch(mirror, { list: [{ b: 2 }] });
+mirror.list; // [{ b: 2 }] — not [{ a: 1, b: 2 }]
+```
+
+Re-applying an identical array is detected and records nothing, so
+bidirectional mirrors can't echo. Deleting a container and recreating it
+in the same batch is also safe: the emitted diff records `null` for the
+stale keys receivers still hold, so `delete obj.k; obj.k = { b: 2 }`
+emits `{ k: { b: 2, a: null } }` and mirrors converge exactly.
+
 Applied to a replica that already has `items` as an array, the fragment merges
 in-place. But when replicas disagree about which fields exist — typically after
 a schema migration, or with clients running different versions — a fragment can

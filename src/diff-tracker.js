@@ -4,6 +4,17 @@ import {Utils} from "./utils.js";
 export class DiffTracker {
   #masterDiff = {};
   #masterInverse = {};
+  // Containers destroyed this batch (deleted, replaced by a leaf, or
+  // truncated away), keyed by their path. If the same slot is recreated as
+  // an object later in the batch, the recreation overwrites the recorded
+  // null/leaf in the diff — receivers would merge the new object into
+  // their still-live stale container. The stale container is kept here so
+  // the recreation's diff value can be null-filled (stale keys recorded as
+  // null, recursively), making the diff delete what receivers still hold.
+  // First loss wins: receivers are at the pre-batch state. Values are the
+  // detached containers themselves — nothing mutates them after detachment
+  // (re-insertion always clones).
+  #lostContainers = new Map();
 
   // When true, an inverse diff (the patch that undoes the batch) is recorded
   // alongside the forward diff. Opt-in: set from the `inverse` constructor
@@ -144,6 +155,26 @@ export class DiffTracker {
   }
 
   /**
+   * Record a container destroyed at path+prop this batch (first loss wins)
+   */
+  recordContainerLoss(path, prop, container) {
+    const key = JSON.stringify([...path, prop]);
+    if (!this.#lostContainers.has(key)) {
+      this.#lostContainers.set(key, container);
+    }
+  }
+
+  /**
+   * The container destroyed at path+prop earlier this batch, if any.
+   * The size guard keeps the common case (no destruction this batch) free
+   * of the path-key allocation on the write path.
+   */
+  getContainerLoss(path, prop) {
+    if (this.#lostContainers.size === 0) return undefined;
+    return this.#lostContainers.get(JSON.stringify([...path, prop]));
+  }
+
+  /**
    * Get the current master diff and reset it.
    *
    * Returns a deep clone: during a batch, wholesale container assignments
@@ -154,6 +185,8 @@ export class DiffTracker {
   consumeDiff() {
     const diff = this.#masterDiff;
     this.#masterDiff = {};
+    // Batch boundary: receivers are caught up once this diff is applied
+    this.#lostContainers.clear();
     return Utils.deepClone(diff);
   }
 
@@ -190,5 +223,6 @@ export class DiffTracker {
   clear() {
     this.#masterDiff = {};
     this.#masterInverse = {};
+    this.#lostContainers.clear();
   }
 }

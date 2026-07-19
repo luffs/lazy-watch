@@ -56,6 +56,7 @@ The codebase follows a modular architecture with clear separation of concerns:
    - Maintains a master diff structure that mirrors the watched object's shape
    - `getDiffObject(path)` returns nested object at given path, creating if needed
    - `consumeDiff()` returns and clears the accumulated changes
+   - Keeps a per-batch registry of destroyed containers (`recordContainerLoss`/`getContainerLoss`, cleared on `consumeDiff`): when a slot whose container was deleted/leaf-replaced/truncated this batch is recreated as an object, `ProxyHandler.#staleFilledDiffValue` null-fills the recreation's diff (recursively through shared plain-object keys) so receivers delete the stale keys they still hold — the null markers go on the wire only, never into local state (the diff copy diverges from the state copy)
    - When `inverseEnabled` (set by the `inverse` constructor option, or temporarily by `LazyWatch.transaction`), also records a master inverse diff — a patch fragment that undoes the batch. `consumeInverse()` must be consumed in lockstep with `consumeDiff()`. Recording rules: first-write-wins (a key's inverse is its value before the batch's first change), gap-fill (deleting/replacing a container backfills its not-yet-recorded keys from the live value), null-fill (keys a replacement introduces are recorded as `null` so undo deletes them). A recorded leaf/null/wholesale-array entry is complete — recording below it is skipped
 
 4. **EventEmitter** (`src/event-emitter.js`) - Batches and emits change notifications
@@ -142,6 +143,7 @@ LazyWatch provides utility methods that work on normal objects (non-proxies):
 - `LazyWatch.createUndoManager(watched, { limit })` layers undo/redo stacks on top of inverse diffs (see the UndoManager component above); `LazyWatch.silent` changes bypass emission and are never recorded as steps
 
 ### Array Handling
+- Real arrays in diffs are wholesale values (fragments are the merge form): the appliers replace them outright rather than merging elements — including elements inside them, which are full values too. Null markers inside are dropped during the write (`Utils.cloneWithoutNulls`), which is how inverse-diff arrays encode deletions; a deep-equal re-application records and emits nothing (echo stability, `Utils.deepEqual`)
 - Array mutations (push, index writes) are tracked via length and index changes
 - `splice`/`unshift`/`shift` are intercepted in the `get` trap and recorded as compact `$splice` ops (`[start, deleteCount, items]` triples) instead of per-index writes; the mutation still executes as the native method through the proxy, because trap-driven slot-merge semantics keep cached child-proxy paths valid — raw splicing would move elements and stale them
 - Compact recording requires a clean diff node for that array (only `$splice`/`length` keys); otherwise the op falls back to per-index recording so ordering stays correct. Receivers apply `$splice` before merging a node's other keys

@@ -128,6 +128,7 @@ export class ProxyHandler {
             if (this.#inverseActive()) {
               this.#diffTracker.recordInverse(path, prop, target[prop]);
             }
+            this.#recordLoss(path, prop, target[prop]);
             const diff = this.#diff(path);
             diff[prop] = null;
             delete target[prop];
@@ -169,6 +170,7 @@ export class ProxyHandler {
           if (this.#inverseActive()) {
             this.#diffTracker.recordInverse(path, prop, target[prop]);
           }
+          this.#recordLoss(path, prop, target[prop]);
           const diff = this.#diff(path);
           diff[prop] = null;
           delete target[prop];
@@ -198,6 +200,67 @@ export class ProxyHandler {
    */
   #inverseActive() {
     return this.#diffTracker.inverseEnabled && !this.#suppress;
+  }
+
+  /**
+   * Remember a container destroyed this batch (deleted, replaced by a
+   * leaf, or truncated away). If the slot is recreated as an object later
+   * in the same batch, #staleFilledDiffValue null-fills the recreation's
+   * diff so receivers delete the stale keys they still hold.
+   */
+  #recordLoss(path, prop, value) {
+    if (!this.#suppress && Utils.isObjectOrArray(value)) {
+      this.#diffTracker.recordContainerLoss(path, prop, value);
+    }
+  }
+
+  /**
+   * The value to record in the diff for a wholesale write at path+prop.
+   *
+   * Plain when nothing stale exists. When a container was destroyed at
+   * this slot earlier in the batch (or `stale` is passed directly by a
+   * replacement site), receivers still hold it — a plain object recorded
+   * here would merge into it instead of replacing it. The returned copy
+   * records null for every stale key the new value doesn't carry
+   * (recursing through shared plain-object keys), so applying the diff
+   * deletes them. The copy is separate from the target's value: the null
+   * markers belong on the wire, never in local state.
+   *
+   * Arrays need no filling — receivers apply real arrays wholesale.
+   */
+  #staleFilledDiffValue(clonedValue, path, prop, stale) {
+    if (this.#suppress || !Utils.isObjectOrArray(clonedValue) || Array.isArray(clonedValue)) {
+      return clonedValue;
+    }
+    // The batch's first loss wins over a same-call replacement: receivers
+    // are at the pre-batch state
+    const lost = this.#diffTracker.getContainerLoss(path, prop) ??
+      (Utils.isObjectOrArray(stale) ? stale : undefined);
+    if (!lost || Array.isArray(lost)) return clonedValue;
+
+    const filled = Utils.deepClone(clonedValue);
+    this.#nullFillStale(filled, lost);
+    return filled;
+  }
+
+  /**
+   * Record null in `diffValue` for every key of the stale container it
+   * doesn't carry; recurse where both sides are plain objects. Array and
+   * leaf values in the diff are applied wholesale by receivers, so
+   * recursion stops there.
+   */
+  #nullFillStale(diffValue, stale) {
+    for (const key of Object.keys(stale)) {
+      if (Utils.isUnsafeKey(key)) continue;
+      if (!(key in diffValue)) {
+        diffValue[key] = null;
+      } else if (
+        Utils.isObjectOrArray(diffValue[key]) && !Array.isArray(diffValue[key]) &&
+        Utils.isObjectOrArray(stale[key]) && !Array.isArray(stale[key])
+      ) {
+        this.#nullFillStale(diffValue[key], stale[key]);
+      }
+    }
   }
 
   /**
@@ -330,12 +393,15 @@ export class ProxyHandler {
   #handleArrayLengthChange(target, newLength, path) {
     if (newLength !== target.length) {
       // Truncation destroys elements; capture them (holes excluded) so the
-      // inverse can restore them. Growth records nothing here.
-      if (this.#inverseActive()) {
-        for (let i = newLength; i < target.length; i++) {
-          if (i in target) {
+      // inverse can restore them, and record container losses so a
+      // same-batch recreation at those indices null-fills its diff.
+      // Growth records nothing here.
+      for (let i = newLength; i < target.length; i++) {
+        if (i in target) {
+          if (this.#inverseActive()) {
             this.#diffTracker.recordInverse(path, String(i), target[i]);
           }
+          this.#recordLoss(path, String(i), target[i]);
         }
       }
       const diff = this.#diff(path);
@@ -374,7 +440,16 @@ export class ProxyHandler {
       }
     }
 
-    diff[prop] = clonedValue;
+    // A container replaced by a leaf is destroyed from the receivers'
+    // point of view; remember it so a same-batch recreation null-fills
+    if (!Utils.isObjectOrArray(value)) {
+      this.#recordLoss(path, prop, target[prop]);
+    }
+
+    // The diff copy may diverge from the state copy: a recreation over a
+    // container destroyed earlier this batch carries null markers for the
+    // receivers' stale keys, which must never enter local state
+    diff[prop] = this.#staleFilledDiffValue(clonedValue, path, prop);
     target[prop] = clonedValue;
 
     // Array fragments always carry `length`, so receivers can tell them apart
@@ -453,35 +528,49 @@ export class ProxyHandler {
           if (this.#inverseActive()) {
             this.#diffTracker.recordInverse(path, prop, rawTarget[prop]);
           }
+          this.#recordLoss(path, prop, rawTarget[prop]);
           getDiff()[prop] = null;
           delete rawTarget[prop];
           hasChanges = true;
         }
-      } else if (Utils.isObjectOrArray(rawTarget[prop]) && Utils.isObjectOrArray(rawSource[prop])) {
+      } else if (Utils.isObjectOrArray(rawTarget[prop]) && Utils.isObjectOrArray(rawSource[prop]) &&
+        !Array.isArray(rawSource[prop]) && !Array.isArray(rawSource)) {
+        // Merge patch fragments. Real arrays are excluded: a real array in
+        // a source is a wholesale value (fragments are the merge form), and
+        // inside one every entry is a full value too — merging either into
+        // the receiver's container would leave stale elements/keys alive.
+        // Those fall through to the wholesale branch below.
         this.overwrite(rawTarget[prop], rawSource[prop], [...path, prop]);
       } else if (rawTarget[prop] !== rawSource[prop]) {
-        // The target has no container to merge into here, so an index-keyed
-        // array diff would be stored verbatim as a plain object — revive such
-        // fragments into real arrays first.
-        const sourceValue = Utils.reviveArrayDiffs(rawSource[prop]);
-        // Handle nested nulls
-        if (Utils.isObjectOrArray(sourceValue)) {
-          for (const key in sourceValue) {
-            if (sourceValue[key] === null) {
-              delete sourceValue[key];
-            }
-          }
+        const prevValue = rawTarget[prop];
+        // Re-applying an already-applied wholesale value must record and
+        // emit nothing, or bidirectional mirrors would echo forever
+        if (Utils.isObjectOrArray(prevValue) && Utils.isObjectOrArray(rawSource[prop]) &&
+          Utils.deepEqual(prevValue, rawSource[prop])) {
+          continue;
         }
-        // Record the change in diff
-        const clonedValue = Utils.isObjectOrArray(sourceValue) ? Utils.deepClone(sourceValue) : sourceValue;
+        // The target has no container to merge into here (or the value is
+        // a wholesale replacement), so an index-keyed array diff would be
+        // stored verbatim as a plain object — revive such fragments into
+        // real arrays first.
+        const sourceValue = Utils.reviveArrayDiffs(rawSource[prop]);
+        // Container values are applied wholesale: drop null markers (null
+        // means delete, and the replacement discards the old container
+        // anyway) without mutating the caller's source
+        const clonedValue = Utils.isObjectOrArray(sourceValue)
+          ? Utils.cloneWithoutNulls(sourceValue)
+          : sourceValue;
         if (this.#inverseActive()) {
           this.#diffTracker.recordInverse(
-            path, prop, prop in rawTarget ? rawTarget[prop] : undefined, clonedValue);
+            path, prop, prop in rawTarget ? prevValue : undefined, clonedValue);
           if (Array.isArray(rawTarget) && /^\d+$/.test(String(prop))) {
             this.#diffTracker.recordInverse(path, 'length', rawTarget.length);
           }
         }
-        getDiff()[prop] = clonedValue;
+        this.#recordLoss(path, prop, prevValue);
+        // The diff copy null-fills stale keys receivers still hold (from a
+        // container destroyed earlier this batch, or replaced right here)
+        getDiff()[prop] = this.#staleFilledDiffValue(clonedValue, path, prop, prevValue);
         rawTarget[prop] = clonedValue;
         // Keep array fragments self-describing (see #recordChange).
         if (Array.isArray(rawTarget) && /^\d+$/.test(String(prop))) {
@@ -500,6 +589,7 @@ export class ProxyHandler {
           if (this.#inverseActive()) {
             this.#diffTracker.recordInverse(path, prop, rawTarget[prop]);
           }
+          this.#recordLoss(path, prop, rawTarget[prop]);
           getDiff()[prop] = null;
           delete rawTarget[prop];
           hasChanges = true;

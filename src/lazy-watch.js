@@ -204,16 +204,23 @@ export class LazyWatch {
       if (prop === '$splice' || Utils.isUnsafeKey(prop)) continue;
       if (resolvedSource[prop] === null || resolvedSource[prop] === undefined) {
         delete target[prop];
-      } else if (Utils.isObjectOrArray(target[prop]) && Utils.isObjectOrArray(resolvedSource[prop])) {
-        // Recursively patch nested objects
+      } else if (Utils.isObjectOrArray(target[prop]) && Utils.isObjectOrArray(resolvedSource[prop]) &&
+        !Array.isArray(resolvedSource[prop]) && !Array.isArray(resolvedSource)) {
+        // Recursively patch nested objects. Real arrays are excluded: they
+        // are wholesale values (fragments are the merge form), and inside
+        // one every entry is a full value too — both replace below, like
+        // the proxy appliers.
         LazyWatch.#patchObjectInto(target[prop], resolvedSource[prop]);
       } else {
-        // No container to merge into: revive index-keyed array diffs so they
-        // become real arrays instead of being stored as plain objects.
+        // No container to merge into (or the value is a wholesale
+        // replacement): revive index-keyed array diffs so they become real
+        // arrays instead of being stored as plain objects, and drop null
+        // markers — null means delete, and the replacement discards the
+        // old container anyway. Cloned, so the caller's source is never
+        // mutated or aliased.
         const sourceValue = Utils.reviveArrayDiffs(resolvedSource[prop]);
-        // Clone if it's an object/array to match LazyWatch behavior
         const clonedValue = Utils.isObjectOrArray(sourceValue)
-          ? Utils.deepClone(sourceValue)
+          ? Utils.cloneWithoutNulls(sourceValue)
           : sourceValue;
         target[prop] = clonedValue;
       }

@@ -158,6 +158,51 @@ export const Utils = {
   },
 
   /**
+   * Deep structural equality for diff values: leaves by identity (Date by
+   * time, RegExp by source+flags), containers by keys and recursion.
+   * Used to detect no-op wholesale replacements so re-applying an
+   * already-applied diff records and emits nothing (echo stability).
+   */
+  deepEqual(a, b) {
+    if (a === b) return true;
+    if (a instanceof Date) return b instanceof Date && a.getTime() === b.getTime();
+    if (a instanceof RegExp) return b instanceof RegExp && a.source === b.source && a.flags === b.flags;
+    if (!this.isObjectOrArray(a) || !this.isObjectOrArray(b)) return false;
+    if (Array.isArray(a) !== Array.isArray(b)) return false;
+    const keys = Object.keys(a);
+    if (keys.length !== Object.keys(b).length) return false;
+    for (const key of keys) {
+      if (!(key in b) || !this.deepEqual(a[key], b[key])) return false;
+    }
+    return true;
+  },
+
+  /**
+   * Deep clone a container value dropping every null/undefined entry.
+   *
+   * Used when a diff value is applied wholesale (no existing container to
+   * merge into): nulls in diffs mean "delete", so they must never be
+   * stored as literal state. Full values recorded from watched state never
+   * contain nulls (assigning null is a deletion), so for them this is a
+   * plain clone; for patch fragments — including inverse-diff arrays,
+   * whose elements carry null markers for keys to delete — dropping the
+   * marker is exactly the deletion, since the wholesale write replaces the
+   * old container anyway. Reserved names are skipped like everywhere else.
+   */
+  cloneWithoutNulls(value) {
+    if (!this.isObjectOrArray(value)) return this.deepClone(value);
+    const out = Array.isArray(value) ? [] : {};
+    if (Array.isArray(value)) out.length = value.length;
+    for (const key of Object.keys(value)) {
+      if (this.isUnsafeKey(key)) continue;
+      const entry = value[key];
+      if (entry === null || entry === undefined) continue;
+      out[key] = this.isObjectOrArray(entry) ? this.cloneWithoutNulls(entry) : this.deepClone(entry);
+    }
+    return out;
+  },
+
+  /**
    * Deep clone a value.
    *
    * Uses structuredClone when available (Node 17+, all modern browsers) and

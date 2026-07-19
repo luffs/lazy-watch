@@ -101,6 +101,20 @@ export interface UtilsInterface {
      * RegExp; functions are copied by reference. Cycle-safe
      */
     deepClone<T>(obj: T, hash?: WeakMap<any, any>): T;
+
+    /**
+     * Deep structural equality for diff values: leaves by identity (Date
+     * by time, RegExp by source and flags), containers by keys and
+     * recursion. Used to detect no-op wholesale replacements
+     */
+    deepEqual(a: any, b: any): boolean;
+
+    /**
+     * Deep clone a container value dropping every null/undefined entry.
+     * Used when a diff value is applied wholesale: nulls in diffs mean
+     * "delete" and must never be stored as literal state
+     */
+    cloneWithoutNulls<T>(value: T): T;
 }
 
 /**

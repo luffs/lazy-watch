@@ -30,6 +30,35 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
   before index keys) — so callers catch and fall back to applying the
   diffs separately. Verified by a fuzz test folding random batch diffs
   with fallback against a patched mirror
+- fix: Destroying a container and recreating it as an object **within one
+  batch** no longer desyncs patch-based mirrors. Previously the recreation
+  overwrote the recorded deletion in the diff, so receivers merged the new
+  object into their still-live stale container (`delete w.k; w.k = {b: 2}`
+  emitted `{k: {b: 2}}` and a mirror holding `{k: {a: 1}}` ended at
+  `{a: 1, b: 2}`). The destroyed container is now remembered for the rest
+  of the batch — across all destruction paths: `delete`, `undefined`
+  assignment, replacement by a leaf, `patch`/`overwrite` deletions, and
+  array truncation — and the recreation's diff records `null` for every
+  stale key the new value doesn't carry (recursively through shared nested
+  objects), so receivers delete exactly what they still hold. The null
+  markers exist only on the wire, never in local state
+- fix: Real arrays in diffs are now applied **wholesale** instead of being
+  merged element-by-element. A real array in a diff is by definition a full
+  replacement value (in-place mutations emit index-keyed fragments, which
+  still merge), but receivers merged its object elements into their stale
+  counterparts: `w.list = [{b: 2}]` left a mirror holding `[{a: 1}]` at
+  `[{a: 1, b: 2}]`. Applies to `patch`, `overwrite`, and `patchObject`;
+  relay chains converge because the full array is re-emitted. Re-applying
+  an already-applied array is detected by deep equality and records
+  nothing, so bidirectional mirrors cannot echo. Inverse diffs still apply
+  correctly: their arrays' null markers are dropped during the wholesale
+  write, which is exactly the deletion they encoded
+- fix: `patch`/`overwrite` no longer mutate the caller's diff when setting
+  a container value wholesale — the null-stripping that previously deleted
+  keys **from the source diff itself** (corrupting it for the next mirror
+  it was applied to) now happens on a private clone, and strips at every
+  depth instead of only the top level, so null markers can never be stored
+  as literal state
 - fix: `patchObject` now adopts a wholesale source array's length,
   truncating the target array's tail — previously `for...in` never visited
   the non-enumerable `length`, so a shorter replacement array (as emitted
