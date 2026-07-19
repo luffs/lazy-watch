@@ -106,6 +106,64 @@ export interface ListenerOptions {
 }
 
 /**
+ * Options for LazyWatch.createUndoManager
+ */
+export interface UndoManagerOptions {
+    /**
+     * Maximum undo depth; the oldest step is dropped when exceeded
+     * @default Infinity
+     */
+    limit?: number;
+}
+
+/**
+ * Undo/redo manager created by LazyWatch.createUndoManager.
+ *
+ * Each emitted batch is one undoable step. undo() and redo() apply through
+ * the instance's normal patch path and emit to other listeners as an
+ * ordinary batch, so synced mirrors follow undo history automatically
+ */
+export interface UndoManager {
+    /**
+     * Undo the most recent step. Pending (not yet emitted) changes are
+     * flushed first so they form the step being undone
+     * @returns True if a step was undone, false when there was nothing to
+     * undo or the manager is disposed
+     */
+    undo(): boolean;
+
+    /**
+     * Re-apply the most recently undone step. Pending changes are flushed
+     * first; being new changes, they clear the redo stack
+     * @returns True if a step was re-applied, false otherwise
+     */
+    redo(): boolean;
+
+    /**
+     * True when there is a step to undo. Pending (not yet emitted) changes
+     * count, so with throttle/debounce a just-made change is undoable
+     * before its timer fires
+     */
+    readonly canUndo: boolean;
+
+    /**
+     * True when there is an undone step to re-apply
+     */
+    readonly canRedo: boolean;
+
+    /**
+     * Drop all undo and redo history without touching the watched state
+     */
+    clear(): void;
+
+    /**
+     * Detach from the instance: stop recording, drop history, and restore
+     * the instance's inverse-recording setting. Idempotent
+     */
+    dispose(): void;
+}
+
+/**
  * Configuration options for LazyWatch
  */
 export interface LazyWatchConstructorOptions {
@@ -357,6 +415,31 @@ export interface LazyWatchStatic {
      * });
      */
     transaction<R>(watched: object, callback: () => R): R;
+
+    /**
+     * Create an undo/redo manager for a watched instance.
+     * Each emitted batch becomes one undoable step; undo/redo emit to the
+     * instance's other listeners as normal batches, so synced mirrors follow
+     * undo history automatically. New changes clear the redo stack.
+     * Works on any instance: inverse recording is enabled for the manager's
+     * lifetime (with its usual costs — extra clones, compact $splice
+     * recording disabled, listeners receive inverse diffs) and restored on
+     * manager.dispose(). One manager per instance; disposing the instance
+     * disposes its manager. Changes made inside LazyWatch.silent bypass
+     * emission and are not recorded
+     * @param watched - The LazyWatch root proxy (nested proxies throw)
+     * @param options - Manager options (limit)
+     * @returns The undo manager
+     * @throws {Error} If the instance has been disposed, already has an
+     * undo manager, or a nested proxy is passed
+     *
+     * @example
+     * const manager = LazyWatch.createUndoManager(watched, { limit: 100 });
+     * watched.count = 1;
+     * manager.undo(); // count restored
+     * manager.redo(); // count is 1 again
+     */
+    createUndoManager(watched: object, options?: UndoManagerOptions): UndoManager;
 
     /**
      * Clean up resources and remove all listeners

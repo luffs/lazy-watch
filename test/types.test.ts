@@ -2,7 +2,7 @@
 // Run with: npx -p typescript tsc --project test/tsconfig.json
 // This file is never executed; tsc failing (including unused @ts-expect-error) is the test.
 import { LazyWatch, PROXY_TARGET, LAZYWATCH_INSTANCE } from '../src/lazy-watch.js';
-import type { ChangeSet, Patch, Unsubscribe } from '../src/lazy-watch.js';
+import type { ChangeSet, Patch, Unsubscribe, UndoManager } from '../src/lazy-watch.js';
 
 interface User {
   name: string;
@@ -77,6 +77,20 @@ const subSnap: { theme: string } = LazyWatch.snapshot(watched.profile);
 void subSnap;
 const diff: ChangeSet = LazyWatch.silent(watched, () => { watched.age = 33; });
 void diff;
+
+// Undo manager
+const manager: UndoManager = LazyWatch.createUndoManager(watched, { limit: 100 });
+const didUndo: boolean = manager.undo();
+const didRedo: boolean = manager.redo();
+const cu: boolean = manager.canUndo;
+const cr: boolean = manager.canRedo;
+void didUndo, didRedo, cu, cr;
+manager.clear();
+manager.dispose();
+// @ts-expect-error - canUndo is read-only
+manager.canUndo = true;
+// @ts-expect-error - limit must be a number
+LazyWatch.createUndoManager(watched, { limit: 'many' });
 
 // Inverse diffs and transactions
 const inv = new LazyWatch({ n: 1 }, { inverse: true });

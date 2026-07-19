@@ -69,7 +69,14 @@ The codebase follows a modular architecture with clear separation of concerns:
    - Nested-path listeners receive path-relative diffs; when their subtree (or an ancestor) is deleted they are called with `null`, and when it is replaced wholesale by a leaf value they are called with that value. `#filterDiffByPath` uses `undefined` as the "batch didn't touch this path" sentinel (safe because diffs never store `undefined`)
    - `LazyWatch.flush(watched)` exposes `forceEmit()`: synchronous emit bypassing batching, throttle, debounce, and pause
 
-5. **Utils** (`src/utils.js`) - Helper functions for type checking and cloning
+5. **UndoManager** (`src/undo-manager.js`) - Undo/redo stacks built on inverse diffs
+   - Created via `LazyWatch.createUndoManager(watched, { limit })`; one per instance (tracked in a `LazyWatch.#undoManagers` WeakMap), root proxy only, disposed automatically when the instance is disposed
+   - Dependency-injected (subscribe/flush/patch/hasPending/onDispose closures built in the static factory), so the class never touches LazyWatch internals directly
+   - Records each emitted batch as a `{ diff, inverse }` step; undo applies the inverse, redo the forward diff — both through the normal patch path with a synchronous flush while an `#applying` guard keeps the manager's own listener from recording the application. Other listeners receive it as a normal batch (mirrors follow undo)
+   - `undo()`/`redo()` flush pending changes first (pending counts toward `canUndo`); new changes clear the redo stack
+   - Attach flushes pending changes (kept out of history), then enables `inverseEnabled` for the manager's lifetime; `dispose()` restores the prior setting (discarding a half-recorded inverse when the instance had it off)
+
+6. **Utils** (`src/utils.js`) - Helper functions for type checking and cloning
    - `isObjectOrArray()` determines if value should be proxied; returns false for leaf values
    - `deepClone()` creates copies of objects/arrays for diff storage; uses `structuredClone` when available, with a manual fallback covering only what watched state allows (plain objects, arrays, Date, RegExp; functions by reference). Also backs `LazyWatch.snapshot(watched)`, which returns an independent plain clone of the root or a nested subtree
 
@@ -127,6 +134,7 @@ LazyWatch provides utility methods that work on normal objects (non-proxies):
 - Inverse tracking disables compact `$splice` recording: a `$splice` op cannot be correctly interleaved with per-key inverse entries (receivers apply `$splice` before a node's other keys, breaking chronological undo ordering), so structural array ops fall back to per-index trap recording — correct, just larger
 - `LazyWatch.transaction(watched, cb)` works on any instance: it flushes pending changes, enables inverse recording for the callback's duration, and on throw applies the inverse via `ProxyHandler.rollback()` (suppressed — records and emits nothing) and discards the forward diff. Synchronous callbacks only; nesting throws; `flush` inside the callback escapes the rollback scope
 - `ProxyHandler.#inverseActive()` gates all capture sites (`recordChange`, both delete paths, truncation, the `overwrite` applier branches); suppression covers structural-op internals and rollback itself
+- `LazyWatch.createUndoManager(watched, { limit })` layers undo/redo stacks on top of inverse diffs (see the UndoManager component above); `LazyWatch.silent` changes bypass emission and are never recorded as steps
 
 ### Array Handling
 - Array mutations (push, index writes) are tracked via length and index changes

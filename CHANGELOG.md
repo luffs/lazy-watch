@@ -6,6 +6,17 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
 
 ## [Unreleased]
 
+- feat: Add `LazyWatch.createUndoManager(watched, { limit })` — a built-in
+  undo/redo manager where every emitted batch is one undoable step:
+  `undo()`, `redo()`, `canUndo`, `canRedo`, `clear()`, `dispose()`. Undo and
+  redo apply through the normal patch path and emit as ordinary batches, so
+  synced mirrors follow undo history automatically. Pending changes are
+  flushed into a step before undoing (a just-made change is undoable even
+  under throttle/debounce), new changes clear the redo stack, and a
+  successful transaction forms a single step. Works on any instance —
+  inverse recording is enabled for the manager's lifetime (with its
+  documented costs) and restored on `dispose()`; disposing the instance
+  disposes its manager. One manager per instance; root proxy required
 - fix: A listener that unsubscribes during an emit (itself or another
   registration) no longer causes the next listener in line to be skipped —
   dispatch now iterates a snapshot of the listener list. Removal during

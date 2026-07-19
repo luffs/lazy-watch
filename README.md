@@ -15,6 +15,7 @@ Deep watch JavaScript objects using Proxy and emit diffs asynchronously. LazyWat
 - ⏸️ Pause and resume event emissions
 - 🤫 Silent mutations without triggering events
 - ↩️ Opt-in inverse diffs (undo) and atomic transactions with rollback
+- 🕑 Built-in undo/redo manager with configurable history depth
 - 📦 Efficient patching mechanism
 - 🌐 Works in browsers and Node.js
 
@@ -391,6 +392,11 @@ wire), and follows the null-means-delete convention. It captures the state
 from before the *first* change in the batch, so applying it after any number
 of changes to the same keys restores the true pre-batch values.
 
+The example above is the manual pattern — useful when you need custom
+history handling (remote undo, persistence). For the common local case,
+the built-in [undo manager](#undo-manager) packages the stack, the guard,
+and redo support.
+
 **Trade-offs:** recording previous values costs extra clones on the write
 path, and compact `$splice` recording is disabled — structural array ops
 (`splice`/`unshift`/`shift`) fall back to per-index diffs, which are still
@@ -427,6 +433,59 @@ exactly the callback's own changes. The callback must be synchronous, and
 transactions cannot be nested. Avoid calling `LazyWatch.flush` inside the
 callback: flushed changes are emitted immediately and leave the transaction's
 rollback scope.
+
+### Undo Manager
+
+```js
+const manager = LazyWatch.createUndoManager(watchedObject, options);
+```
+
+Creates an undo/redo manager for a watched instance. Every emitted batch
+becomes one undoable step:
+
+```js
+const doc = new LazyWatch({ text: '', cursor: 0 });
+const manager = LazyWatch.createUndoManager(doc, { limit: 100 });
+
+doc.text = 'hello';
+doc.cursor = 5;
+// ...after the batch emits:
+
+manager.undo();   // doc is { text: '', cursor: 0 } again
+manager.redo();   // doc is { text: 'hello', cursor: 5 } again
+manager.canUndo;  // true
+manager.canRedo;  // false
+```
+
+**Options:**
+- `limit` - Maximum undo depth (default: `Infinity`). The oldest step is
+  dropped when exceeded.
+
+**The manager:**
+- `undo()` / `redo()` - Apply the previous/next step; return `true` if a
+  step was applied, `false` when there was nothing to do. Pending
+  (not-yet-emitted) changes are flushed first, so with `throttle` or
+  `debounce` a just-made change is undoable immediately.
+- `canUndo` / `canRedo` - Whether a step is available (pending changes
+  count toward `canUndo`).
+- `clear()` - Drop all history without touching the state.
+- `dispose()` - Detach from the instance and restore its inverse-recording
+  setting. Disposing the instance disposes its manager automatically.
+
+Undo and redo apply through the normal patch path and emit to the
+instance's other listeners as ordinary batches — **synced mirrors follow
+undo history automatically**, with no special handling on the receiving
+side. New changes clear the redo stack (standard undo-history semantics),
+and a successful `LazyWatch.transaction` forms a single undo step.
+
+The manager works on any instance: `{ inverse: true }` is not required.
+Inverse recording is enabled for the manager's lifetime, which carries the
+usual costs — extra clones on the write path, compact `$splice` recording
+disabled, and listeners receive inverse diffs as a second argument. History
+starts at a clean batch boundary (pending changes are flushed on attach,
+outside the history), changes made inside `LazyWatch.silent` bypass
+emission and are not recorded, and only one manager may exist per instance
+at a time (dispose the current one first).
 
 ### Applying Changes
 

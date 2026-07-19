@@ -3,6 +3,7 @@ import {Utils} from "./utils.js";
 import {EventEmitter} from "./event-emitter.js";
 import {DiffTracker} from "./diff-tracker.js";
 import {ProxyHandler, LAZYWATCH_INSTANCE, PROXY_TARGET} from "./proxy-handler.js";
+import {UndoManager} from "./undo-manager.js";
 
 /**
  * LazyWatch - A reactive proxy-based object change tracker
@@ -31,6 +32,9 @@ export class LazyWatch {
   #inTransaction = false;
 
   static #instances = new WeakMap();
+  // One active undo manager per instance; entries are removed on
+  // manager disposal so a new one can be created afterwards
+  static #undoManagers = new WeakMap();
 
   /**
    * Create a new LazyWatch instance
@@ -414,12 +418,85 @@ export class LazyWatch {
   }
 
   /**
+   * Create an undo/redo manager for a watched instance.
+   *
+   * Each emitted batch becomes one undoable step. `undo()` restores the
+   * state from before the step, `redo()` re-applies it; both emit to the
+   * instance's other listeners as a normal batch, so synced mirrors follow
+   * undo history automatically. New changes clear the redo stack.
+   *
+   * Works on any instance: inverse recording is enabled for the manager's
+   * lifetime and restored on `manager.dispose()`. While enabled it has the
+   * usual costs — extra clones on the write path, compact $splice recording
+   * disabled, and listeners receive inverse diffs as a second argument.
+   * Pending changes are flushed when the manager attaches, so history
+   * starts at a clean batch boundary. Changes made inside
+   * `LazyWatch.silent` bypass emission and are not recorded.
+   *
+   * One manager per instance: creating a second one before disposing the
+   * first throws. Disposing the instance disposes its manager.
+   *
+   * @param {Object} watched - The LazyWatch root proxy
+   * @param {Object} [options] - Manager options
+   * @param {number} [options.limit=Infinity] - Maximum undo depth; the
+   *   oldest step is dropped when exceeded
+   * @returns {UndoManager} The manager: `undo()`, `redo()`, `canUndo`,
+   *   `canRedo`, `clear()`, `dispose()`
+   * @throws {Error} If the instance has been disposed, already has an
+   *   undo manager, or a nested proxy is passed
+   * @example
+   * const manager = LazyWatch.createUndoManager(watched, { limit: 100 });
+   * watched.count = 1;
+   * manager.undo(); // count restored
+   * manager.redo(); // count is 1 again
+   */
+  static createUndoManager(watched, options = {}) {
+    const instance = LazyWatch.#getInstance(watched);
+    instance.#checkDisposed();
+    if (LazyWatch.#undoManagers.has(instance)) {
+      throw new Error('This LazyWatch instance already has an undo manager (dispose it first)');
+    }
+    if (instance.#proxyHandler.getProxyPath(watched).length > 0) {
+      throw new Error('LazyWatch.createUndoManager requires the root proxy, not a nested one');
+    }
+
+    // Start history at a clean batch boundary, then enable inverse
+    // recording for the manager's lifetime
+    instance.#eventEmitter.forceEmit();
+    const tracker = instance.#diffTracker;
+    const wasEnabled = tracker.inverseEnabled;
+    tracker.inverseEnabled = true;
+
+    const manager = new UndoManager({
+      limit: options.limit,
+      subscribe: listener => instance.#eventEmitter.on(listener, []),
+      flush: () => instance.#eventEmitter.forceEmit(),
+      patch: diff => instance.#proxyHandler.patch(instance.#proxy, diff),
+      hasPending: () => tracker.hasPendingChanges(),
+      onDispose: () => {
+        tracker.inverseEnabled = wasEnabled;
+        // The instance doesn't track inverses itself; drop any
+        // half-recorded one so it can't pair with a later batch
+        if (!wasEnabled) tracker.consumeInverse();
+        LazyWatch.#undoManagers.delete(instance);
+      }
+    });
+    LazyWatch.#undoManagers.set(instance, manager);
+    return manager;
+  }
+
+  /**
    * Clean up resources and remove all listeners
    * @param {Object} watched - The LazyWatch proxy
    */
   static dispose(watched) {
     const instance = LazyWatch.#getInstance(watched);
     if (instance.#disposed) return;
+
+    // Detach an active undo manager first, while the emitter and tracker
+    // are still alive for its cleanup
+    const undoManager = LazyWatch.#undoManagers.get(instance);
+    if (undoManager) undoManager.dispose();
 
     instance.#disposed = true;
     instance.#eventEmitter.dispose();
