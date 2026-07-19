@@ -518,7 +518,7 @@ This is particularly useful when different components manage different sections 
 Full TypeScript support is included:
 
 ```typescript
-import LazyWatch from 'lazy-watch';
+import { LazyWatch } from 'lazy-watch';
 
 interface User {
   name: string;
@@ -531,15 +531,28 @@ interface User {
 const user: User = { name: 'Alice', age: 30 };
 const watched = new LazyWatch<User>(user);
 
-LazyWatch.on(watched, (changes) => {
-  // changes is properly typed
-  console.log(changes);
+// Diffs are typed after the watched object: Patch<User> | null
+LazyWatch.on(watched, changes => {
+  changes?.age;          // number | null | undefined
+  changes?.profile?.bio; // string | null | undefined
+  changes?.invalid;      // ✗ TypeScript error — not a User property
+});
+
+// Listeners on nested proxies are typed after the subtree
+LazyWatch.on(watched.profile!, changes => {
+  changes?.bio; // string | null | undefined
 });
 
 // Type-safe proxy access
 watched.age = 31; // ✓ OK
 watched.invalid = true; // ✗ TypeScript error
 ```
+
+The listener parameter is nullable because nested-proxy listeners receive
+`null` when their subtree is deleted — narrowing with `?.` or an early
+`if (!changes) return` covers it. Wire-level shapes (index-keyed array
+fragments, `$splice` op lists) can be inspected by casting the fragment to
+`ChangeSet`.
 
 ### Generic Type Support
 

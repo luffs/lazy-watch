@@ -17,6 +17,21 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
   inverse recording is enabled for the manager's lifetime (with its
   documented costs) and restored on `dispose()`; disposing the instance
   disposes its manager. One manager per instance; root proxy required
+- types: Diffs are now typed after the watched object. `on`/`once`/`off`
+  are generic — listeners receive `Patch<T> | null` (and the inverse as
+  `Patch<T> | null`) instead of `any`, giving checked, autocompleted
+  property access on diffs; nested-proxy listeners are typed after their
+  subtree. `Patch<T>` now treats `Date`/`RegExp` as leaf values. This is
+  stricter than before for TypeScript consumers: diff access must narrow
+  the nullable parameter (nested subtree deletion delivers `null` — the
+  type now surfaces a case that always existed at runtime), and callbacks
+  explicitly annotated with a mismatched parameter type may need their
+  annotation updated (`ChangeListener` without a type argument still works)
+- chore: `engines.node` raised from `>=16` to `>=22`, matching the tested
+  CI matrix (Node 22/24/26 and Bun) and the oldest maintained Node release
+  line — Node 16 has been EOL since September 2023 and was never covered by
+  CI. The code may still run on older versions (`structuredClone` has a
+  fallback), but they are no longer claimed or tested
 - fix: A listener that unsubscribes during an emit (itself or another
   registration) no longer causes the next listener in line to be skipped —
   dispatch now iterates a snapshot of the listener list. Removal during

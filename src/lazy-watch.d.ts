@@ -17,27 +17,44 @@ export type ChangeSet = Record<string, any>;
 export type Unsubscribe = () => void;
 
 /**
- * Callback function for change notifications.
+ * A partial update for T. Values may be `null` to delete the property.
+ * Date and RegExp are leaf values (replaced wholesale, never merged), so
+ * they appear as themselves rather than being mapped over.
+ */
+export type Patch<T> = {
+    [K in keyof T]?: (T[K] extends Date | RegExp ? T[K]
+        : T[K] extends object ? Patch<T[K]>
+        : T[K]) | null;
+};
+
+/**
+ * Callback function for change notifications, typed after the watched
+ * object: diffs are `Patch<T>` fragments, so property access on them is
+ * checked and autocompleted.
  *
  * Root listeners always receive a diff object. Listeners registered on
  * nested proxies receive path-relative diffs — and when their subtree (or an
- * ancestor of it) is deleted they receive `null`; when it is replaced
- * wholesale by a leaf value (string, number, boolean, Date, ...) they receive
- * that value directly.
+ * ancestor of it) is deleted they receive `null` (hence the nullable
+ * parameter; narrow before use); when it is replaced wholesale by a leaf
+ * value (string, number, boolean, Date, ...) they receive that value
+ * directly (cast when handling this case).
  *
- * When the instance was created with `{ inverse: true }`, listeners receive
- * a second argument: the inverse diff for the same batch (path-relative for
- * nested listeners). Applying it with LazyWatch.patch restores the pre-batch
- * state.
+ * When the instance was created with `{ inverse: true }` (or has an undo
+ * manager attached), listeners receive a second argument: the inverse diff
+ * for the same batch (path-relative for nested listeners). Applying it with
+ * LazyWatch.patch restores the pre-batch state.
+ *
+ * Wire-level shapes — index-keyed array fragments and `$splice` op lists —
+ * are delivered inside the diff where an array changed; access them by
+ * casting the fragment to `ChangeSet` when you need to inspect them.
+ *
+ * The type parameter defaults to `any` so standalone `ChangeListener`
+ * annotations keep working without one.
  */
-export type ChangeListener = (changes: ChangeSet | null | any, inverse?: ChangeSet | any) => void;
-
-/**
- * A partial update for T. Values may be `null` to delete the property.
- */
-export type Patch<T> = {
-    [K in keyof T]?: (T[K] extends object ? Patch<T[K]> : T[K]) | null;
-};
+export type ChangeListener<T extends object = any> = (
+    changes: Patch<T> | null,
+    inverse?: Patch<T> | null
+) => void;
 
 /**
  * Utility functions exposed as `LazyWatch.Utils`
@@ -233,7 +250,7 @@ export interface LazyWatchStatic {
      * @throws {TypeError} If listener is not a function
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
      */
-    on(watched: object, listener: ChangeListener, options?: ListenerOptions): Unsubscribe;
+    on<T extends object>(watched: T, listener: ChangeListener<T>, options?: ListenerOptions): Unsubscribe;
 
     /**
      * Add a change listener that is removed after its first invocation
@@ -244,7 +261,7 @@ export interface LazyWatchStatic {
      * @throws {TypeError} If listener is not a function
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
      */
-    once(watched: object, listener: ChangeListener, options?: Omit<ListenerOptions, 'once'>): Unsubscribe;
+    once<T extends object>(watched: T, listener: ChangeListener<T>, options?: Omit<ListenerOptions, 'once'>): Unsubscribe;
 
     /**
      * Remove a change listener from a LazyWatch proxy
@@ -255,7 +272,7 @@ export interface LazyWatchStatic {
      * @param listener - The listener to remove
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
      */
-    off(watched: object, listener: ChangeListener): void;
+    off<T extends object>(watched: T, listener: ChangeListener<T>): void;
 
     /**
      * Overwrite the watched object with new values
