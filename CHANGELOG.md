@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
+## [Unreleased]
+
+- fix: A listener that unsubscribes during an emit (itself or another
+  registration) no longer causes the next listener in line to be skipped —
+  dispatch now iterates a snapshot of the listener list. Removal during
+  emit follows `EventTarget` semantics: a listener removed by an earlier
+  listener in the same emit is not invoked, and a listener added during
+  an emit first fires on the next batch
+- fix: Diffs handed to listeners (and returned by `LazyWatch.silent`) no
+  longer share references with live watched state. Previously a wholesale
+  container assignment aliased the emitted diff node to the target subtree,
+  so mutating that subtree after the emit retroactively rewrote diffs a
+  consumer had kept (send buffers, undo stacks, ...). `consumeDiff` now
+  returns a deep clone, one clone per batch
+
 ## [3.2.0] - 2026-07-18
 
 - feat: Inverse diffs (undo) — `new LazyWatch(obj, { inverse: true })` records

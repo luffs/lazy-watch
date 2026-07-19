@@ -121,7 +121,14 @@ export class EventEmitter {
       ? this.#diffTracker.consumeInverse()
       : undefined;
     let removeFired = false;
-    this.#listeners.forEach(entry => {
+    // Dispatch over a snapshot: listeners that unsubscribe during emit would
+    // otherwise splice the live array mid-iteration and skip the next
+    // listener. The membership check gives EventTarget semantics — a
+    // listener removed by an earlier listener in the same emit does not
+    // fire, and one added during the emit waits for the next batch.
+    const entries = [...this.#listeners];
+    entries.forEach(entry => {
+      if (!this.#listeners.includes(entry)) return;
       try {
         // Filter the diff based on the listener's path
         const filteredDiff = this.#filterDiffByPath(diff, entry.path);

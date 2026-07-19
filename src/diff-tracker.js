@@ -144,12 +144,17 @@ export class DiffTracker {
   }
 
   /**
-   * Get the current master diff and reset it
+   * Get the current master diff and reset it.
+   *
+   * Returns a deep clone: during a batch, wholesale container assignments
+   * alias diff nodes to the live target subtrees, so handing out the raw
+   * diff would let later mutations retroactively rewrite a diff a consumer
+   * kept (send buffers, undo stacks, ...).
    */
   consumeDiff() {
     const diff = this.#masterDiff;
     this.#masterDiff = {};
-    return diff;
+    return Utils.deepClone(diff);
   }
 
   /**

@@ -2380,6 +2380,66 @@ runner.test('inverse diffs should undo random mixed operations (fuzz)', async ()
   LazyWatch.dispose(src);
 });
 
+runner.test('a listener unsubscribing itself during emit should not skip later listeners', async () => {
+  const watched = new LazyWatch({ count: 0 });
+  const calls = [];
+  const stop = LazyWatch.on(watched, () => { calls.push(1); stop(); });
+  LazyWatch.on(watched, () => calls.push(2));
+  LazyWatch.on(watched, () => calls.push(3));
+
+  watched.count = 1;
+  await wait(10);
+  assertEquals(calls, [1, 2, 3], 'all listeners registered at emit time should fire');
+
+  watched.count = 2;
+  await wait(10);
+  assertEquals(calls, [1, 2, 3, 2, 3], 'the unsubscribed listener should stay removed');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('a listener removed during emit by an earlier listener should not fire', async () => {
+  const watched = new LazyWatch({ count: 0 });
+  const calls = [];
+  const second = () => calls.push(2);
+  LazyWatch.on(watched, () => { calls.push(1); LazyWatch.off(watched, second); });
+  LazyWatch.on(watched, second);
+  LazyWatch.on(watched, () => calls.push(3));
+
+  watched.count = 1;
+  await wait(10);
+  assertEquals(calls, [1, 3], 'a listener removed mid-emit must not be invoked');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('emitted diffs should not alias live state', async () => {
+  const watched = new LazyWatch({});
+  let captured = null;
+  LazyWatch.on(watched, diff => { if (!captured) captured = diff; });
+
+  watched.obj = { x: 1, list: ['a'] };
+  await wait(10);
+  assertEquals(captured, { obj: { x: 1, list: ['a'] } });
+
+  // Mutating the same subtree later must not rewrite the diff the
+  // listener kept (send buffers, undo stacks, ...)
+  watched.obj.x = 999;
+  watched.obj.list.push('b');
+  await wait(10);
+  assertEquals(captured, { obj: { x: 1, list: ['a'] } },
+    'a diff held past its emit must not change when state changes later');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('silent should return a diff that does not alias live state', () => {
+  const watched = new LazyWatch({});
+  const diff = LazyWatch.silent(watched, () => { watched.obj = { x: 1 }; });
+
+  watched.obj.x = 2;
+  assertEquals(diff, { obj: { x: 1 } },
+    'the returned diff must not change when state changes later');
+  LazyWatch.dispose(watched);
+});
+
 // Usage examples
 console.log('\n=== LazyWatch Usage Examples ===\n');
 
