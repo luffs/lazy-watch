@@ -4,6 +4,7 @@ import {EventEmitter} from "./event-emitter.js";
 import {DiffTracker} from "./diff-tracker.js";
 import {ProxyHandler, LAZYWATCH_INSTANCE, PROXY_TARGET} from "./proxy-handler.js";
 import {UndoManager} from "./undo-manager.js";
+import {composeFragments} from "./diff-compose.js";
 
 /**
  * LazyWatch - A reactive proxy-based object change tracker
@@ -187,6 +188,15 @@ export class LazyWatch {
       }
     }
 
+    // A real array as the source is a wholesale replacement: adopt its
+    // length (for-in never visits the non-enumerable `length`, so without
+    // this a shorter source would leave the target's tail behind —
+    // `overwrite` on proxies does the same)
+    if (Array.isArray(target) && Array.isArray(resolvedSource) &&
+      target.length !== resolvedSource.length) {
+      target.length = resolvedSource.length;
+    }
+
     for (const prop in resolvedSource) {
       // $splice handled above (or dropped when the target isn't an array);
       // reserved names are never applied — writing them would mutate
@@ -208,6 +218,56 @@ export class LazyWatch {
         target[prop] = clonedValue;
       }
     }
+  }
+
+  /**
+   * Compose two sequential diffs into one equivalent diff.
+   *
+   * Applying the result with `patch` produces the same state as applying
+   * `older` then `newer` — the primitive for offline send buffers (collapse
+   * queued diffs into one message) and undo-step coalescing. Pure: neither
+   * input is mutated and the result shares no references with them.
+   *
+   * Composition follows receiver semantics: a `null` or leaf in `newer`
+   * wins outright, object fragments merge recursively, `$splice` op lists
+   * concatenate, and fragments over wholesale container values are
+   * materialized. Two pairings have no single-diff representation and
+   * throw a TypeError naming the path: an object diff following a deletion
+   * or leaf write (it would merge into the receiver's stale value instead
+   * of replacing it), and `$splice` ops following index writes on the
+   * same array (receivers apply ops before index keys, which would
+   * reorder history). Catch the error and fall back to sending the diffs
+   * separately, or resync with `snapshot` + `overwrite`:
+   *
+   * @param {Object} older - The earlier diff
+   * @param {Object} newer - The later diff
+   * @returns {Object} A new diff equivalent to applying both in order
+   * @throws {TypeError} If either input is not a diff object, contains
+   *   unsupported values, or the pair has no single-diff representation
+   * @example
+   * let buffered = null;
+   * LazyWatch.on(watched, diff => {
+   *   if (connected) return send(diff);
+   *   try {
+   *     buffered = buffered ? LazyWatch.composeDiffs(buffered, diff) : diff;
+   *   } catch (e) {
+   *     resyncOnReconnect = true; // pair can't collapse; send a snapshot later
+   *   }
+   * });
+   */
+  static composeDiffs(older, newer) {
+    const a = LazyWatch.resolveIfProxy(older);
+    const b = LazyWatch.resolveIfProxy(newer);
+    if (!a || typeof a !== 'object' || Array.isArray(a) ||
+        !b || typeof b !== 'object' || Array.isArray(b)) {
+      throw new TypeError('LazyWatch.composeDiffs requires two diff objects');
+    }
+    // Reject Map/Set/typed arrays, non-finite numbers, and reserved names
+    // anywhere in either diff, like the appliers do
+    Utils.assertSupported(a);
+    Utils.assertSupported(b);
+    return composeFragments(a, b,
+      (target, fragment) => LazyWatch.#patchObjectInto(target, fragment));
   }
 
   /**

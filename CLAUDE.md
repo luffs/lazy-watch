@@ -76,7 +76,12 @@ The codebase follows a modular architecture with clear separation of concerns:
    - `undo()`/`redo()` flush pending changes first (pending counts toward `canUndo`); new changes clear the redo stack
    - Attach flushes pending changes (kept out of history), then enables `inverseEnabled` for the manager's lifetime; `dispose()` restores the prior setting (discarding a half-recorded inverse when the instance had it off)
 
-6. **Utils** (`src/utils.js`) - Helper functions for type checking and cloning
+6. **diff-compose** (`src/diff-compose.js`) - Pure composition of sequential diffs, exposed as `LazyWatch.composeDiffs(older, newer)`
+   - Contract: `patch(S, compose(a, b))` ≡ `patch(patch(S, a), b)` for receivers the pair itself would converge; output shares no references with inputs
+   - Newer wins per key (`null`/leaf/wholesale-array outright; object fragments merge recursively); `$splice` lists concatenate; a fragment over a wholesale array value is materialized via an injected `applyFragment` (LazyWatch's `#patchObjectInto`)
+   - Throws TypeError (path-named) on the two un-composable pairings: object diff over a deletion/leaf (single diff would merge into receivers' stale container — verified desync), and `$splice` ops after index writes (receivers apply ops before index keys). Array fragments over a deletion escape via `reviveArrayDiffs` (self-describing `length`); a pure-op older fragment's interim `length` is dropped when newer ops follow
+
+7. **Utils** (`src/utils.js`) - Helper functions for type checking and cloning
    - `isObjectOrArray()` determines if value should be proxied; returns false for leaf values
    - `deepClone()` creates copies of objects/arrays for diff storage; uses `structuredClone` when available, with a manual fallback covering only what watched state allows (plain objects, arrays, Date, RegExp; functions by reference). Also backs `LazyWatch.snapshot(watched)`, which returns an independent plain clone of the root or a nested subtree
 

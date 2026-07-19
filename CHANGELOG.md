@@ -17,6 +17,25 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
   inverse recording is enabled for the manager's lifetime (with its
   documented costs) and restored on `dispose()`; disposing the instance
   disposes its manager. One manager per instance; root proxy required
+- feat: Add `LazyWatch.composeDiffs(older, newer)` — pure composition of
+  two sequential diffs into one equivalent diff (patching the result equals
+  patching both in order). The primitive for offline send buffers and
+  undo-step coalescing: object fragments merge recursively with the newer
+  winning, `null`/leaf/wholesale-array values in the newer diff win
+  outright, `$splice` op lists concatenate, and fragments over wholesale
+  container values are materialized. Two pairings have no single-diff
+  representation and throw a TypeError naming the path — an object diff
+  following a deletion or leaf write (it would merge into receivers' stale
+  value), and `$splice` ops following index writes (receivers apply ops
+  before index keys) — so callers catch and fall back to applying the
+  diffs separately. Verified by a fuzz test folding random batch diffs
+  with fallback against a patched mirror
+- fix: `patchObject` now adopts a wholesale source array's length,
+  truncating the target array's tail — previously `for...in` never visited
+  the non-enumerable `length`, so a shorter replacement array (as emitted
+  for `obj.list = [...]`) left stale trailing elements behind on
+  plain-object receivers, desyncing them from proxy `patch` receivers,
+  which have always truncated
 - types: Diffs are now typed after the watched object. `on`/`once`/`off`
   are generic — listeners receive `Patch<T> | null` (and the inverse as
   `Patch<T> | null`) instead of `any`, giving checked, autocompleted
@@ -27,6 +46,11 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
   type now surfaces a case that always existed at runtime), and callbacks
   explicitly annotated with a mismatched parameter type may need their
   annotation updated (`ChangeListener` without a type argument still works)
+- docs: The README API reference now covers the previously undocumented
+  methods — `overwrite` (replacement semantics vs `patch`, array
+  exception, full-transition emit), `getPendingDiff`, `isProxy`,
+  `resolveIfProxy` (with the writes-are-untracked warning), and `dispose`
+  (post-disposal behavior of the proxy and its static methods)
 - chore: `engines.node` raised from `>=16` to `>=22`, matching the tested
   CI matrix (Node 22/24/26 and Bun) and the oldest maintained Node release
   line — Node 16 has been EOL since September 2023 and was never covered by

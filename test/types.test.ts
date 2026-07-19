@@ -75,6 +75,10 @@ LazyWatch.overwrite(watched, { name: 'Bob' });
 const plain = { a: 1, b: 2, c: { d: 3 } };
 LazyWatch.patchObject(plain, { b: null, c: { d: 30 } });
 
+// composeDiffs takes and returns plain diffs
+const composed: ChangeSet = LazyWatch.composeDiffs({ a: 1 }, { a: null, b: 2 });
+void composed;
+
 const p: Patch<User> = { profile: { theme: 'light' }, age: null };
 void p;
 

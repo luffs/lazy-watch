@@ -249,6 +249,24 @@ window.addEventListener('beforeunload', () => {
 });
 ```
 
+### Inspecting Pending Changes
+
+```js
+const pending = LazyWatch.getPendingDiff(watchedObject);
+```
+
+Returns a deep-cloned copy of the changes accumulated since the last emit,
+without consuming them — the batch still emits as usual, and mutating the
+returned copy affects nothing. Returns an empty object when nothing is
+pending. Useful for debugging what a batch will contain, especially under
+`throttle`/`debounce` where changes can sit pending for a while:
+
+```js
+const data = new LazyWatch({ count: 0 }, { debounce: 500 });
+data.count = 1;
+LazyWatch.getPendingDiff(data); // { count: 1 } — not emitted yet
+```
+
 ### Taking Snapshots
 
 ```js
@@ -506,6 +524,35 @@ LazyWatch.patch(data, { a: 10, c: { d: 30, e: 40 } });
 // Note: 'b' is preserved, nested object 'c' is merged
 ```
 
+#### Overwriting LazyWatch Proxies
+
+```js
+LazyWatch.overwrite(watchedObject, source);
+```
+
+Makes the watched state exactly match `source`: shared properties are
+updated and properties missing from `source` (or `null` in it) are
+**deleted** — replacement semantics, where `patch` merges. All changes,
+including the deletions, are recorded and emitted as one batch, so
+listeners and mirrors receive the full transition:
+
+```js
+const data = new LazyWatch({ a: 1, b: 2, c: { d: 3 } });
+
+LazyWatch.overwrite(data, { a: 10, e: 5 });
+// Result: { a: 10, e: 5 } — b and c are deleted
+// Emits:  { a: 10, e: 5, b: null, c: null }
+```
+
+Arrays are the exception: their elements are merged by index and never
+deleted for being missing, but a shorter source array truncates the target
+via its `length`.
+
+Use `overwrite` to force a replica into an authoritative state — for
+example applying a full snapshot on reconnect (see the
+[WebSocket example](EXAMPLES.md#example-3-websocket-mirroring-with-reconnect-resync))
+— and `patch` for incremental diffs.
+
 #### Patching Normal Objects
 
 ```js
@@ -524,6 +571,8 @@ Applies changes from a source object to a normal (non-proxy) object. This is use
 - Nested objects are recursively merged
 - Properties with `null` values are deleted from target
 - Objects/arrays are deep cloned to avoid reference sharing
+- A real array in the source is a wholesale replacement: the target array
+  adopts its length (truncating any tail), matching `patch` on proxies
 
 **Example:**
 ```js
@@ -542,6 +591,123 @@ LazyWatch.patchObject(obj2, { b: null, c: 30 });
 - Applying server-side state updates to local objects
 - Merging configuration objects
 - Synchronizing state between watched and non-watched objects
+
+### Composing Diffs
+
+```js
+const combined = LazyWatch.composeDiffs(older, newer);
+```
+
+Collapses two sequential diffs into one equivalent diff: applying the
+result with `patch` produces the same state as applying `older` then
+`newer`. Pure — neither input is mutated, and the result shares no
+references with them. This is the primitive for offline send buffers
+(queue diffs while disconnected, send one message on reconnect) and for
+coalescing undo steps:
+
+```js
+LazyWatch.composeDiffs({ a: 1, c: { x: 1 } }, { b: 2, c: { y: 2 } });
+// { a: 1, b: 2, c: { x: 1, y: 2 } }
+
+LazyWatch.composeDiffs({ c: { x: 1 } }, { c: null });
+// { c: null } — the newer deletion wins
+
+LazyWatch.composeDiffs(
+  { items: { $splice: [[1, 1]], length: 2 } },
+  { items: { $splice: [[0, 0, ['a']]], length: 3 } }
+);
+// { items: { $splice: [[1, 1], [0, 0, ['a']]], length: 3 } } — ops concatenate
+```
+
+Composition is not defined for every pair. Two sequences have no
+single-diff representation in the wire format, and `composeDiffs` **throws
+a `TypeError`** (naming the path) rather than emit a diff that would
+corrupt receivers:
+
+- **An object diff following a deletion or leaf write** — sequentially the
+  object lands on nothing and becomes the exact new value, but a single
+  composed diff would *merge* into the receiver's stale container, leaving
+  old keys alive. (Array values escape this: they are self-describing via
+  `length`, so array fragments after a deletion revive into real arrays
+  and compose fine.)
+- **`$splice` ops following index writes on the same array** — receivers
+  apply a fragment's ops before its index keys, which would reorder
+  history.
+
+Both cases are detected precisely, so the fallback is simple — catch and
+send the pieces separately:
+
+```js
+let buffer = null;
+
+LazyWatch.on(watched, diff => {
+  if (connected) return send(diff);
+  try {
+    buffer = buffer ? LazyWatch.composeDiffs(buffer, diff) : diff;
+  } catch (e) {
+    sendQueue.push(buffer); // this pair can't collapse; flush and restart
+    buffer = diff;
+  }
+});
+```
+
+### Identifying and Unwrapping Proxies
+
+```js
+LazyWatch.isProxy(value);        // is this a live LazyWatch proxy?
+LazyWatch.resolveIfProxy(value); // the raw object underneath, or the input
+```
+
+`isProxy` returns `true` when `value` is a LazyWatch proxy — root or
+nested — whose instance has not been disposed. `resolveIfProxy` unwraps a
+proxy to the raw underlying object; non-proxy values pass through
+unchanged. Reads on the raw object skip the proxy machinery entirely,
+which can help in hot read-only code — but **writes to it are invisible to
+LazyWatch**: nothing is recorded or emitted, and mirrors silently desync.
+Treat the result as read-only, or use [`snapshot`](#taking-snapshots) for
+a safe independent copy.
+
+```js
+const data = new LazyWatch({ user: { name: 'Alice' } });
+
+LazyWatch.isProxy(data);         // true
+LazyWatch.isProxy(data.user);    // true — nested proxies count
+LazyWatch.isProxy({ name: '' }); // false
+
+const raw = LazyWatch.resolveIfProxy(data.user);
+raw.name;         // 'Alice' — plain access, no proxy overhead
+raw.name = 'Bob'; // ⚠ untracked: no diff, no emit
+```
+
+### Disposing
+
+```js
+LazyWatch.dispose(watchedObject);
+```
+
+Releases the instance: removes all listeners, cancels any pending emit,
+clears internal caches so proxies and targets can be garbage-collected,
+and detaches an attached [undo manager](#undo-manager). Disposing twice is
+a harmless no-op.
+
+After disposal, static methods on the proxy (`on`, `patch`, `snapshot`,
+...) throw an error. The proxy object itself keeps working as a plain
+object — reads and writes still reach the underlying target — but changes
+no longer reach any listener:
+
+```js
+const data = new LazyWatch({ count: 0 });
+const stop = LazyWatch.on(data, diff => console.log(diff));
+
+LazyWatch.dispose(data);
+
+data.count = 1;            // works, but no listener will ever fire
+LazyWatch.on(data, () => {}); // throws: instance has been disposed
+```
+
+Dispose instances you no longer need when their listeners capture other
+long-lived objects; the internal caches themselves are weak and don't
+block garbage collection.
 
 ### Array Diffs and Shape Drift
 

@@ -323,6 +323,30 @@ export interface LazyWatchStatic {
     patchObject<T extends object>(target: T, source: Patch<T> | ChangeSet): void;
 
     /**
+     * Compose two sequential diffs into one equivalent diff: applying the
+     * result with `patch` produces the same state as applying `older` then
+     * `newer`. The primitive for offline send buffers (collapse queued
+     * diffs into one message) and undo-step coalescing. Pure — neither
+     * input is mutated and the result shares no references with them.
+     *
+     * Two pairings have no single-diff representation and throw a
+     * TypeError naming the path: an object diff following a deletion or
+     * leaf write, and `$splice` ops following index writes on the same
+     * array. Catch the error and fall back to applying the diffs
+     * separately, or resync with `snapshot` + `overwrite`
+     * @param older - The earlier diff
+     * @param newer - The later diff
+     * @returns A new diff equivalent to applying both in order
+     * @throws {TypeError} If either input is not a diff object, contains
+     * unsupported values, or the pair has no single-diff representation
+     *
+     * @example
+     * const one = LazyWatch.composeDiffs({ a: 1 }, { b: 2, a: null });
+     * // { a: null, b: 2 }
+     */
+    composeDiffs(older: ChangeSet, newer: ChangeSet): ChangeSet;
+
+    /**
      * Resolve a proxy to its original target
      * @param obj - Potentially a proxy object
      * @returns The original target or the input if not a proxy
