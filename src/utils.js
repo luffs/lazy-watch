@@ -54,10 +54,22 @@ export const Utils = {
   },
 
   /**
+   * True for objects that survive cloning and JSON intact: prototype is
+   * null or one step from null (Object.prototype, including other realms'.
+   * A class instance's chain is at least two steps: its prototype, then
+   * Object.prototype). Arrays are not plain objects.
+   */
+  isPlainObject(val) {
+    if (!val || typeof val !== 'object' || Array.isArray(val)) return false;
+    const proto = Object.getPrototypeOf(val);
+    return proto === null || Object.getPrototypeOf(proto) === null;
+  },
+
+  /**
    * Deep-check a value entering watched state; throws a TypeError naming the
-   * offending path if it contains a rejected type, a non-finite number, or
-   * a reserved property name. Date and RegExp pass as leaf values and are
-   * not walked into. Cycle-safe.
+   * offending path if it contains a rejected type, a class instance, a
+   * non-finite number, or a reserved property name. Date and RegExp pass as
+   * leaf values and are not walked into. Cycle-safe.
    *
    * Perf note: the walk mutates `path` push/pop-style instead of copying it
    * per key, and only renders it into a string on the (cold) error path.
@@ -78,6 +90,16 @@ export const Utils = {
       );
     }
     if (!this.isObjectOrArray(value) || seen.has(value)) return;
+    if (!Array.isArray(value) && !this.isPlainObject(value)) {
+      // Class instances are half-trackable at best: cloning and JSON strip
+      // their prototype, silently losing methods — fail loudly instead
+      const name = value.constructor && value.constructor.name && value.constructor.name !== 'Object'
+        ? `a ${value.constructor.name} instance`
+        : 'an object with a custom prototype';
+      throw new TypeError(
+        `LazyWatch cannot track ${name}${pathLabel(path)}: its prototype and methods are silently lost on clone and sync. Use a plain object, or store it under a symbol key for local-only state.`
+      );
+    }
     seen.add(value);
     for (const key of Object.keys(value)) {
       if (this.isUnsafeKey(key)) {

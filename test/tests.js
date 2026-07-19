@@ -2888,6 +2888,58 @@ runner.test('composed offline buffers should converge (fuzz)', async () => {
   LazyWatch.dispose(src);
 });
 
+// Non-plain object rejection tests
+
+runner.test('class instances should be rejected everywhere they enter watched state', () => {
+  class Vec {
+    constructor(x) { this.x = x; }
+    mag() { return Math.abs(this.x); }
+  }
+
+  assertThrows(() => new LazyWatch(new Vec(1)), 'instance as the root should throw');
+  assertThrows(() => new LazyWatch({ v: new Vec(1) }), 'instance in the initial object should throw');
+
+  const watched = new LazyWatch({});
+  assertThrows(() => { watched.v = new Vec(1); }, 'assignment should throw');
+  assertEquals(LazyWatch.snapshot(watched), {}, 'rejected assignment must leave state untouched');
+  assertThrows(() => LazyWatch.patch(watched, { v: new Vec(1) }), 'patch should throw');
+  assertThrows(() => LazyWatch.overwrite(watched, { v: new Vec(1) }), 'overwrite should throw');
+  assertThrows(() => LazyWatch.patchObject({}, { v: new Vec(1) }), 'patchObject should throw');
+
+  try {
+    watched.deep = { v: new Vec(1) };
+    throw new Error('should have thrown');
+  } catch (e) {
+    assertTrue(e instanceof TypeError && e.message.includes('Vec') && e.message.includes('deep.v'),
+      `error should name the class and path, got: ${e.message}`);
+  }
+  LazyWatch.dispose(watched);
+});
+
+runner.test('null-prototype objects should still be accepted and tracked', async () => {
+  const bare = Object.create(null);
+  bare.x = 1;
+  const watched = new LazyWatch({ bare });
+  let diff = null;
+  LazyWatch.on(watched, d => { diff = d; });
+
+  watched.bare.x = 2;
+  await wait(10);
+  assertEquals(diff, { bare: { x: 2 } }, 'null-prototype objects are plain data');
+  LazyWatch.dispose(watched);
+});
+
+runner.test('class instances remain allowed under symbol keys (local-only escape hatch)', () => {
+  class Session { constructor() { this.token = 't'; } }
+  const watched = new LazyWatch({});
+  const SESSION = Symbol('session');
+
+  watched[SESSION] = new Session(); // must not throw
+  assertTrue(watched[SESSION] instanceof Session,
+    'symbol-keyed values are exempt from validation and never cloned');
+  LazyWatch.dispose(watched);
+});
+
 // Destroy-and-recreate convergence tests
 
 // Sync a patch-based mirror and assert it converges after the callback's

@@ -820,6 +820,27 @@ Validation runs before any mutation, so a rejected `patch`/`overwrite` leaves
 the watched state untouched. Use plain objects instead of Maps
 (`{ [id]: value }`) and arrays instead of Sets.
 
+**Class instances are rejected for the same reason.** Cloning and JSON
+strip an instance's prototype, silently turning it into a plain object
+with no methods — instead of half-tracking it, LazyWatch throws at every
+entry point, naming the class and path:
+
+```js
+class Vec { constructor(x) { this.x = x; } mag() { return Math.abs(this.x); } }
+
+const state = new LazyWatch({});
+state.v = new Vec(3);
+// TypeError: LazyWatch cannot track a Vec instance at "v": its prototype
+// and methods are silently lost on clone and sync. Use a plain object,
+// or store it under a symbol key for local-only state.
+```
+
+Store the instance's *data* as a plain object (`{ x: 3 }`) and keep
+behavior in functions, or stash the live instance under a
+[symbol key](#supported-values) if it's per-replica state that should
+never sync. Null-prototype objects (`Object.create(null)`) are plain data
+and remain fully supported.
+
 A few more wire-safety rules, all enforced with a `TypeError` at write time:
 
 - **`NaN` and `±Infinity` are rejected** — JSON serializes them as `null`,

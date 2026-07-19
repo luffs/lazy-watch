@@ -4,99 +4,130 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
-## [Unreleased]
+## [4.0.0] - 2026-07-19
 
-- feat: Add `LazyWatch.createUndoManager(watched, { limit })` — a built-in
+Sync-convergence correctness release, plus a built-in undo manager and
+diff composition. Breaking changes are listed first — most 3.x code
+upgrades unchanged unless it relied on one of those specific behaviors.
+
+### Breaking
+
+- Class instances (any non-plain object) are now **rejected with a
+  TypeError** at every entry point, naming the class and offending path.
+  Previously they were silently accepted and stripped of their prototype
+  on clone — methods vanished with no error, the same half-tracking
+  failure mode for which Map/Set were already rejected. Store the
+  instance's data as a plain object, or stash the live instance under a
+  symbol key for local-only state. Null-prototype objects
+  (`Object.create(null)`) and cross-realm plain objects remain supported
+  (`Utils.isPlainObject` accepts prototypes null or one step from null)
+- Real arrays in diffs are now applied **wholesale** instead of being
+  merged element-by-element. A real array in a diff is by definition a
+  full replacement value (in-place mutations emit index-keyed fragments,
+  which still merge), but receivers merged its object elements into their
+  stale counterparts: `w.list = [{b: 2}]` left a mirror holding
+  `[{a: 1}]` at `[{a: 1, b: 2}]`. Applies to `patch`, `overwrite`, and
+  `patchObject`; relay chains converge because the full array is
+  re-emitted. Re-applying an already-applied array is detected by deep
+  equality and records nothing, so bidirectional mirrors cannot echo.
+  Inverse diffs still apply correctly: their arrays' null markers are
+  dropped during the wholesale write, which is exactly the deletion they
+  encoded
+- TypeScript: diffs are now typed after the watched object.
+  `on`/`once`/`off` are generic — listeners receive `Patch<T> | null`
+  (and the inverse as `Patch<T> | null`) instead of `any`, giving
+  checked, autocompleted property access on diffs; nested-proxy listeners
+  are typed after their subtree. `Patch<T>` now treats `Date`/`RegExp` as
+  leaf values. Stricter than 3.x: diff access must narrow the nullable
+  parameter (nested subtree deletion delivers `null` — the type now
+  surfaces a case that always existed at runtime), and callbacks
+  explicitly annotated with a mismatched parameter type may need updating
+  (`ChangeListener` without a type argument still works)
+- `engines.node` raised from `>=16` to `>=22`, matching the tested CI
+  matrix (Node 22/24/26 and Bun) and the oldest maintained Node release
+  line — Node 16 has been EOL since September 2023 and was never covered
+  by CI. The code may still run on older versions (`structuredClone` has
+  a fallback), but they are no longer claimed or tested
+
+### Added
+
+- `LazyWatch.createUndoManager(watched, { limit })` — a built-in
   undo/redo manager where every emitted batch is one undoable step:
-  `undo()`, `redo()`, `canUndo`, `canRedo`, `clear()`, `dispose()`. Undo and
-  redo apply through the normal patch path and emit as ordinary batches, so
-  synced mirrors follow undo history automatically. Pending changes are
-  flushed into a step before undoing (a just-made change is undoable even
-  under throttle/debounce), new changes clear the redo stack, and a
-  successful transaction forms a single step. Works on any instance —
-  inverse recording is enabled for the manager's lifetime (with its
-  documented costs) and restored on `dispose()`; disposing the instance
-  disposes its manager. One manager per instance; root proxy required
-- feat: Add `LazyWatch.composeDiffs(older, newer)` — pure composition of
-  two sequential diffs into one equivalent diff (patching the result equals
+  `undo()`, `redo()`, `canUndo`, `canRedo`, `clear()`, `dispose()`. Undo
+  and redo apply through the normal patch path and emit as ordinary
+  batches, so synced mirrors follow undo history automatically. Pending
+  changes are flushed into a step before undoing (a just-made change is
+  undoable even under throttle/debounce), new changes clear the redo
+  stack, and a successful transaction forms a single step. Works on any
+  instance — inverse recording is enabled for the manager's lifetime
+  (with its documented costs) and restored on `dispose()`; disposing the
+  instance disposes its manager. One manager per instance; root proxy
+  required
+- `LazyWatch.composeDiffs(older, newer)` — pure composition of two
+  sequential diffs into one equivalent diff (patching the result equals
   patching both in order). The primitive for offline send buffers and
   undo-step coalescing: object fragments merge recursively with the newer
   winning, `null`/leaf/wholesale-array values in the newer diff win
   outright, `$splice` op lists concatenate, and fragments over wholesale
   container values are materialized. Two pairings have no single-diff
   representation and throw a TypeError naming the path — an object diff
-  following a deletion or leaf write (it would merge into receivers' stale
-  value), and `$splice` ops following index writes (receivers apply ops
-  before index keys) — so callers catch and fall back to applying the
+  following a deletion or leaf write (it would merge into receivers'
+  stale value), and `$splice` ops following index writes (receivers apply
+  ops before index keys) — so callers catch and fall back to applying the
   diffs separately. Verified by a fuzz test folding random batch diffs
   with fallback against a patched mirror
-- fix: Destroying a container and recreating it as an object **within one
-  batch** no longer desyncs patch-based mirrors. Previously the recreation
-  overwrote the recorded deletion in the diff, so receivers merged the new
-  object into their still-live stale container (`delete w.k; w.k = {b: 2}`
-  emitted `{k: {b: 2}}` and a mirror holding `{k: {a: 1}}` ended at
-  `{a: 1, b: 2}`). The destroyed container is now remembered for the rest
-  of the batch — across all destruction paths: `delete`, `undefined`
-  assignment, replacement by a leaf, `patch`/`overwrite` deletions, and
-  array truncation — and the recreation's diff records `null` for every
-  stale key the new value doesn't carry (recursively through shared nested
-  objects), so receivers delete exactly what they still hold. The null
-  markers exist only on the wire, never in local state
-- fix: Real arrays in diffs are now applied **wholesale** instead of being
-  merged element-by-element. A real array in a diff is by definition a full
-  replacement value (in-place mutations emit index-keyed fragments, which
-  still merge), but receivers merged its object elements into their stale
-  counterparts: `w.list = [{b: 2}]` left a mirror holding `[{a: 1}]` at
-  `[{a: 1, b: 2}]`. Applies to `patch`, `overwrite`, and `patchObject`;
-  relay chains converge because the full array is re-emitted. Re-applying
-  an already-applied array is detected by deep equality and records
-  nothing, so bidirectional mirrors cannot echo. Inverse diffs still apply
-  correctly: their arrays' null markers are dropped during the wholesale
-  write, which is exactly the deletion they encoded
-- fix: `patch`/`overwrite` no longer mutate the caller's diff when setting
-  a container value wholesale — the null-stripping that previously deleted
+- `Utils.deepEqual`, `Utils.cloneWithoutNulls`, and `Utils.isPlainObject`
+  are exposed on `LazyWatch.Utils`
+
+### Fixed
+
+- Destroying a container and recreating it as an object **within one
+  batch** no longer desyncs patch-based mirrors. Previously the
+  recreation overwrote the recorded deletion in the diff, so receivers
+  merged the new object into their still-live stale container
+  (`delete w.k; w.k = {b: 2}` emitted `{k: {b: 2}}` and a mirror holding
+  `{k: {a: 1}}` ended at `{a: 1, b: 2}`). The destroyed container is now
+  remembered for the rest of the batch — across all destruction paths:
+  `delete`, `undefined` assignment, replacement by a leaf,
+  `patch`/`overwrite` deletions, and array truncation — and the
+  recreation's diff records `null` for every stale key the new value
+  doesn't carry (recursively through shared nested objects), so receivers
+  delete exactly what they still hold. The null markers exist only on the
+  wire, never in local state
+- `patch`/`overwrite` no longer mutate the caller's diff when setting a
+  container value wholesale — the null-stripping that previously deleted
   keys **from the source diff itself** (corrupting it for the next mirror
   it was applied to) now happens on a private clone, and strips at every
-  depth instead of only the top level, so null markers can never be stored
-  as literal state
-- fix: `patchObject` now adopts a wholesale source array's length,
-  truncating the target array's tail — previously `for...in` never visited
-  the non-enumerable `length`, so a shorter replacement array (as emitted
-  for `obj.list = [...]`) left stale trailing elements behind on
-  plain-object receivers, desyncing them from proxy `patch` receivers,
-  which have always truncated
-- types: Diffs are now typed after the watched object. `on`/`once`/`off`
-  are generic — listeners receive `Patch<T> | null` (and the inverse as
-  `Patch<T> | null`) instead of `any`, giving checked, autocompleted
-  property access on diffs; nested-proxy listeners are typed after their
-  subtree. `Patch<T>` now treats `Date`/`RegExp` as leaf values. This is
-  stricter than before for TypeScript consumers: diff access must narrow
-  the nullable parameter (nested subtree deletion delivers `null` — the
-  type now surfaces a case that always existed at runtime), and callbacks
-  explicitly annotated with a mismatched parameter type may need their
-  annotation updated (`ChangeListener` without a type argument still works)
-- docs: The README API reference now covers the previously undocumented
-  methods — `overwrite` (replacement semantics vs `patch`, array
-  exception, full-transition emit), `getPendingDiff`, `isProxy`,
-  `resolveIfProxy` (with the writes-are-untracked warning), and `dispose`
-  (post-disposal behavior of the proxy and its static methods)
-- chore: `engines.node` raised from `>=16` to `>=22`, matching the tested
-  CI matrix (Node 22/24/26 and Bun) and the oldest maintained Node release
-  line — Node 16 has been EOL since September 2023 and was never covered by
-  CI. The code may still run on older versions (`structuredClone` has a
-  fallback), but they are no longer claimed or tested
-- fix: A listener that unsubscribes during an emit (itself or another
-  registration) no longer causes the next listener in line to be skipped —
-  dispatch now iterates a snapshot of the listener list. Removal during
+  depth instead of only the top level, so null markers can never be
+  stored as literal state
+- `patchObject` now adopts a wholesale source array's length, truncating
+  the target array's tail — previously `for...in` never visited the
+  non-enumerable `length`, so a shorter replacement array (as emitted for
+  `obj.list = [...]`) left stale trailing elements behind on plain-object
+  receivers, desyncing them from proxy `patch` receivers, which have
+  always truncated
+- A listener that unsubscribes during an emit (itself or another
+  registration) no longer causes the next listener in line to be skipped
+  — dispatch now iterates a snapshot of the listener list. Removal during
   emit follows `EventTarget` semantics: a listener removed by an earlier
   listener in the same emit is not invoked, and a listener added during
   an emit first fires on the next batch
-- fix: Diffs handed to listeners (and returned by `LazyWatch.silent`) no
+- Diffs handed to listeners (and returned by `LazyWatch.silent`) no
   longer share references with live watched state. Previously a wholesale
-  container assignment aliased the emitted diff node to the target subtree,
-  so mutating that subtree after the emit retroactively rewrote diffs a
-  consumer had kept (send buffers, undo stacks, ...). `consumeDiff` now
-  returns a deep clone, one clone per batch
+  container assignment aliased the emitted diff node to the target
+  subtree, so mutating that subtree after the emit retroactively rewrote
+  diffs a consumer had kept (send buffers, undo stacks, ...).
+  `consumeDiff` now returns a deep clone, one clone per batch
+
+### Documentation
+
+- The README API reference now covers the previously undocumented methods
+  — `overwrite` (replacement semantics vs `patch`, array exception,
+  full-transition emit), `getPendingDiff`, `isProxy`, `resolveIfProxy`
+  (with the writes-are-untracked warning), and `dispose` (post-disposal
+  behavior of the proxy and its static methods) — plus new sections for
+  the undo manager, diff composition, wholesale array semantics, and
+  class-instance rejection
 
 ## [3.2.0] - 2026-07-18
 

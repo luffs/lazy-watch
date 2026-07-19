@@ -129,6 +129,7 @@ LazyWatch provides utility methods that work on normal objects (non-proxies):
 - Only plain objects and arrays are deep-watched; the root must be one
 - Date and RegExp are leaf values: returned as-is from the `get` trap (methods work), but in-place mutations are not tracked — only wholesale property replacement emits a diff
 - Map, Set, WeakMap, WeakSet, Promise, ArrayBuffer, and typed arrays are rejected with a TypeError at every entry point (constructor, `set` trap, `overwrite`/`patch`/`patchObject`) — their internal-slot mutations bypass the proxy and would silently desync replicas
+- Class instances (any non-plain object) are rejected the same way: cloning and JSON strip their prototype, silently losing methods. `Utils.isPlainObject` accepts prototypes that are null or one step from null (covers `Object.create(null)` and cross-realm plain objects); the symbol-key escape hatch still allows instances as local-only values
 - `Utils.assertSupported(value, path)` performs the cycle-safe deep validation and throws naming the offending path; validation runs before any mutation, so rejected operations leave state untouched
 - `NaN`/`±Infinity` are rejected (JSON would serialize them as `null` = deletion); assigning `undefined` is normalized to a deletion (emitted as `null`)
 - `__proto__`/`constructor`/`prototype` are reserved names: rejected at write time via `Utils.isUnsafeKey`, skipped by the appliers as defense-in-depth, and never proxied by the `get` trap — this blocks prototype pollution from hostile wire diffs

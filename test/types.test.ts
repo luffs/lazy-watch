@@ -140,6 +140,8 @@ const cloned: User = LazyWatch.Utils.deepClone(user);
 void cloned;
 const isObj: boolean = LazyWatch.Utils.isObjectOrArray([]);
 void isObj;
+const isPlain: boolean = LazyWatch.Utils.isPlainObject({});
+void isPlain;
 
 // Symbols
 const s1: symbol = PROXY_TARGET;

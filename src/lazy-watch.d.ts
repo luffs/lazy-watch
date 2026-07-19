@@ -75,6 +75,13 @@ export interface UtilsInterface {
     rejectedTypeName(val: any): string | null;
 
     /**
+     * True for objects that survive cloning and JSON intact: prototype is
+     * null or one step from null (Object.prototype, including other
+     * realms'). False for arrays and class instances
+     */
+    isPlainObject(val: any): boolean;
+
+    /**
      * Deep-check a value entering watched state; throws a TypeError naming
      * the offending path if it contains a rejected collection type.
      * Date and RegExp pass as leaf values. Cycle-safe
@@ -242,7 +249,9 @@ export interface LazyWatchStatic {
      * @param options - Configuration options
      * @returns A proxy that tracks changes to the original object
      * @throws {TypeError} If original is not a plain object or array, or
-     * contains a rejected collection type (Map, Set, typed arrays, ...)
+     * contains a rejected collection type (Map, Set, typed arrays, ...) or
+     * a class instance (prototypes are silently lost on clone and sync;
+     * use plain objects, or symbol keys for local-only values)
      *
      * @example
      * const user = { name: 'Alice', age: 30 };
