@@ -4,7 +4,14 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
-## [Unreleased]
+## [4.1.0] - 2026-07-21
+
+Feature and hardening release: `patch`/`overwrite` now work on normal
+objects too, the undo manager learns step grouping and coalescing, emits
+can align to animation frames via a custom scheduler, and a set of
+correctness holes around array reordering and untracked writes is closed.
+No API is removed — `patchObject`/`overwriteObject` continue to work as
+deprecated aliases.
 
 ### Changed
 
@@ -19,9 +26,14 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
   were deleted while disconnected. A disposed proxy still throws rather
   than degrading to the untracked mode, and a target that is neither a
   proxy nor a plain object/array (a `Date`, `Map`, primitive, ...) is
-  rejected with a TypeError. `patchObject` (and `overwriteObject`, its
-  never-released sibling) remain as **deprecated aliases** delegating to
-  the unified methods, so existing code keeps working unchanged
+  rejected with a TypeError
+- Documentation restructured: the README is now a short overview — pitch,
+  quick start, and an API table — and the full API reference (every
+  method, the diff wire format, and the supported-value rules) moved to
+  `docs/API.md`. Heading anchors were preserved, so existing deep links
+  keep working with the path swapped. New size badges (bundlejs min+gzip,
+  zero dependencies) advertise the footprint — bundlejs rather than
+  bundlephobia, whose analysis pipeline fails on ESM-only packages
 
 ### Added
 
@@ -62,9 +74,6 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
   rather than micro-drift; absolute ops/sec floors cover benchmarks with
   no plain baseline. The guard table prints on every core benchmark run
   but only fails the process under `--check`
-
-### Added (documentation)
-
 - Framework adapter examples in EXAMPLES.md: two Vue 3 patterns — a
   `reactive` object as the state with plain-object `patch` as the wire
   applier (no adapter, no client-side instance; fits server-owned state)
@@ -74,15 +83,12 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
   nested proxies giving per-component subtree subscriptions), with
   guidance on which pattern fits which framework
 
-### Changed
+### Deprecated
 
-- Documentation restructured: the README is now a short overview — pitch,
-  quick start, and an API table — and the full API reference (every
-  method, the diff wire format, and the supported-value rules) moved to
-  `docs/API.md`. Heading anchors were preserved, so existing deep links
-  keep working with the path swapped. New size badges (bundlejs min+gzip,
-  zero dependencies) advertise the footprint — bundlejs rather than
-  bundlephobia, whose analysis pipeline fails on ESM-only packages
+- `LazyWatch.patchObject` and `LazyWatch.overwriteObject` (the latter
+  never released) are now thin aliases delegating to the unified
+  `patch`/`overwrite`. Existing code keeps working unchanged; new code
+  should use the unified names
 
 ### Fixed
 
