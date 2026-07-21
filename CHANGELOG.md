@@ -25,6 +25,16 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
 
 ### Added
 
+- Undo-step grouping and coalescing: `manager.group(callback)` records
+  every batch the callback emits as **one** undo step (composite
+  operations like "apply template"), and the `coalesce` option (ms,
+  sliding window) merges rapid batches — a typing burst — into a single
+  step, with `manager.checkpoint()` as an explicit "undo stop". Merged
+  batches are composed into compact diffs via the `composeDiffs` algebra;
+  the rare non-composable pairings are kept as sequential segments inside
+  the step, so merging never loses correctness. Undo/redo apply a whole
+  step before one synchronous flush — mirrors receive it as a single
+  batch
 - Custom scheduler option: `new LazyWatch(obj, { schedule: cb =>
   requestAnimationFrame(cb) })` dispatches emits inside a callback passed
   to the scheduler instead of a queued microtask — a UI emits at most one

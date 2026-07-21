@@ -35,7 +35,7 @@ CI (`.github/workflows/test.yml`) runs tests on Node 22/24/26 and Bun (invoked a
 ```bash
 npm run test:size
 ```
-Bundles/minifies via `npx esbuild`, gzips, and fails if the gzipped size exceeds the budget in `scripts/size.js` (8 kB; ~6.5 kB actual when added). When the printed size drifts from the "~6.5 kB min+gzip" claim, update README.md along with the budget.
+Bundles/minifies via `npx esbuild`, gzips, and fails if the gzipped size exceeds the budget in `scripts/size.js` (8 kB; ~7.2 kB actual as of the undo grouping/persistence work). When the printed size drifts from the "~7 kB min+gzip" claim, update README.md along with the budget.
 
 ## Documentation Layout
 
@@ -98,9 +98,10 @@ The codebase follows a modular architecture with clear separation of concerns:
    - `LazyWatch.flush(watched)` exposes `forceEmit()`: synchronous emit bypassing batching, throttle, debounce, and pause
 
 5. **UndoManager** (`src/undo-manager.js`) - Undo/redo stacks built on inverse diffs
-   - Created via `LazyWatch.createUndoManager(watched, { limit })`; one per instance (tracked in a `LazyWatch.#undoManagers` WeakMap), root proxy only, disposed automatically when the instance is disposed
-   - Dependency-injected (subscribe/flush/patch/hasPending/onDispose closures built in the static factory), so the class never touches LazyWatch internals directly
-   - Records each emitted batch as a `{ diff, inverse }` step; undo applies the inverse, redo the forward diff — both through the normal patch path with a synchronous flush while an `#applying` guard keeps the manager's own listener from recording the application. Other listeners receive it as a normal batch (mirrors follow undo)
+   - Created via `LazyWatch.createUndoManager(watched, { limit, coalesce })`; one per instance (tracked in a `LazyWatch.#undoManagers` WeakMap), root proxy only, disposed automatically when the instance is disposed
+   - Dependency-injected (subscribe/flush/patch/hasPending/compose/onDispose closures built in the static factory), so the class never touches LazyWatch internals directly; a constructor throw (bad option) restores the instance's `inverseEnabled` in the factory
+   - A step is a non-empty array of `{ diff, inverse }` segments (a plain batch = one segment); undo applies segment inverses newest-first, redo forward diffs oldest-first — all before one synchronous flush, so other listeners receive the whole step as a single batch while an `#applying` guard keeps the manager's own listener from recording it (mirrors follow undo)
+   - `group(cb)` records every batch the sync callback emits as one step (flushes before/after; not a transaction — a throw keeps applied changes and rethrows); `coalesce` (ms, sliding window tracked via `#openStep`/`#openStepTime`) merges rapid batches into the open step; `checkpoint()` ends the window. Merges compose into the last segment via injected `composeDiffs` (inverse pair composed newer-first) and fall back to appending a segment when the pair throws
    - `undo()`/`redo()` flush pending changes first (pending counts toward `canUndo`); new changes clear the redo stack
    - Attach flushes pending changes (kept out of history), then enables `inverseEnabled` for the manager's lifetime; `dispose()` restores the prior setting (discarding a half-recorded inverse when the instance had it off)
 

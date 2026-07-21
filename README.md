@@ -20,7 +20,7 @@ Deep watch JavaScript objects using Proxy and emit diffs asynchronously. LazyWat
 - 🕑 Built-in undo/redo manager with configurable history depth
 - 📦 Efficient patching mechanism
 - 🌐 Works in browsers and Node.js
-- 🪶 Tiny: ~6.5 kB min+gzip, zero dependencies, no build step
+- 🪶 Tiny: ~7 kB min+gzip, zero dependencies, no build step
 
 ## Scope and Non-Goals
 
@@ -50,7 +50,7 @@ npm install lazy-watch
 ```
 
 The published package is plain ES modules — the same readable source that
-lives in `src/`. No build step, no dependencies, about 6.5 kB min+gzip for
+lives in `src/`. No build step, no dependencies, about 7 kB min+gzip for
 the whole library (checked in CI with `npm run test:size`).
 
 ## Quick Start

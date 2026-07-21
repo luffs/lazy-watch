@@ -20,6 +20,7 @@ mirroring, undo/redo, form validation), see [EXAMPLES.md](../EXAMPLES.md).
 - [Inverse Diffs (Undo)](#inverse-diffs-undo)
 - [Transactions](#transactions)
 - [Undo Manager](#undo-manager)
+  - [Grouping and coalescing](#grouping-and-coalescing)
 - [Applying Changes](#applying-changes)
   - [Patching](#patching) · [Overwriting](#overwriting)
 - [Composing Diffs](#composing-diffs)
@@ -480,6 +481,9 @@ manager.canRedo;  // false
 **Options:**
 - `limit` - Maximum undo depth (default: `Infinity`). The oldest step is
   dropped when exceeded.
+- `coalesce` - Milliseconds (default: 0, disabled): batches arriving
+  within this window of the previous one merge into the same undo step.
+  See [Grouping and coalescing](#grouping-and-coalescing).
 
 **The manager:**
 - `undo()` / `redo()` - Apply the previous/next step; return `true` if a
@@ -488,6 +492,8 @@ manager.canRedo;  // false
   `debounce` a just-made change is undoable immediately.
 - `canUndo` / `canRedo` - Whether a step is available (pending changes
   count toward `canUndo`).
+- `group(callback)` - Record every batch the callback emits as one step.
+- `checkpoint()` - End the current coalescing window ("undo stop").
 - `clear()` - Drop all history without touching the state.
 - `dispose()` - Detach from the instance and restore its inverse-recording
   setting. Disposing the instance disposes its manager automatically.
@@ -506,6 +512,51 @@ starts at a clean batch boundary (pending changes are flushed on attach,
 outside the history), changes made inside `LazyWatch.silent` bypass
 emission and are not recorded, and only one manager may exist per instance
 at a time (dispose the current one first).
+
+### Grouping and coalescing
+
+By default every emitted batch is one undo step — which makes typing in a
+bound input produce one step per batch. Two tools merge batches into
+coarser steps:
+
+**`manager.group(callback)`** records everything the callback emits as a
+single step — for composite operations like "apply template" or "reset
+form":
+
+```js
+manager.group(() => {
+  doc.title = 'Untitled';
+  LazyWatch.flush(doc);     // batches inside the group still emit normally
+  doc.body = '';
+  doc.tags = [];
+});
+manager.undo(); // reverts all three changes at once
+```
+
+Pending changes from before the group are flushed first (forming their own
+step), trailing changes join the group, and the callback's return value is
+returned. Groups must be synchronous and cannot be nested. `group` is
+history bookkeeping, **not** a transaction: if the callback throws, its
+already-applied changes stay applied (recorded as one step) and the error
+is rethrown — wrap the body in `LazyWatch.transaction` for atomicity.
+
+**`coalesce`** merges by time instead: batches arriving within the window
+of the previous one join its step, and the window slides with activity —
+a typing burst becomes one step, a pause starts the next:
+
+```js
+const manager = LazyWatch.createUndoManager(doc, { coalesce: 500 });
+// ...five quick keystroke batches → ONE undo step
+
+input.addEventListener('blur', () => manager.checkpoint());
+// checkpoint() ends the window early — the next change starts a new step
+```
+
+Merged batches are composed into compact single diffs via the
+`composeDiffs` algebra where possible; the rare non-composable pairings
+(documented under [Composing Diffs](#composing-diffs)) are kept as
+sequential segments inside the step — either way undo/redo replay the step
+exactly, applied and emitted to other listeners as one batch.
 
 ## Applying Changes
 

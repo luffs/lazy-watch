@@ -588,8 +588,12 @@ export class LazyWatch {
    * @param {Object} [options] - Manager options
    * @param {number} [options.limit=Infinity] - Maximum undo depth; the
    *   oldest step is dropped when exceeded
+   * @param {number} [options.coalesce=0] - Milliseconds: batches arriving
+   *   within this window of the previous one merge into the same undo
+   *   step (sliding window; 0 disables). `manager.checkpoint()` ends the
+   *   current window early
    * @returns {UndoManager} The manager: `undo()`, `redo()`, `canUndo`,
-   *   `canRedo`, `clear()`, `dispose()`
+   *   `canRedo`, `group()`, `checkpoint()`, `clear()`, `dispose()`
    * @throws {Error} If the instance has been disposed, already has an
    *   undo manager, or a nested proxy is passed
    * @example
@@ -615,20 +619,30 @@ export class LazyWatch {
     const wasEnabled = tracker.inverseEnabled;
     tracker.inverseEnabled = true;
 
-    const manager = new UndoManager({
-      limit: options.limit,
-      subscribe: listener => instance.#eventEmitter.on(listener, []),
-      flush: () => instance.#eventEmitter.forceEmit(),
-      patch: diff => instance.#proxyHandler.patch(instance.#proxy, diff),
-      hasPending: () => tracker.hasPendingChanges(),
-      onDispose: () => {
-        tracker.inverseEnabled = wasEnabled;
-        // The instance doesn't track inverses itself; drop any
-        // half-recorded one so it can't pair with a later batch
-        if (!wasEnabled) tracker.consumeInverse();
-        LazyWatch.#undoManagers.delete(instance);
-      }
-    });
+    let manager;
+    try {
+      manager = new UndoManager({
+        limit: options.limit,
+        coalesce: options.coalesce,
+        compose: (older, newer) => LazyWatch.composeDiffs(older, newer),
+        subscribe: listener => instance.#eventEmitter.on(listener, []),
+        flush: () => instance.#eventEmitter.forceEmit(),
+        patch: diff => instance.#proxyHandler.patch(instance.#proxy, diff),
+        hasPending: () => tracker.hasPendingChanges(),
+        onDispose: () => {
+          tracker.inverseEnabled = wasEnabled;
+          // The instance doesn't track inverses itself; drop any
+          // half-recorded one so it can't pair with a later batch
+          if (!wasEnabled) tracker.consumeInverse();
+          LazyWatch.#undoManagers.delete(instance);
+        }
+      });
+    } catch (error) {
+      // A rejected option must not leave inverse recording enabled on a
+      // manager-less instance
+      tracker.inverseEnabled = wasEnabled;
+      throw error;
+    }
     LazyWatch.#undoManagers.set(instance, manager);
     return manager;
   }

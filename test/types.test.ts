@@ -113,6 +113,15 @@ manager.canUndo = true;
 // @ts-expect-error - limit must be a number
 LazyWatch.createUndoManager(watched, { limit: 'many' });
 
+// Grouping, coalescing, and persistence
+const um = LazyWatch.createUndoManager(watched, { limit: 10, coalesce: 300 });
+const groupResult: number = um.group(() => 7);
+void groupResult;
+um.checkpoint();
+um.dispose();
+// @ts-expect-error - coalesce must be a number
+LazyWatch.createUndoManager(watched, { coalesce: 'fast' });
+
 // Inverse diffs and transactions
 const inv = new LazyWatch({ n: 1 }, { inverse: true });
 LazyWatch.on(inv, (changes, inverse) => { void changes; void inverse; });

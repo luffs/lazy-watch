@@ -152,6 +152,15 @@ export interface UndoManagerOptions {
      * @default Infinity
      */
     limit?: number;
+
+    /**
+     * Milliseconds: batches arriving within this window of the previous
+     * one merge into the same undo step (the window slides with
+     * activity). Typical for typing: 300-1000. `manager.checkpoint()`
+     * ends the current window early
+     * @default 0 (disabled)
+     */
+    coalesce?: number;
 }
 
 /**
@@ -188,6 +197,26 @@ export interface UndoManager {
      * True when there is an undone step to re-apply
      */
     readonly canRedo: boolean;
+
+    /**
+     * Execute a callback and record every batch it emits as ONE undo
+     * step. Pending changes from before the group are flushed first
+     * (forming their own step); trailing changes join the group. The
+     * callback must be synchronous; groups cannot be nested. Not a
+     * transaction: on throw, already-applied changes stay applied (as one
+     * step) and the error is rethrown — wrap the body in
+     * `LazyWatch.transaction` for atomicity
+     * @param callback - Function whose batches form one step
+     * @returns The callback's return value
+     */
+    group<R>(callback: () => R): R;
+
+    /**
+     * End the current coalescing window: the next batch starts a new undo
+     * step. Useful as an "undo stop" on blur/enter/selection change. A
+     * no-op inside group()
+     */
+    checkpoint(): void;
 
     /**
      * Drop all undo and redo history without touching the watched state

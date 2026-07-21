@@ -2,13 +2,13 @@
 //
 // Bundles and minifies the library with esbuild (fetched on demand via npx,
 // like the TypeScript definition check), gzips the result, and fails when
-// the gzipped size exceeds the budget. Keeps the "~6.5 kB min+gzip" claim
+// the gzipped size exceeds the budget. Keeps the "~7 kB min+gzip" claim
 // in the README honest: a change that blows the budget fails CI, and the
 // README number should be updated whenever the printed size drifts from it.
 import { execSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
 
-// Measured 6.5 kB at the time this check was added; the headroom allows
+// Measured 6.5 kB when this check was added (7.2 kB now); the headroom allows
 // normal growth while still catching an accidentally bundled dependency
 // or a runaway feature.
 const GZIP_BUDGET_BYTES = 8 * 1024;

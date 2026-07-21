@@ -2661,6 +2661,140 @@ runner.test('undo manager should reject nested proxies and bad limits', () => {
   LazyWatch.dispose(watched);
 });
 
+// --- Undo-step grouping and coalescing ---
+
+runner.test('group should merge multiple batches into a single undo step', async () => {
+  const doc = new LazyWatch({ a: 1, b: 2 });
+  const manager = LazyWatch.createUndoManager(doc);
+
+  doc.a = 10;
+  await wait(5); // step 1
+  manager.group(() => {
+    doc.a = 100;
+    LazyWatch.flush(doc); // two distinct batches inside the group
+    doc.b = 200;
+  });
+  doc.b = 999;
+  await wait(5); // step 3
+
+  assertTrue(manager.undo());
+  assertEquals(LazyWatch.snapshot(doc), { a: 100, b: 200 }, 'step 3 undone');
+  assertTrue(manager.undo());
+  assertEquals(LazyWatch.snapshot(doc), { a: 10, b: 2 }, 'the whole group undone as one step');
+  assertTrue(manager.redo());
+  assertEquals(LazyWatch.snapshot(doc), { a: 100, b: 200 }, 'the whole group redone as one step');
+  LazyWatch.dispose(doc);
+});
+
+runner.test('group should return the callback value and reject nesting and disposed use', () => {
+  const doc = new LazyWatch({ n: 0 });
+  const manager = LazyWatch.createUndoManager(doc);
+  const result = manager.group(() => { doc.n = 1; return 'done'; });
+  assertEquals(result, 'done');
+  assertThrows(() => manager.group(() => manager.group(() => {})));
+  manager.dispose();
+  assertThrows(() => manager.group(() => {}));
+  LazyWatch.dispose(doc);
+});
+
+runner.test('a throwing group callback should record its partial changes as one step and rethrow', () => {
+  const doc = new LazyWatch({ a: 1, b: 1 });
+  const manager = LazyWatch.createUndoManager(doc);
+  assertThrows(() => manager.group(() => {
+    doc.a = 2;
+    LazyWatch.flush(doc);
+    doc.b = 2;
+    throw new Error('boom');
+  }));
+  assertEquals(LazyWatch.snapshot(doc), { a: 2, b: 2 },
+    'changes stay applied — group is history bookkeeping, not a transaction');
+  manager.undo();
+  assertEquals(LazyWatch.snapshot(doc), { a: 1, b: 1 }, 'both batches undone as one step');
+  LazyWatch.dispose(doc);
+});
+
+runner.test('group should fall back to segments for non-composable batches and still undo', () => {
+  const doc = new LazyWatch({ k: { x: 1 }, other: 0 });
+  const manager = LazyWatch.createUndoManager(doc);
+  manager.group(() => {
+    delete doc.k;
+    LazyWatch.flush(doc);   // batch: { k: null }
+    doc.k = { y: 2 };       // object diff after a deletion: no single-diff form
+  });
+  assertTrue(manager.undo());
+  // (key order follows the delete/recreate: 'other' first)
+  assertEquals(LazyWatch.snapshot(doc), { other: 0, k: { x: 1 } }, 'multi-segment step fully undone');
+  assertTrue(manager.redo());
+  assertEquals(LazyWatch.snapshot(doc), { other: 0, k: { y: 2 } }, 'and fully redone');
+  LazyWatch.dispose(doc);
+});
+
+runner.test('undo of a grouped step should reach mirrors as a single batch', async () => {
+  const doc = new LazyWatch({ a: 1, b: 1 });
+  const mirror = new LazyWatch({ a: 1, b: 1 });
+  let batches = 0;
+  LazyWatch.on(doc, d => { batches++; LazyWatch.patch(mirror, d); });
+  const manager = LazyWatch.createUndoManager(doc);
+
+  manager.group(() => {
+    doc.a = 2;
+    LazyWatch.flush(doc);
+    doc.b = 2;
+  });
+  const before = batches;
+  manager.undo();
+  assertEquals(batches, before + 1, 'undo emitted exactly one batch');
+  assertConverged(doc, mirror);
+  LazyWatch.dispose(doc);
+  LazyWatch.dispose(mirror);
+});
+
+runner.test('coalesce should merge rapid batches into one step and split after the window', async () => {
+  const doc = new LazyWatch({ text: '' });
+  const manager = LazyWatch.createUndoManager(doc, { coalesce: 60 });
+
+  doc.text = 'h';
+  await wait(5);
+  doc.text = 'he';
+  await wait(5);
+  doc.text = 'hel';
+  await wait(5);   // all within the sliding 60ms window → one step
+  await wait(120); // window expires
+  doc.text = 'hello';
+  await wait(5);   // new step
+
+  assertTrue(manager.undo());
+  assertEquals(doc.text, 'hel', 'post-window step undone alone');
+  assertTrue(manager.undo());
+  assertEquals(doc.text, '', 'coalesced burst undone as one step');
+  assertTrue(!manager.canUndo);
+  LazyWatch.dispose(doc);
+});
+
+runner.test('checkpoint should end the coalescing window', async () => {
+  const doc = new LazyWatch({ n: 0 });
+  const manager = LazyWatch.createUndoManager(doc, { coalesce: 5000 });
+  doc.n = 1;
+  await wait(5);
+  manager.checkpoint();
+  doc.n = 2;
+  await wait(5);
+  assertTrue(manager.undo());
+  assertEquals(doc.n, 1, 'only the post-checkpoint step undone');
+  assertTrue(manager.undo());
+  assertEquals(doc.n, 0);
+  LazyWatch.dispose(doc);
+});
+
+runner.test('an invalid coalesce option should throw and leave the instance clean', () => {
+  const doc = new LazyWatch({ n: 0 });
+  assertThrows(() => LazyWatch.createUndoManager(doc, { coalesce: -1 }));
+  assertThrows(() => LazyWatch.createUndoManager(doc, { coalesce: 'fast' }));
+  const manager = LazyWatch.createUndoManager(doc); // still allowed after failures
+  manager.dispose();
+  LazyWatch.dispose(doc);
+});
+
 runner.test('disposing the instance should dispose its undo manager', async () => {
   const watched = new LazyWatch({ n: 0 });
   const manager = LazyWatch.createUndoManager(watched);
