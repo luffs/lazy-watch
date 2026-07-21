@@ -8,6 +8,16 @@ export const LAZYWATCH_INSTANCE = Symbol('LazyWatch.Instance');
 // `$splice` diff ops. push/pop are already cheap (tail-only) and stay as-is.
 const STRUCTURAL_ARRAY_METHODS = new Set(['splice', 'unshift', 'shift']);
 
+// Array methods that rearrange existing elements in place. Run natively
+// through the proxy, their read-all/write-back pattern corrupts object
+// elements: the set trap's slot-merge mutates the raw object at each
+// written slot in place, while that same object may still be the pending
+// source for a later slot — the later write then reads already-overwritten
+// state (sorting [{n:3},{n:1},{n:2}] produced [{n:1},{n:2},{n:1}]).
+// splice's own shifts are safe (its move order never overwrites a slot it
+// has yet to read), but these three permute in both directions.
+const REORDER_ARRAY_METHODS = new Set(['sort', 'reverse', 'copyWithin']);
+
 export class ProxyHandler {
   #original;
   // Raw target object -> its proxy. Ensures each object in the tree gets
@@ -77,6 +87,13 @@ export class ProxyHandler {
           return (...args) => this.#structuralArrayOp(target, prop, args, path, receiver);
         }
 
+        // Intercept reordering methods: run natively, they corrupt object
+        // elements via slot-merge aliasing (see REORDER_ARRAY_METHODS)
+        if (Array.isArray(target) && REORDER_ARRAY_METHODS.has(prop) &&
+          value === Array.prototype[prop]) {
+          return (...args) => this.#reorderArrayOp(target, prop, args, receiver);
+        }
+
         if (Utils.isObjectOrArray(value)) {
           // Get proxy from cache, or create and cache it
           let childProxy = this.#proxies.get(value);
@@ -92,71 +109,57 @@ export class ProxyHandler {
         return value;
       },
 
-      set: (target, prop, value, receiver) => {
-        // Symbol-keyed properties are local-only metadata: stored on the
-        // target but never recorded, emitted, or synced (JSON cannot carry
-        // them anyway). They are also exempt from value validation, since
-        // their values never reach the wire.
+      set: (target, prop, value, receiver) =>
+        this.#applySet(target, prop, value, receiver, path),
+
+      // Route Object.defineProperty through the same tracked write path as
+      // assignment. Without this trap, defineProperty mutated the target
+      // silently — nothing recorded, nothing emitted, mirrors desynced.
+      // Only descriptors whose net effect equals a plain assignment are
+      // trackable; everything else is rejected loudly.
+      defineProperty: (target, prop, descriptor) => {
+        // Symbol-keyed properties are local-only metadata, as in `set`
         if (typeof prop === 'symbol') {
-          target[prop] = this.resolveIfProxy(value);
+          Object.defineProperty(target, prop, descriptor);
           return true;
         }
-
-        // Assigning these would mutate prototypes, not data
-        if (Utils.isUnsafeKey(prop)) {
+        if ('get' in descriptor || 'set' in descriptor) {
           throw new TypeError(
-            `LazyWatch cannot set reserved property name "${prop}": it collides with the prototype machinery.`
+            `LazyWatch cannot define an accessor for "${String(prop)}": getters and setters bypass change tracking and do not survive cloning or sync. Assign a plain value instead.`
           );
         }
-
-        // Resolve if value is a proxy
-        value = this.resolveIfProxy(value);
-
-        // Reject Map/Set/typed arrays, non-finite numbers, and reserved
-        // names anywhere in the assigned value. Guarded so plain primitive
-        // writes skip the validation call and its path allocation entirely.
-        if ((value !== null && typeof value === 'object') ||
-          (typeof value === 'number' && !Number.isFinite(value))) {
-          Utils.assertSupported(value, [...path, prop]);
+        // The resulting property must stay enumerable, writable, and
+        // configurable. Attributes absent from the descriptor keep the
+        // current property's (or default to false on a new property — the
+        // defineProperty default).
+        const current = Object.getOwnPropertyDescriptor(target, prop);
+        const attr = name => name in descriptor ? descriptor[name] : current ? !!current[name] : false;
+        if (!attr('enumerable') || !attr('writable') || !attr('configurable')) {
+          throw new TypeError(
+            `LazyWatch cannot define "${String(prop)}" as non-enumerable, non-writable, or non-configurable: such properties do not survive cloning and sync. Use a plain assignment.`
+          );
         }
+        // Flags-only redefinition: every attribute is already true, so
+        // there is nothing to change or record
+        if (!('value' in descriptor)) return true;
+        return this.#applySet(target, prop, descriptor.value, this.#proxies.get(target), path);
+      },
 
-        // Assigning undefined would silently vanish from JSON diffs on the
-        // wire; treat it as a deletion to match the null-means-delete
-        // convention. (Array length falls through to the native error.)
-        if (value === undefined && !(Array.isArray(target) && prop === 'length')) {
-          if (prop in target) {
-            if (this.#inverseActive()) {
-              this.#diffTracker.recordInverse(path, prop, target[prop]);
-            }
-            this.#recordLoss(path, prop, target[prop]);
-            const diff = this.#diff(path);
-            diff[prop] = null;
-            delete target[prop];
-            this.#scheduleEmit();
-          }
-          return true;
-        }
+      setPrototypeOf: (target, proto) => {
+        // Re-asserting the current prototype is a harmless no-op
+        if (proto === Object.getPrototypeOf(target)) return true;
+        throw new TypeError(
+          'LazyWatch cannot change the prototype of watched state: prototype mutations are untracked and would not survive cloning or sync.'
+        );
+      },
 
-        const currentValue = target[prop];
-        const currentIsObject = Utils.isObjectOrArray(currentValue);
-        const valueIsObject = Utils.isObjectOrArray(value);
-
-        // Trim stale diff indices when an array is truncated
-        if (Array.isArray(target) && prop === 'length' && typeof value === 'number') {
-          this.#handleArrayLengthChange(target, value, path);
-        }
-
-        // When assigning a new array to a property, treat it as replacement not merge
-        const isArrayReplacement = Array.isArray(currentValue) && Array.isArray(value) && currentValue !== value;
-
-        // Merge if both are objects (but not array replacement)
-        if (currentIsObject && valueIsObject && !isArrayReplacement) {
-          this.overwrite(receiver[prop], value, [...path, prop]);
-        } else if (currentValue !== value) {
-          this.#recordChange(target, prop, value, path);
-        }
-
-        return true;
+      preventExtensions: () => {
+        // Object.freeze/seal call this first; rejecting up front keeps the
+        // target extensible instead of leaving it half-frozen with future
+        // writes failing halfway through the traps
+        throw new TypeError(
+          'LazyWatch cannot make watched state non-extensible (Object.freeze, Object.seal, Object.preventExtensions): future changes could not be tracked.'
+        );
       },
 
       deleteProperty: (target, prop) => {
@@ -179,6 +182,113 @@ export class ProxyHandler {
         return true;
       }
     });
+  }
+
+  /**
+   * The `set` trap body, shared with the defineProperty trap: validates the
+   * value, records the change (or deletion, for undefined) in the diff, and
+   * applies it to the target.
+   */
+  #applySet(target, prop, value, receiver, path) {
+    // Symbol-keyed properties are local-only metadata: stored on the
+    // target but never recorded, emitted, or synced (JSON cannot carry
+    // them anyway). They are also exempt from value validation, since
+    // their values never reach the wire.
+    if (typeof prop === 'symbol') {
+      target[prop] = this.resolveIfProxy(value);
+      return true;
+    }
+
+    // Assigning these would mutate prototypes, not data
+    if (Utils.isUnsafeKey(prop)) {
+      throw new TypeError(
+        `LazyWatch cannot set reserved property name "${prop}": it collides with the prototype machinery.`
+      );
+    }
+
+    // Resolve if value is a proxy
+    value = this.resolveIfProxy(value);
+
+    // Reject Map/Set/typed arrays, non-finite numbers, and reserved
+    // names anywhere in the assigned value. Guarded so plain primitive
+    // writes skip the validation call and its path allocation entirely.
+    if ((value !== null && typeof value === 'object') ||
+      (typeof value === 'number' && !Number.isFinite(value))) {
+      Utils.assertSupported(value, [...path, prop]);
+    }
+
+    // Assigning undefined would silently vanish from JSON diffs on the
+    // wire; treat it as a deletion to match the null-means-delete
+    // convention. (Array length falls through to the native error.)
+    if (value === undefined && !(Array.isArray(target) && prop === 'length')) {
+      if (prop in target) {
+        if (this.#inverseActive()) {
+          this.#diffTracker.recordInverse(path, prop, target[prop]);
+        }
+        this.#recordLoss(path, prop, target[prop]);
+        const diff = this.#diff(path);
+        diff[prop] = null;
+        delete target[prop];
+        this.#scheduleEmit();
+      }
+      return true;
+    }
+
+    const currentValue = target[prop];
+    const currentIsObject = Utils.isObjectOrArray(currentValue);
+    const valueIsObject = Utils.isObjectOrArray(value);
+
+    // Trim stale diff indices when an array is truncated
+    if (Array.isArray(target) && prop === 'length' && typeof value === 'number') {
+      this.#handleArrayLengthChange(target, value, path);
+    }
+
+    // When assigning a new array to a property, treat it as replacement not merge
+    const isArrayReplacement = Array.isArray(currentValue) && Array.isArray(value) && currentValue !== value;
+
+    // Merge if both are objects (but not array replacement)
+    if (currentIsObject && valueIsObject && !isArrayReplacement) {
+      this.overwrite(receiver[prop], value, [...path, prop], true);
+    } else if (currentValue !== value) {
+      this.#recordChange(target, prop, value, path);
+    }
+
+    return true;
+  }
+
+  /**
+   * Intercepted sort/reverse/copyWithin on a watched array.
+   *
+   * Run natively through the proxy, these methods read elements and write
+   * them back rearranged; the set trap's slot-merge then mutates the raw
+   * object at each written slot in place, while that same object may still
+   * be the pending source for a later slot — later writes read
+   * already-overwritten state and corrupt elements.
+   *
+   * Instead, the final arrangement is computed natively on a detached copy
+   * of the raw elements, and every relocated element is cloned BEFORE the
+   * first write-back. The clones are then assigned through the proxy, so
+   * recording, inverse capture, and echo semantics all run normally.
+   * Length never changes, so only relocated slots emit; a throwing sort
+   * comparator leaves state untouched (the copy absorbs any partial work).
+   * Note that a sort comparator sees raw elements, not proxies — reads
+   * behave identically, and comparators must not mutate.
+   */
+  #reorderArrayOp(target, method, args, receiver) {
+    const copy = target.slice();
+    Array.prototype[method].apply(copy, args);
+
+    const writes = [];
+    for (let i = 0; i < copy.length; i++) {
+      if (target[i] !== copy[i]) {
+        writes.push([i, Utils.isObjectOrArray(copy[i]) ? Utils.deepClone(copy[i]) : copy[i]]);
+      }
+    }
+    for (const [index, value] of writes) {
+      receiver[index] = value;
+    }
+    // All three methods return the array they were called on
+    return receiver;
   }
 
   /**
@@ -467,16 +577,21 @@ export class ProxyHandler {
    * Overwrite target with source properties
    * @param {Object} target - The target object (or proxy)
    * @param {Object} source - The source object with new values
-   * @param {Array} path - The path to the current object (defaults to [] for root)
+   * @param {Array} path - The path to the current object (defaults to [] for
+   *   root; external calls entering at a nested proxy pass its path so the
+   *   diff is recorded where the subtree lives)
+   * @param {boolean} internal - True for recursive calls and the set trap,
+   *   whose subtrees are already validated
    */
-  overwrite(target, source, path = []) {
+  overwrite(target, source, path = [], internal = false) {
     if (!source || typeof source !== 'object') {
       throw new TypeError('Source must be an object');
     }
 
     // Validate external entry only; recursive calls and the set trap have
-    // already validated their subtrees.
-    if (path.length === 0) {
+    // already validated their subtrees. (An explicit flag, not a
+    // path-emptiness check: external calls may enter at a nested path.)
+    if (!internal) {
       Utils.assertSupported(this.resolveIfProxy(source));
     }
 
@@ -540,7 +655,7 @@ export class ProxyHandler {
         // inside one every entry is a full value too — merging either into
         // the receiver's container would leave stale elements/keys alive.
         // Those fall through to the wholesale branch below.
-        this.overwrite(rawTarget[prop], rawSource[prop], [...path, prop]);
+        this.overwrite(rawTarget[prop], rawSource[prop], [...path, prop], true);
       } else if (rawTarget[prop] !== rawSource[prop]) {
         const prevValue = rawTarget[prop];
         // Re-applying an already-applied wholesale value must record and
@@ -604,11 +719,13 @@ export class ProxyHandler {
 
   /**
    * Patch (merge without deleting missing properties)
+   * @param {Array} path - Base path for external calls entering at a
+   *   nested proxy, so the diff is recorded where the subtree lives
    */
-  patch(target, source) {
+  patch(target, source, path = []) {
     this.#patchMode = true;
     try {
-      this.overwrite(target, source);
+      this.overwrite(target, source, path);
     } finally {
       this.#patchMode = false;
     }

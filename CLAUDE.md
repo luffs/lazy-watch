@@ -49,8 +49,9 @@ The codebase follows a modular architecture with clear separation of concerns:
 2. **ProxyHandler** (`src/proxy-handler.js`) - Manages proxy creation and trapping
    - Creates nested proxies recursively for deep watching
    - Uses WeakMap cache to avoid creating duplicate proxies
-   - Handles `overwrite()` (replace + delete) vs `patch()` (merge only) semantics
+   - Handles `overwrite()` (replace + delete) vs `patch()` (merge only) semantics; both accept a base `path` so external calls entering at a nested proxy record the diff at the subtree's path (`LazyWatch.patch`/`overwrite` pass `getProxyPath(watched)`), and source validation is gated by an explicit `internal` flag rather than path emptiness
    - Uses symbol markers (PROXY_TARGET, LAZYWATCH_INSTANCE) for internal access
+   - Traps beyond get/set/deleteProperty: `defineProperty` routes descriptors equivalent to a plain assignment (data value; resulting property enumerable/writable/configurable, absent attributes inheriting the live property's) through the shared `#applySet` write path and rejects accessors and non-default attributes; `setPrototypeOf` (to a new prototype) and `preventExtensions` (freeze/seal) throw — all three previously mutated the target silently or half-froze it
 
 3. **DiffTracker** (`src/diff-tracker.js`) - Accumulates changes into nested diff objects
    - Maintains a master diff structure that mirrors the watched object's shape
@@ -148,6 +149,7 @@ LazyWatch provides utility methods that work on normal objects (non-proxies):
 - Array mutations (push, index writes) are tracked via length and index changes
 - `splice`/`unshift`/`shift` are intercepted in the `get` trap and recorded as compact `$splice` ops (`[start, deleteCount, items]` triples) instead of per-index writes; the mutation still executes as the native method through the proxy, because trap-driven slot-merge semantics keep cached child-proxy paths valid — raw splicing would move elements and stale them
 - Compact recording requires a clean diff node for that array (only `$splice`/`length` keys); otherwise the op falls back to per-index recording so ordering stays correct. Receivers apply `$splice` before merging a node's other keys
+- `sort`/`reverse`/`copyWithin` are intercepted too (`#reorderArrayOp`): run natively through the proxy, their read-all/write-back pattern corrupts object elements — slot-merge mutates the raw object at a written slot in place while it is still the pending source for a later slot. The final arrangement is computed natively on a detached copy of the raw elements and every relocated element is cloned before the first write-back; the clones then go through the proxy so recording/inverse/echo semantics run normally. Only relocated slots emit; a throwing sort comparator leaves state untouched; comparators see raw elements, not proxies. (`splice`'s native fallback is safe: its move order never overwrites a slot it has yet to read)
 - Received `$splice` ops are applied through the receiver's own proxy, so relaying mirrors re-emit them compactly
 - Arrays are not trimmed during overwrite operations (only objects are)
 - Length changes trigger cleanup of diff indices beyond new length

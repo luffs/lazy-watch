@@ -300,7 +300,9 @@ export interface LazyWatchStatic {
     /**
      * Overwrite the watched object with new values
      * Deletes properties not present in source (unless target is array)
-     * @param watched - The LazyWatch proxy
+     * Works on the root proxy or any nested proxy (overwriting just that
+     * subtree); the diff is recorded and emitted at the subtree's path
+     * @param watched - The LazyWatch proxy (or a nested proxy within it)
      * @param source - The new values (may be a diff received from a listener)
      * @throws {TypeError} If source is not an object
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
@@ -314,7 +316,9 @@ export interface LazyWatchStatic {
 
     /**
      * Patch (merge) new values without deleting missing properties
-     * @param watched - The LazyWatch proxy
+     * Works on the root proxy or any nested proxy (patching just that
+     * subtree); the diff is recorded and emitted at the subtree's path
+     * @param watched - The LazyWatch proxy (or a nested proxy within it)
      * @param source - The values to merge (may be a diff received from a listener)
      * @throws {TypeError} If source is not an object
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed

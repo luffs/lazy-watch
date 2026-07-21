@@ -515,6 +515,11 @@ LazyWatch.patch(watchedObject, diffObject);
 
 Applies changes from a diff object to a watched LazyWatch proxy. Properties not present in the diff are preserved (merge behavior, not replacement).
 
+Works on the root proxy or any nested proxy (patching just that subtree) —
+the diff is recorded and emitted at the subtree's path, so listeners and
+mirrors receive `{ user: { name: 'Bob' } }` from
+`LazyWatch.patch(app.user, { name: 'Bob' })`, not a root-level fragment.
+
 **Example:**
 ```js
 const data = new LazyWatch({ a: 1, b: 2, c: { d: 3 } });
@@ -547,6 +552,10 @@ LazyWatch.overwrite(data, { a: 10, e: 5 });
 Arrays are the exception: their elements are merged by index and never
 deleted for being missing, but a shorter source array truncates the target
 via its `length`.
+
+Like `patch`, `overwrite` works on the root proxy or any nested proxy
+(replacing just that subtree), with the diff — deletions included —
+recorded at the subtree's path.
 
 Use `overwrite` to force a replica into an authoritative state — for
 example applying a full snapshot on reconnect (see the
@@ -738,6 +747,14 @@ per-index recording for that batch (larger, but always correct). On a
 1,000-item array of objects, prepending one item emits ~68 bytes instead of
 ~34 KB.
 
+Reordering methods — `sort`, `reverse`, and `copyWithin` — are also
+intercepted: the final arrangement is computed first, and only the relocated
+slots are recorded and emitted (as per-slot content diffs, since element
+slots are path-addressed). Sorting an already-sorted array emits nothing,
+and a throwing `sort` comparator leaves the array untouched. Comparators
+see the raw elements — reads behave exactly as through the proxy — and must
+not mutate them.
+
 **Real arrays are wholesale values.** Index-keyed fragments are the *merge*
 form; when a diff carries an actual array (as emitted for
 `obj.list = [...]` replacements), receivers replace their array outright —
@@ -853,6 +870,15 @@ A few more wire-safety rules, all enforced with a `TypeError` at write time:
   watched state, and `patch`/`overwrite`/`patchObject` refuse diffs containing
   them, so a malicious or corrupt diff received over the network cannot cause
   prototype pollution
+- **`Object.defineProperty` is tracked; everything exotic is rejected** — a
+  descriptor whose net effect equals a plain assignment (a data value whose
+  property stays enumerable, writable, and configurable; attributes absent
+  from the descriptor inherit the live property's) goes through the normal
+  tracked write path. Accessors and non-default attributes throw — getters,
+  setters, and non-enumerable properties do not survive cloning or sync.
+  `Object.setPrototypeOf` to a new prototype throws, and so do
+  `Object.freeze`/`seal`/`preventExtensions` — frozen state could not be
+  tracked, so LazyWatch refuses up front instead of half-freezing
 
 **Symbol-keyed properties are local-only metadata.** JSON cannot carry symbol
 keys, so instead of half-tracking them, LazyWatch treats them as a deliberate

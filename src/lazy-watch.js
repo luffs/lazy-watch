@@ -142,24 +142,34 @@ export class LazyWatch {
   /**
    * Overwrite the watched object with new values
    * Deletes properties not present in source (unless target is array)
-   * @param {Object} watched - The LazyWatch proxy
+   *
+   * Works on the root proxy or any nested proxy (overwriting just that
+   * subtree); the diff is recorded and emitted at the subtree's path, so
+   * listeners and mirrors stay consistent.
+   * @param {Object} watched - The LazyWatch proxy (or a nested proxy within it)
    * @param {Object} source - The new values
    */
   static overwrite(watched, source) {
     const instance = LazyWatch.#getInstance(watched);
     instance.#checkDisposed();
-    instance.#proxyHandler.overwrite(watched, source);
+    instance.#proxyHandler.overwrite(
+      watched, source, instance.#proxyHandler.getProxyPath(watched));
   }
 
   /**
    * Patch (merge) new values without deleting missing properties
-   * @param {Object} watched - The LazyWatch proxy
+   *
+   * Works on the root proxy or any nested proxy (patching just that
+   * subtree); the diff is recorded and emitted at the subtree's path, so
+   * listeners and mirrors stay consistent.
+   * @param {Object} watched - The LazyWatch proxy (or a nested proxy within it)
    * @param {Object} source - The values to merge
    */
   static patch(watched, source) {
     const instance = LazyWatch.#getInstance(watched);
     instance.#checkDisposed();
-    instance.#proxyHandler.patch(watched, source);
+    instance.#proxyHandler.patch(
+      watched, source, instance.#proxyHandler.getProxyPath(watched));
   }
 
   /**

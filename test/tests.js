@@ -1566,7 +1566,7 @@ runner.test('random mixed array operations should converge (fuzz)', async () => 
     const opsThisRound = 1 + rnd(4);
     for (let i = 0; i < opsThisRound; i++) {
       const len = src.items.length;
-      switch (rnd(7)) {
+      switch (rnd(10)) {
         case 0: src.items.push({ v: rnd(100) }); break;
         case 1: src.items.unshift({ v: rnd(100) }); break;
         case 2: if (len) src.items.shift(); break;
@@ -1574,6 +1574,9 @@ runner.test('random mixed array operations should converge (fuzz)', async () => 
         case 4: src.items.splice(rnd(len + 1), 0, { v: rnd(100) }); break;
         case 5: if (len) src.items[rnd(len)] = { v: rnd(100) }; break;
         case 6: if (len) { const el = src.items[rnd(len)]; if (el && typeof el === 'object') el.v = rnd(100); } break;
+        case 7: if (len > 1) src.items.sort((a, b) => a.v - b.v); break;
+        case 8: if (len > 1) src.items.reverse(); break;
+        case 9: if (len > 1) src.items.copyWithin(rnd(len), rnd(len)); break;
       }
     }
     await wait(5); // emit + patch between rounds
@@ -3103,6 +3106,273 @@ runner.test('destroy-and-recreate patterns should converge (fuzz)', async () => 
   }
   LazyWatch.dispose(src);
   LazyWatch.dispose(mirror);
+});
+
+// --- Reordering array methods (sort/reverse/copyWithin corruption fix) ---
+// Run natively through the proxy, these methods' read-all/write-back
+// pattern corrupted object elements: slot-merge mutated the raw object at
+// a written slot while it was still the pending source for a later slot.
+
+runner.test('sort should not corrupt arrays of objects and should converge a mirror', async () => {
+  const init = () => ({ items: [{ n: 3 }, { n: 1 }, { n: 2 }] });
+  const src = new LazyWatch(init());
+  const dst = new LazyWatch(init());
+  LazyWatch.on(src, d => LazyWatch.patch(dst, d));
+
+  const result = src.items.sort((a, b) => a.n - b.n);
+  assertEquals(LazyWatch.snapshot(src).items, [{ n: 1 }, { n: 2 }, { n: 3 }],
+    'sorted state should keep every element intact');
+  assertTrue(result === src.items, 'sort should return the array proxy');
+
+  await wait(5);
+  assertConverged(src, dst);
+  LazyWatch.dispose(src);
+  LazyWatch.dispose(dst);
+});
+
+runner.test('reverse should not corrupt arrays of objects and should converge a mirror', async () => {
+  const init = () => ({ items: [{ n: 1 }, { n: 2 }, { n: 3 }, { n: 4 }] });
+  const src = new LazyWatch(init());
+  const dst = new LazyWatch(init());
+  LazyWatch.on(src, d => LazyWatch.patch(dst, d));
+
+  src.items.reverse();
+  assertEquals(LazyWatch.snapshot(src).items, [{ n: 4 }, { n: 3 }, { n: 2 }, { n: 1 }],
+    'reversed state should keep every element intact');
+
+  await wait(5);
+  assertConverged(src, dst);
+  LazyWatch.dispose(src);
+  LazyWatch.dispose(dst);
+});
+
+runner.test('copyWithin should not corrupt overlapping object ranges', async () => {
+  const init = () => ({ items: [{ n: 1 }, { n: 2 }, { n: 3 }, { n: 4 }] });
+  const src = new LazyWatch(init());
+  const dst = new LazyWatch(init());
+  LazyWatch.on(src, d => LazyWatch.patch(dst, d));
+
+  src.items.copyWithin(1, 0, 3); // overlapping shift-up: the corrupting direction
+  assertEquals(LazyWatch.snapshot(src).items, [{ n: 1 }, { n: 1 }, { n: 2 }, { n: 3 }]);
+
+  await wait(5);
+  assertConverged(src, dst);
+  LazyWatch.dispose(src);
+  LazyWatch.dispose(dst);
+});
+
+runner.test('sort of primitives should still work and emit once', async () => {
+  const src = new LazyWatch({ items: [3, 1, 2] });
+  const diffs = [];
+  LazyWatch.on(src, d => diffs.push(d));
+
+  src.items.sort((a, b) => a - b);
+  await wait(5);
+  assertEquals(LazyWatch.snapshot(src).items, [1, 2, 3]);
+  assertEquals(diffs.length, 1, 'one batch');
+  LazyWatch.dispose(src);
+});
+
+runner.test('sorting an already-sorted array should not emit', async () => {
+  const src = new LazyWatch({ items: [{ n: 1 }, { n: 2 }] });
+  let emits = 0;
+  LazyWatch.on(src, () => emits++);
+
+  src.items.sort((a, b) => a.n - b.n);
+  await wait(5);
+  assertEquals(emits, 0, 'no relocated slots, nothing to emit');
+  LazyWatch.dispose(src);
+});
+
+runner.test('a throwing sort comparator should leave state untouched and emit nothing', async () => {
+  const src = new LazyWatch({ items: [{ n: 2 }, { n: 1 }] });
+  let emits = 0;
+  LazyWatch.on(src, () => emits++);
+
+  assertThrows(() => src.items.sort(() => { throw new Error('boom'); }));
+  assertEquals(LazyWatch.snapshot(src).items, [{ n: 2 }, { n: 1 }]);
+  await wait(5);
+  assertEquals(emits, 0);
+  LazyWatch.dispose(src);
+});
+
+runner.test('inverse should undo a sort', async () => {
+  const src = new LazyWatch({ items: [{ n: 3 }, { n: 1 }, { n: 2 }] }, { inverse: true });
+  let inv;
+  LazyWatch.on(src, (d, i) => { inv = i; });
+
+  src.items.sort((a, b) => a.n - b.n);
+  await wait(5);
+  assertEquals(LazyWatch.snapshot(src).items, [{ n: 1 }, { n: 2 }, { n: 3 }]);
+
+  LazyWatch.patch(src, inv);
+  await wait(5);
+  assertEquals(LazyWatch.snapshot(src).items, [{ n: 3 }, { n: 1 }, { n: 2 }],
+    'inverse should restore the pre-sort order');
+  LazyWatch.dispose(src);
+});
+
+// --- Nested-proxy patch/overwrite (wrong-path diff fix) ---
+// Previously the state updated correctly but the diff was recorded at the
+// root, so mirrors applied it to the wrong place and desynced.
+
+runner.test('patch on a nested proxy should emit the diff at the nested path', async () => {
+  const init = () => ({ user: { name: 'Alice' }, count: 0 });
+  const src = new LazyWatch(init());
+  const dst = new LazyWatch(init());
+  const diffs = [];
+  LazyWatch.on(src, d => { diffs.push(d); LazyWatch.patch(dst, d); });
+
+  LazyWatch.patch(src.user, { name: 'Bob' });
+  await wait(5);
+  assertEquals(diffs, [{ user: { name: 'Bob' } }], 'diff should be rooted at the subtree path');
+  assertConverged(src, dst);
+  LazyWatch.dispose(src);
+  LazyWatch.dispose(dst);
+});
+
+runner.test('overwrite on a nested proxy should delete missing keys at the nested path', async () => {
+  const init = () => ({ user: { name: 'Alice', age: 30 }, count: 0 });
+  const src = new LazyWatch(init());
+  const dst = new LazyWatch(init());
+  const diffs = [];
+  LazyWatch.on(src, d => { diffs.push(d); LazyWatch.patch(dst, d); });
+
+  LazyWatch.overwrite(src.user, { name: 'Bob' });
+  await wait(5);
+  assertEquals(LazyWatch.snapshot(src), { user: { name: 'Bob' }, count: 0 });
+  assertEquals(diffs, [{ user: { name: 'Bob', age: null } }],
+    'the deletion must live under the subtree, not at the root');
+  assertConverged(src, dst);
+  LazyWatch.dispose(src);
+  LazyWatch.dispose(dst);
+});
+
+runner.test('patch on a deeply nested proxy should converge a mirror', async () => {
+  const init = () => ({ a: { b: { c: { v: 1 }, other: 1 } } });
+  const src = new LazyWatch(init());
+  const dst = new LazyWatch(init());
+  LazyWatch.on(src, d => LazyWatch.patch(dst, d));
+
+  LazyWatch.patch(src.a.b, { c: { v: 2 } });
+  await wait(5);
+  assertEquals(LazyWatch.snapshot(src).a.b, { c: { v: 2 }, other: 1 });
+  assertConverged(src, dst);
+  LazyWatch.dispose(src);
+  LazyWatch.dispose(dst);
+});
+
+runner.test('a nested listener should receive a path-relative diff from a nested patch', async () => {
+  const src = new LazyWatch({ user: { name: 'Alice' } });
+  const seen = [];
+  LazyWatch.on(src.user, d => seen.push(d));
+
+  LazyWatch.patch(src.user, { name: 'Bob' });
+  await wait(5);
+  assertEquals(seen, [{ name: 'Bob' }]);
+  LazyWatch.dispose(src);
+});
+
+runner.test('patch on a nested proxy should still validate and reject unsupported values', () => {
+  const src = new LazyWatch({ user: { name: 'A' } });
+  assertThrows(() => LazyWatch.patch(src.user, { bad: new Map() }));
+  assertThrows(() => LazyWatch.patch(src.user, JSON.parse('{"__proto__": {"polluted": true}}')));
+  assertEquals({}.polluted, undefined, 'Object.prototype must not be polluted');
+  assertEquals(LazyWatch.snapshot(src), { user: { name: 'A' } }, 'state untouched');
+  LazyWatch.dispose(src);
+});
+
+runner.test('nested-proxy patch should record a path-correct inverse', async () => {
+  const src = new LazyWatch({ user: { name: 'Alice' } }, { inverse: true });
+  let inv;
+  LazyWatch.on(src, (d, i) => { inv = i; });
+
+  LazyWatch.patch(src.user, { name: 'Bob' });
+  await wait(5);
+  assertEquals(inv, { user: { name: 'Alice' } });
+
+  LazyWatch.patch(src, inv);
+  await wait(5);
+  assertEquals(LazyWatch.snapshot(src), { user: { name: 'Alice' } });
+  LazyWatch.dispose(src);
+});
+
+// --- defineProperty / setPrototypeOf / preventExtensions traps ---
+// Previously Object.defineProperty mutated the target with nothing
+// recorded or emitted (silent mirror desync), and setPrototypeOf could
+// swap the prototype of watched state.
+
+runner.test('defineProperty with a plain data descriptor should be tracked and emitted', async () => {
+  const src = new LazyWatch({ a: 1 });
+  const dst = new LazyWatch({ a: 1 });
+  LazyWatch.on(src, d => LazyWatch.patch(dst, d));
+
+  Object.defineProperty(src, 'b', { value: 2, enumerable: true, writable: true, configurable: true });
+  await wait(5);
+  assertEquals(LazyWatch.snapshot(src), { a: 1, b: 2 });
+  assertConverged(src, dst);
+  LazyWatch.dispose(src);
+  LazyWatch.dispose(dst);
+});
+
+runner.test('defineProperty on an existing property should inherit its attributes and be tracked', async () => {
+  const src = new LazyWatch({ a: 1 });
+  const diffs = [];
+  LazyWatch.on(src, d => diffs.push(d));
+
+  // Attributes absent from the descriptor keep the live property's (all
+  // true for normal assignments), so this equals a plain write
+  Object.defineProperty(src, 'a', { value: 5 });
+  await wait(5);
+  assertEquals(src.a, 5);
+  assertEquals(diffs, [{ a: 5 }]);
+  LazyWatch.dispose(src);
+});
+
+runner.test('defineProperty should reject accessors and non-default attributes', () => {
+  const src = new LazyWatch({ a: 1 });
+  assertThrows(() => Object.defineProperty(src, 'b', { get() { return 1; } }));
+  // On a NEW property, absent attributes default to false — untrackable
+  assertThrows(() => Object.defineProperty(src, 'b', { value: 2 }));
+  assertThrows(() => Object.defineProperty(src, 'b', { value: 2, enumerable: true, writable: true, configurable: false }));
+  assertEquals(LazyWatch.snapshot(src), { a: 1 }, 'state untouched');
+  LazyWatch.dispose(src);
+});
+
+runner.test('setPrototypeOf should be rejected; re-asserting the same prototype is a no-op', () => {
+  const src = new LazyWatch({ a: 1 });
+  assertThrows(() => Object.setPrototypeOf(src, { evil: true }));
+  Object.setPrototypeOf(src, Object.prototype); // no-op, must not throw
+  assertEquals(src.evil, undefined);
+  LazyWatch.dispose(src);
+});
+
+runner.test('freeze/seal/preventExtensions should be rejected and leave the state trackable', async () => {
+  const src = new LazyWatch({ a: 1 });
+  assertThrows(() => Object.freeze(src));
+  assertThrows(() => Object.seal(src));
+  assertThrows(() => Object.preventExtensions(src));
+
+  const diffs = [];
+  LazyWatch.on(src, d => diffs.push(d));
+  src.b = 2; // still extensible and tracked
+  await wait(5);
+  assertEquals(diffs, [{ b: 2 }]);
+  LazyWatch.dispose(src);
+});
+
+runner.test('defineProperty with a symbol key should stay local-only', async () => {
+  const src = new LazyWatch({ a: 1 });
+  let emits = 0;
+  LazyWatch.on(src, () => emits++);
+
+  const KEY = Symbol('meta');
+  // Symbol keys are exempt from the descriptor restrictions too
+  Object.defineProperty(src, KEY, { value: 42, enumerable: false, writable: false, configurable: true });
+  await wait(5);
+  assertEquals(src[KEY], 42);
+  assertEquals(emits, 0);
+  LazyWatch.dispose(src);
 });
 
 // Usage examples

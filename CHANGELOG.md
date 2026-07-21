@@ -4,6 +4,51 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+
+- `sort()`, `reverse()`, and `copyWithin()` no longer corrupt arrays of
+  objects. Run natively through the proxy, their read-all/write-back
+  pattern collided with slot-merge semantics: the raw object at a written
+  slot was mutated in place while still being the pending source for a
+  later slot, so later writes read already-overwritten state — sorting
+  `[{n:3},{n:1},{n:2}]` produced `[{n:1},{n:2},{n:1}]`, silently losing an
+  element. The three methods are now intercepted like
+  `splice`/`unshift`/`shift`: the final arrangement is computed on a
+  detached copy and relocated elements are cloned before write-back, so
+  recording, inverse capture, and echo semantics all run normally. Only
+  relocated slots emit; sorting an already-sorted array emits nothing, and
+  a throwing sort comparator leaves state untouched. (`splice`'s own
+  element shifts were never affected — its move order cannot overwrite a
+  slot it has yet to read.) Sort comparators now see raw elements rather
+  than proxies; reads behave identically, and comparators must not mutate
+- `LazyWatch.patch` and `LazyWatch.overwrite` now work correctly on nested
+  proxies: the diff is recorded and emitted at the subtree's path.
+  Previously the state updated correctly but the diff was recorded at the
+  root — `LazyWatch.patch(app.user, { name: 'Bob' })` emitted
+  `{ name: 'Bob' }` instead of `{ user: { name: 'Bob' } }`, desyncing
+  every mirror (and `overwrite` emitted root-level deletions). Inverse
+  recording follows the corrected paths too. Source validation now also
+  runs for nested entry points (the gate is an explicit internal flag
+  instead of a path-emptiness check, which a nested entry used to slip
+  past)
+- Closed the remaining untracked-write holes with three new proxy traps:
+  - `Object.defineProperty` previously mutated watched state with nothing
+    recorded or emitted — a silent mirror desync. Descriptors whose net
+    effect equals a plain assignment (a data descriptor whose resulting
+    property is enumerable, writable, and configurable; attributes absent
+    from the descriptor inherit the live property's) are now routed
+    through the tracked write path. Accessors and non-default attributes
+    are rejected with a TypeError. Symbol keys remain local-only and
+    unrestricted
+  - `Object.setPrototypeOf` could swap the prototype of watched state
+    (the `__proto__` assignment guard did not cover it); it now throws.
+    Re-asserting the current prototype remains a harmless no-op
+  - `Object.freeze`, `Object.seal`, and `Object.preventExtensions` now
+    throw up front instead of half-freezing the target and making later
+    tracked writes fail midway with a confusing native error
+
 ## [4.0.0] - 2026-07-19
 
 Sync-convergence correctness release, plus a built-in undo manager and
