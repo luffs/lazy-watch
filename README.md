@@ -91,12 +91,17 @@ LazyWatch.on(app, diff => LazyWatch.patch(mirror, diff));
 ```
 
 High-frequency changes can be smoothed with the `throttle` or `debounce`
-options:
+options, or aligned to animation frames with a
+[custom scheduler](docs/API.md#with-a-custom-scheduler-frame-alignment):
 
 ```js
 const search = new LazyWatch({ text: '' }, { debounce: 100 });
 LazyWatch.on(search, diff => performSearch(search.text));
 // Emits once, 100ms after the last keystroke
+
+const view = new LazyWatch({}, { schedule: cb => requestAnimationFrame(cb) });
+LazyWatch.on(view, diff => render(diff));
+// Emits at most one batch per frame
 ```
 
 ## API Overview

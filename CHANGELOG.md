@@ -8,6 +8,16 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
 
 ### Added
 
+- Custom scheduler option: `new LazyWatch(obj, { schedule: cb =>
+  requestAnimationFrame(cb) })` dispatches emits inside a callback passed
+  to the scheduler instead of a queued microtask — a UI emits at most one
+  batch per frame, aligned to the frame boundary. Any deferral works
+  (`setImmediate`, idle callbacks, a test harness's fake clock). The first
+  change of a batch schedules exactly one slot and later changes ride
+  along; combined with `throttle`/`debounce`, the timer decides when an
+  emit becomes due and the scheduler aligns the actual emission.
+  `LazyWatch.flush` still emits synchronously, and slots outlived by a
+  flush, pause, or dispose fire as harmless no-ops
 - Bundle-size budget check: `npm run test:size` bundles and minifies the
   library with esbuild, gzips it, and fails when the result exceeds the
   8 kB budget (~6.5 kB actual when added). Runs in CI on every push and

@@ -8,6 +8,13 @@ export class EventEmitter {
   #timeoutId = null;
   #throttle;
   #debounce;
+  // Custom scheduler (options.schedule): when set, emits are dispatched
+  // inside a callback handed to it instead of a queued microtask — e.g.
+  // cb => requestAnimationFrame(cb) emits at most once per frame
+  #schedule = null;
+  // Generation the currently live custom-scheduler slot was created for;
+  // null when no slot is live. Prevents queueing one slot per change.
+  #scheduledGeneration = null;
   #lastEmitTime = 0;
   #paused = false;
 
@@ -15,9 +22,13 @@ export class EventEmitter {
     if (!diffTracker) {
       throw new TypeError('EventEmitter requires a DiffTracker instance');
     }
+    if (options.schedule !== undefined && typeof options.schedule !== 'function') {
+      throw new TypeError('LazyWatch schedule option must be a function, e.g. cb => requestAnimationFrame(cb)');
+    }
     this.#diffTracker = diffTracker;
     this.#throttle = options.throttle || 0;
     this.#debounce = options.debounce || 0;
+    this.#schedule = options.schedule || null;
   }
 
   /**
@@ -80,13 +91,22 @@ export class EventEmitter {
     // Skip scheduling if paused
     if (this.#paused) return;
 
+    // Custom scheduler without timers: one live slot per batch — the first
+    // change schedules it, later changes ride along until the slot fires.
+    // (No #clearPending here: re-scheduling per change would queue a slot
+    // per change, and the slot boundary — e.g. the frame — is fixed anyway.)
+    if (this.#schedule && !this.#debounce && !this.#throttle) {
+      this.#scheduleCustom();
+      return;
+    }
+
     // Clear any existing pending emits
     this.#clearPending();
 
     if (this.#debounce > 0) {
       // Debouncing: delay emission until debounce period passes with no new changes
       // Each new change resets the timer
-      this.#timeoutId = setTimeout(() => this.#emit(), this.#debounce);
+      this.#timeoutId = setTimeout(() => this.#emitDue(), this.#debounce);
     } else if (this.#throttle > 0) {
       // Throttling: ensure emissions happen at most once per throttle period
       const now = performance.now();
@@ -94,16 +114,63 @@ export class EventEmitter {
 
       if (timeSinceLastEmit >= this.#throttle) {
         // Enough time has passed, emit immediately (on next tick)
-        this.#scheduleMicrotask();
+        this.#scheduleImmediate();
       } else {
         // Not enough time has passed, schedule for later
         const delay = this.#throttle - timeSinceLastEmit;
-        this.#timeoutId = setTimeout(() => this.#emit(), delay);
+        this.#timeoutId = setTimeout(() => this.#emitDue(), delay);
       }
     } else {
       // No throttling or debouncing, emit immediately (on next tick)
+      this.#scheduleImmediate();
+    }
+  }
+
+  /**
+   * Dispatch an emit that should happen "now-ish": through the custom
+   * scheduler when one is set (aligning emission to its slots), otherwise
+   * on the next microtask.
+   */
+  #scheduleImmediate() {
+    if (this.#schedule) {
+      this.#scheduleCustom();
+    } else {
       this.#scheduleMicrotask();
     }
+  }
+
+  /**
+   * Dispatch an emit whose throttle/debounce timer has expired. The timer
+   * decides WHEN the emit becomes due; a custom scheduler then aligns the
+   * actual emission to its slot (e.g. the next animation frame).
+   */
+  #emitDue() {
+    if (this.#schedule) {
+      this.#scheduleCustom();
+    } else {
+      this.#emit();
+    }
+  }
+
+  /**
+   * Schedule an emit through the custom scheduler, keeping at most one
+   * live slot per generation. The slot callback re-validates the
+   * generation before emitting, so slots outlived by a flush, pause, or
+   * dispose fire as no-ops (custom schedulers have no cancel handle).
+   */
+  #scheduleCustom() {
+    if (this.#scheduledGeneration === this.#microtaskGeneration) return;
+    const generation = this.#microtaskGeneration;
+    this.#scheduledGeneration = generation;
+    this.#schedule(() => {
+      // Clear only our own marker: a newer slot may already be live
+      if (this.#scheduledGeneration === generation) {
+        this.#scheduledGeneration = null;
+      }
+      if (this.#microtaskGeneration === generation) {
+        this.#emit();
+      }
+    });
   }
 
   /**

@@ -43,6 +43,13 @@ export class LazyWatch {
    * @param {Object} options - Configuration options
    * @param {number} [options.throttle=0] - Minimum time in milliseconds between emits (default: 0)
    * @param {number} [options.debounce=0] - Time in milliseconds to wait for additional changes before emitting (default: 0)
+   * @param {Function} [options.schedule] - Custom scheduler for emit
+   *   dispatch: batches are emitted inside a callback passed to it instead
+   *   of a queued microtask — e.g. `cb => requestAnimationFrame(cb)` emits
+   *   at most one batch per frame. With throttle/debounce, the timer
+   *   decides when an emit becomes due and the scheduler aligns the actual
+   *   emission. Should invoke the callback asynchronously; LazyWatch.flush
+   *   still emits synchronously, bypassing it
    * @param {boolean} [options.inverse=false] - Also record an inverse diff per
    *   batch; listeners receive it as a second argument. Applying the inverse
    *   with LazyWatch.patch restores the pre-batch state (undo). Costs extra

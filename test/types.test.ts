@@ -127,6 +127,13 @@ LazyWatch.transaction(inv, () => {}); // void callbacks are fine
 LazyWatch.dispose(inv);
 LazyWatch.dispose(watched);
 
+// Custom scheduler
+const scheduled = new LazyWatch({ n: 1 }, { schedule: cb => setTimeout(cb, 16) });
+LazyWatch.dispose(scheduled);
+new LazyWatch({ n: 1 }, { debounce: 100, schedule: cb => setTimeout(cb, 16) });
+// @ts-expect-error - schedule must be a function
+new LazyWatch({ n: 1 }, { schedule: 16 });
+
 // @ts-expect-error - primitives cannot be watched
 new LazyWatch(42);
 // @ts-expect-error - null cannot be watched

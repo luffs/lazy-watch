@@ -8,7 +8,7 @@ mirroring, undo/redo, form validation), see [EXAMPLES.md](../EXAMPLES.md).
 ## Table of Contents
 
 - [Creating Watched Objects](#creating-watched-objects)
-  - [With Throttling](#with-throttling) · [With Debouncing](#with-debouncing)
+  - [With Throttling](#with-throttling) · [With Debouncing](#with-debouncing) · [With a Custom Scheduler](#with-a-custom-scheduler-frame-alignment)
 - [Listening for Changes](#listening-for-changes)
   - [One-shot Listeners](#one-shot-listeners) · [Nested Proxy Listeners](#nested-proxy-listeners)
 - [Removing Listeners](#removing-listeners)
@@ -41,6 +41,8 @@ Creates a proxy around the original object that tracks all changes.
 - `options` (optional) - Configuration options
   - `throttle` - Minimum time in milliseconds between emits (default: 0). When set, the first change emits immediately, but subsequent changes within the throttle window are batched together.
   - `debounce` - Time in milliseconds to wait for additional changes before emitting (default: 0). Each new change resets the timer, so the diff is emitted once things go quiet. If both `throttle` and `debounce` are set, `debounce` takes precedence.
+  - `schedule` - Custom scheduler for emit dispatch (default: none). A function that receives the emit callback; batches are emitted inside it instead of on a queued microtask. See [With a Custom Scheduler](#with-a-custom-scheduler-frame-alignment).
+  - `inverse` - Record an inverse diff per batch (default: false). See [Inverse Diffs (Undo)](#inverse-diffs-undo).
 
 ### With Throttling
 
@@ -72,6 +74,40 @@ UI.count = 2;
 UI.count = 3;
 // After 100ms of inactivity, logs once: { diff: { count: 3 } }
 ```
+
+### With a Custom Scheduler (frame alignment)
+
+`throttle` and `debounce` batch by *time*; a custom scheduler batches by
+*slot*. When `schedule` is set, emits are dispatched inside a callback
+passed to it instead of a queued microtask — with `requestAnimationFrame`,
+a UI emits **at most one batch per frame**, aligned to the frame boundary:
+
+```js
+const UI = new LazyWatch({}, { schedule: cb => requestAnimationFrame(cb) });
+
+LazyWatch.on(UI, diff => render(diff));
+
+UI.x = 1;
+UI.y = 2;
+// One emit, inside the next animation frame: { x: 1, y: 2 }
+```
+
+Any deferral works — `cb => setImmediate(cb)`, `cb => setTimeout(cb, 0)`,
+an idle callback, a test harness's fake clock. The rules:
+
+- The first change of a batch schedules exactly **one slot**; further
+  changes ride along until it fires. No matter how many changes arrive,
+  the scheduler is invoked once per batch.
+- Combined with `throttle`/`debounce`, the timer decides *when* an emit
+  becomes due, and the scheduler then aligns the actual emission — e.g.
+  `{ debounce: 100, schedule: raf }` means "after 100ms of quiet, emit on
+  the next frame".
+- [`LazyWatch.flush`](#flushing-pending-changes) still emits synchronously,
+  bypassing the scheduler; a slot outlived by a flush, `pause`, or
+  `dispose` fires as a harmless no-op (no cancel handle is needed).
+- The scheduler should invoke the callback **asynchronously**. Calling it
+  synchronously works but emits each change individually — and a listener
+  that then mutates state can loop.
 
 ## Listening for Changes
 

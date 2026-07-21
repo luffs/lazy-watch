@@ -223,6 +223,17 @@ export interface LazyWatchConstructorOptions {
     debounce?: number;
 
     /**
+     * Custom scheduler for emit dispatch. When set, batches are emitted
+     * inside a callback passed to this function instead of a queued
+     * microtask — e.g. `cb => requestAnimationFrame(cb)` emits at most one
+     * batch per frame. With throttle/debounce, the timer decides when an
+     * emit becomes due and the scheduler then aligns the actual emission
+     * to its slot. The scheduler should invoke the callback asynchronously;
+     * `LazyWatch.flush` still emits synchronously, bypassing it
+     */
+    schedule?: (callback: () => void) => void;
+
+    /**
      * Also record an inverse diff per batch; listeners receive it as a
      * second argument. Applying the inverse with LazyWatch.patch restores
      * the pre-batch state (undo).

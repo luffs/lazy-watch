@@ -51,11 +51,14 @@ LazyWatch accepts an optional second parameter with configuration options:
 ```javascript
 const watched = new LazyWatch(original, {
   throttle: 50,  // Minimum time in ms between emits (default: 0)
-  debounce: 100  // Wait for quiet period before emitting (default: 0)
+  debounce: 100, // Wait for quiet period before emitting (default: 0)
+  schedule: cb => requestAnimationFrame(cb) // Custom emit scheduler (default: none)
 });
 ```
 
 When `throttle` is set, the EventEmitter implements throttling to reduce emit frequency for high-frequency updates. When `debounce` is set, each new change resets the timer and the diff is emitted once no changes occur for the debounce period. If both are set, `debounce` takes precedence.
+
+When `schedule` is set, emits are dispatched inside a callback passed to the scheduler instead of a queued microtask (e.g. at most one batch per animation frame). Combined with `throttle`/`debounce`, the timer decides when an emit becomes due and the scheduler aligns the actual emission. `flush` still emits synchronously, bypassing it.
 
 ## Architecture
 
@@ -88,6 +91,7 @@ The codebase follows a modular architecture with clear separation of concerns:
    - Error handling prevents one failing listener from affecting others
    - Supports throttling (`options.throttle`) and debouncing (`options.debounce`)
    - Tracks `lastEmitTime` and uses `setTimeout` for delayed emits when throttling or debouncing
+   - Supports a custom scheduler (`options.schedule`): emits dispatch inside a callback handed to it instead of a queued microtask. One live slot per batch (`#scheduledGeneration` marker — the first change schedules, later changes ride along); slots outlived by flush/pause/dispose no-op via the generation check since custom schedulers have no cancel handle. Timer-due emits (`#emitDue`) and immediate emits (`#scheduleImmediate`) both route through the scheduler when one is set
    - `on()` returns an idempotent unsubscribe function scoped to that exact registration (a no-op function when the signal is already aborted); `off()` and abort removal are path-scoped, so the same callback on two proxies are distinct registrations
    - Listener options: `{ once }` (removed after first invocation; nested-path listeners only consume on batches touching their subtree) and `{ signal }` (AbortSignal removal, addEventListener semantics)
    - Nested-path listeners receive path-relative diffs; when their subtree (or an ancestor) is deleted they are called with `null`, and when it is replaced wholesale by a leaf value they are called with that value. `#filterDiffByPath` uses `undefined` as the "batch didn't touch this path" sentinel (safe because diffs never store `undefined`)
