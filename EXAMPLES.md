@@ -1,6 +1,6 @@
 # LazyWatch Examples
 
-This document provides comprehensive real-world examples demonstrating how to use LazyWatch in various scenarios. For installation instructions and API documentation, see the [README](README.md).
+This document provides comprehensive real-world examples demonstrating how to use LazyWatch in various scenarios. For installation instructions and an overview, see the [README](README.md); for the full API documentation, see the [API reference](docs/API.md).
 
 ## Table of Contents
 
@@ -585,5 +585,6 @@ state.user.email = 'test@example.com'; // ✗ Error
 
 ## See Also
 
-- [README](README.md) - Installation, API documentation, and basic examples
+- [README](README.md) - Installation, overview, and quick start
+- [API reference](docs/API.md) - Full API documentation, the diff wire format, and supported-value rules
 - [GitHub Repository](https://github.com/luffs/lazy-watch)

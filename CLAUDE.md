@@ -20,7 +20,20 @@ npm run benchmark        # full suite (~16s)
 npm run benchmark:core   # core performance only
 npm run benchmark:memory # memory usage only
 ```
-CI (`.github/workflows/test.yml`) runs tests on Node 22/24/26 and Bun (invoked as `bun ./test/tests.js` — plain `bun test` would run Bun's own test runner instead of this project's), the TypeScript definition checks, and the full benchmark suite (results appear in the job summary) on every push and pull request.
+CI (`.github/workflows/test.yml`) runs tests on Node 22/24/26 and Bun (invoked as `bun ./test/tests.js` — plain `bun test` would run Bun's own test runner instead of this project's), the TypeScript definition checks, the bundle-size budget check, and the full benchmark suite (results appear in the job summary) on every push and pull request.
+
+**Checking the bundle-size budget:**
+```bash
+npm run test:size
+```
+Bundles/minifies via `npx esbuild`, gzips, and fails if the gzipped size exceeds the budget in `scripts/size.js` (8 kB; ~6.5 kB actual when added). When the printed size drifts from the "~6.5 kB min+gzip" claim, update README.md along with the budget.
+
+## Documentation Layout
+
+- `README.md` — pitch, quick start, and an API overview table; keep it short
+- `docs/API.md` — the full API reference, diff wire format, and supported-value rules (moved out of the README; heading anchors were preserved, so deep links like `docs/API.md#undo-manager` are stable)
+- `EXAMPLES.md` — real-world recipes
+- New/changed API behavior must be documented in `docs/API.md`; the README only gets a table entry or one-liner.
 
 ## Configuration Options
 

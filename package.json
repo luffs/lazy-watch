@@ -33,6 +33,7 @@
   "scripts": {
     "test": "node ./test/tests.js",
     "test:types": "npx -y -p typescript tsc --project test/tsconfig.json",
+    "test:size": "node ./scripts/size.js",
     "benchmark": "node --expose-gc ./benchmark/index.js",
     "benchmark:core": "node --expose-gc ./benchmark/index.js --core",
     "benchmark:memory": "node --expose-gc ./benchmark/index.js --memory",

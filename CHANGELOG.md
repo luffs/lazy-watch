@@ -6,6 +6,22 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
 
 ## [Unreleased]
 
+### Added
+
+- Bundle-size budget check: `npm run test:size` bundles and minifies the
+  library with esbuild, gzips it, and fails when the result exceeds the
+  8 kB budget (~6.5 kB actual when added). Runs in CI on every push and
+  pull request, keeping the README's size claim honest
+
+### Changed
+
+- Documentation restructured: the README is now a short overview — pitch,
+  quick start, and an API table — and the full API reference (every
+  method, the diff wire format, and the supported-value rules) moved to
+  `docs/API.md`. Heading anchors were preserved, so existing deep links
+  keep working with the path swapped. New size badges (bundlephobia
+  min+gzip, zero dependencies) advertise the footprint
+
 ### Fixed
 
 - `sort()`, `reverse()`, and `copyWithin()` no longer corrupt arrays of
