@@ -32,8 +32,9 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
   quick start, and an API table — and the full API reference (every
   method, the diff wire format, and the supported-value rules) moved to
   `docs/API.md`. Heading anchors were preserved, so existing deep links
-  keep working with the path swapped. New size badges (bundlephobia
-  min+gzip, zero dependencies) advertise the footprint
+  keep working with the path swapped. New size badges (bundlejs min+gzip,
+  zero dependencies) advertise the footprint — bundlejs rather than
+  bundlephobia, whose analysis pipeline fails on ESM-only packages
 
 ### Fixed
 

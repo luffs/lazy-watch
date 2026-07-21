@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/lazy-watch.svg)](https://www.npmjs.com/package/lazy-watch)
 [![CI](https://github.com/luffs/lazy-watch/actions/workflows/test.yml/badge.svg)](https://github.com/luffs/lazy-watch/actions/workflows/test.yml)
-[![npm bundle size](https://img.shields.io/bundlephobia/minzip/lazy-watch)](https://bundlephobia.com/package/lazy-watch)
+[![bundle size (min+gzip)](https://deno.bundlejs.com/badge?q=lazy-watch)](https://bundlejs.com/?q=lazy-watch)
 ![Zero dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)
 [![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](https://opensource.org/licenses/ISC)
 
