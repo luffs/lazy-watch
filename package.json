@@ -34,10 +34,12 @@
     "test": "node ./test/tests.js",
     "test:types": "npx -y -p typescript tsc --project test/tsconfig.json",
     "test:size": "node ./scripts/size.js",
+    "test:coverage": "npx -y c8 --include=src --reporter=text --reporter=text-summary --check-coverage --statements 95 --lines 95 --branches 88 --functions 98 node ./test/tests.js",
     "benchmark": "node --expose-gc ./benchmark/index.js",
     "benchmark:core": "node --expose-gc ./benchmark/index.js --core",
     "benchmark:memory": "node --expose-gc ./benchmark/index.js --memory",
-    "benchmark:all": "node --expose-gc ./benchmark/index.js --all"
+    "benchmark:all": "node --expose-gc ./benchmark/index.js --all",
+    "benchmark:check": "node --expose-gc ./benchmark/index.js --all --check"
   },
   "publishConfig": {
     "provenance": true

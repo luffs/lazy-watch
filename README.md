@@ -144,9 +144,11 @@ npm test
 
 This will execute the test suite using a custom test runner, which verifies the functionality of LazyWatch including object creation, change detection, event emission, and patching.
 
-Additional checks: `npm run test:types` compiles the TypeScript definitions,
-`npm run test:size` verifies the bundle-size budget, and `npm run benchmark`
-runs the performance suite.
+Additional checks, all run in CI: `npm run test:types` compiles the
+TypeScript definitions, `npm run test:coverage` enforces coverage thresholds
+(~98% statements at the time of writing), `npm run test:size` verifies the
+bundle-size budget, and `npm run benchmark:check` runs the performance suite
+with an order-of-magnitude regression guard.
 
 ## Contributing
 

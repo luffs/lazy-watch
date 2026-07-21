@@ -12,6 +12,19 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
   library with esbuild, gzips it, and fails when the result exceeds the
   8 kB budget (~6.5 kB actual when added). Runs in CI on every push and
   pull request, keeping the README's size claim honest
+- Coverage thresholds in CI: `npm run test:coverage` runs the suite under
+  `c8` (fetched via npx — still no devDependencies) and fails below
+  95% statements/lines, 88% branches, 98% functions (~98/91.6/100 actual
+  when added). The coverage table is published to the CI job summary
+- Performance regression guard: `npm run benchmark:check` (and the CI
+  benchmark job, via `--check`) fails on order-of-magnitude regressions.
+  Ratio guards compare LazyWatch against the plain-object baselines
+  measured in the same run — machine speed cancels out, so the check is
+  stable on noisy shared runners — with limits ~10x above current ratios,
+  catching an accidental O(n²), a hot-path clone, or a synchronous emit
+  rather than micro-drift; absolute ops/sec floors cover benchmarks with
+  no plain baseline. The guard table prints on every core benchmark run
+  but only fails the process under `--check`
 
 ### Changed
 

@@ -14,13 +14,22 @@ npm test
 ```
 This executes the test suite in `test/tests.js` using a custom test runner (not Jest). The runner sets a non-zero exit code when any test fails.
 
+**Running tests with coverage:**
+```bash
+npm run test:coverage
+```
+Runs the suite under `npx c8` (no devDependency) with enforced thresholds: statements/lines 95%, branches 88%, functions 98% (~98/91.6/100 actual when added). If a change legitimately lowers coverage, adjust the thresholds in the `test:coverage` script in the same commit and say why.
+
 **Running benchmarks:**
 ```bash
 npm run benchmark        # full suite (~16s)
 npm run benchmark:core   # core performance only
 npm run benchmark:memory # memory usage only
+npm run benchmark:check  # full suite + regression guard (exit 1 on breach)
 ```
-CI (`.github/workflows/test.yml`) runs tests on Node 22/24/26 and Bun (invoked as `bun ./test/tests.js` — plain `bun test` would run Bun's own test runner instead of this project's), the TypeScript definition checks, the bundle-size budget check, and the full benchmark suite (results appear in the job summary) on every push and pull request.
+The regression guard (`benchmark/regression-guard.js`) is order-of-magnitude protection, not a trend tracker: ratio guards compare LazyWatch against the plain-object baselines from the same run (machine speed cancels out; limits ~10x above current ratios), plus conservative absolute ops/sec floors. It prints on every core run but only fails the process under `--check`. When a limit trips because of an intentional trade-off, adjust it in the same commit with an explanation.
+
+CI (`.github/workflows/test.yml`) runs tests on Node 22/24/26 and Bun (invoked as `bun ./test/tests.js` — plain `bun test` would run Bun's own test runner instead of this project's), the TypeScript definition checks, the coverage thresholds (report in the job summary), the bundle-size budget check, and the full benchmark suite with the regression guard (results in the job summary) on every push and pull request.
 
 **Checking the bundle-size budget:**
 ```bash

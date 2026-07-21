@@ -61,6 +61,36 @@ jobs:
       - name: Type-check TypeScript definitions
         run: npm run test:types
 
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5.0.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5.0.0
+        with:
+          node-version: 24
+
+      - name: Run tests with coverage thresholds
+        # Explicit bash shell enables pipefail, so a coverage failure is not
+        # masked by tee's exit code
+        shell: bash
+        run: npm run test:coverage | tee coverage-output.txt
+
+      - name: Publish coverage to job summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '### Coverage'
+            echo '```'
+            # The c8 table plus summary at the end of the output
+            tail -n 30 coverage-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   size:
     name: Bundle-size budget
     runs-on: ubuntu-latest
@@ -88,11 +118,13 @@ jobs:
         with:
           node-version: 24
 
-      - name: Run benchmark suite
+      - name: Run benchmark suite with regression guard
         # Explicit bash shell enables pipefail, so a benchmark failure is not
-        # masked by tee's exit code
+        # masked by tee's exit code. --check fails the run when the
+        # order-of-magnitude regression guard trips (see
+        # benchmark/regression-guard.js for the limits and philosophy)
         shell: bash
-        run: node --expose-gc ./benchmark/index.js --all | tee benchmark-output.txt
+        run: node --expose-gc ./benchmark/index.js --all --check | tee benchmark-output.txt
 
       - name: Publish results to job summary
         if: always()

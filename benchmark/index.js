@@ -13,6 +13,8 @@ import {
   runMemoryLeakTest
 } from './memory-benchmarks.js';
 
+import { checkCoreRegressions } from './regression-guard.js';
+
 /**
  * Main benchmark suite
  */
@@ -22,8 +24,10 @@ async function main() {
   console.log('╚════════════════════════════════════════════════════════════════╝');
 
   const args = process.argv.slice(2);
+  const check = args.includes('--check');
   const runAll = args.length === 0 || args.includes('--all');
-  const runCore = runAll || args.includes('--core');
+  // The regression guard evaluates core results, so --check implies --core
+  const runCore = runAll || args.includes('--core') || check;
   const runListener = runAll || args.includes('--listener');
   const runThrottle = runAll || args.includes('--throttle');
   const runLarge = runAll || args.includes('--large');
@@ -40,6 +44,8 @@ async function main() {
     console.log('  --large      Run large object benchmarks');
     console.log('  --memory     Run memory usage benchmarks');
     console.log('  --leak       Run memory leak detection test');
+    console.log('  --check      Fail (exit 1) when the performance regression guard');
+    console.log('               trips; implies --core. Used by CI');
     console.log('  --help       Show this help message');
     console.log('\nExamples:');
     console.log('  npm run benchmark');
@@ -51,8 +57,11 @@ async function main() {
   }
 
   try {
+    let guardFailures = [];
     if (runCore) {
-      await runCoreBenchmarks();
+      const coreResults = await runCoreBenchmarks();
+      // Always evaluated and printed; only fails the run under --check
+      guardFailures = checkCoreRegressions(coreResults);
     }
 
     if (runListener) {
@@ -86,6 +95,16 @@ async function main() {
     console.log('╔════════════════════════════════════════════════════════════════╗');
     console.log('║                   Benchmark Suite Complete                     ║');
     console.log('╚════════════════════════════════════════════════════════════════╝\n');
+
+    if (check && guardFailures.length > 0) {
+      console.error('❌ Performance regression guard failed:');
+      for (const failure of guardFailures) {
+        console.error(`  - ${failure}`);
+      }
+      console.error('\nIf the slowdown is an intentional trade-off, adjust the limit in');
+      console.error('benchmark/regression-guard.js in the same commit and explain why.\n');
+      process.exit(1);
+    }
 
   } catch (error) {
     console.error('\n❌ Error running benchmarks:', error);
