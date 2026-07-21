@@ -6,6 +6,23 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
 
 ## [Unreleased]
 
+### Changed
+
+- `LazyWatch.patch` and `LazyWatch.overwrite` now accept **either** a
+  LazyWatch proxy or a normal object. On a proxy the behavior is
+  unchanged (tracked, recorded, emitted); on a normal object the same
+  applier runs with the same semantics but no change tracking.
+  `overwrite` on a normal object deletes properties missing from the
+  source at every nesting level (arrays exempt, as on proxies) — the
+  reconnect-snapshot primitive for plain mirrors such as a Vue
+  `reactive` object, where merge semantics would keep keys alive that
+  were deleted while disconnected. A disposed proxy still throws rather
+  than degrading to the untracked mode, and a target that is neither a
+  proxy nor a plain object/array (a `Date`, `Map`, primitive, ...) is
+  rejected with a TypeError. `patchObject` (and `overwriteObject`, its
+  never-released sibling) remain as **deprecated aliases** delegating to
+  the unified methods, so existing code keeps working unchanged
+
 ### Added
 
 - Custom scheduler option: `new LazyWatch(obj, { schedule: cb =>
@@ -35,6 +52,17 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
   rather than micro-drift; absolute ops/sec floors cover benchmarks with
   no plain baseline. The guard table prints on every core benchmark run
   but only fails the process under `--check`
+
+### Added (documentation)
+
+- Framework adapter examples in EXAMPLES.md: two Vue 3 patterns — a
+  `reactive` object as the state with plain-object `patch` as the wire
+  applier (no adapter, no client-side instance; fits server-owned state)
+  and a `reactive` mirror of a LazyWatch instance for clients that also
+  emit diffs — plus a Svelte store-contract wrapper and a React
+  `useSyncExternalStore` hook (version counter + direct proxy reads, with
+  nested proxies giving per-component subtree subscriptions), with
+  guidance on which pattern fits which framework
 
 ### Changed
 

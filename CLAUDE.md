@@ -137,25 +137,22 @@ The constructor returns a Proxy, not the LazyWatch instance. This means:
 - Static methods accept proxies: `LazyWatch.on(watched, callback)`
 - Internal methods use `#getInstance(proxy)` to retrieve the LazyWatch instance from WeakMap
 
-### Static Methods for Normal Objects
-LazyWatch provides utility methods that work on normal objects (non-proxies):
-- `LazyWatch.patchObject(target, source)` - Merges source into target object without change tracking
-  - Recursively merges nested objects
-  - Deletes properties when source value is `null`
-  - Deep clones objects/arrays to prevent reference sharing
-  - Does not delete missing properties (merge semantics, like `patch()`)
-  - Use case: Applying LazyWatch's patching logic to regular objects
+### Unified Targets for patch/overwrite
+`LazyWatch.patch(target, source)` and `LazyWatch.overwrite(target, source)` accept **either** a LazyWatch proxy or a normal object (`patchObject`/`overwriteObject` remain as deprecated aliases delegating to them, for 4.0.0 compatibility):
+- Dispatch via `#tryGetInstance` (symbol probe + WeakMap fallback): a proxy routes through the tracked ProxyHandler path (diff recorded/emitted at the proxy's path); anything else goes to the plain applier `#patchObjectInto` — same semantics, no recording or emission, sources deep-cloned to prevent reference sharing
+- A **disposed** proxy still resolves to its instance and throws rather than silently degrading to untracked plain mode; a target that is neither (primitive, `null`, `Date`, `Map`, ...) is rejected with a TypeError by `#assertPlainTarget`
+- The plain applier handles the full wire format (nested merges, null deletions, `$splice` ops, array-diff revival, wholesale arrays, reserved-key skipping); `overwrite` adds a `deleteMissing` pass at every merged level (arrays exempt — wholesale length adoption handles their tail); `composeDiffs`' injected applier keeps merge semantics
+- Plain-target use cases: applying received diffs to a plain mirror (e.g. a Vue `reactive` object) with `patch`, and applying an authoritative snapshot on reconnect with `overwrite` (merge semantics would keep drifted keys alive)
 
 ### Delete Semantics
 - Property deletion is represented as `null` in diffs (not `undefined`)
-- `overwrite()` deletes properties missing from source (except on arrays)
-- `patch()` never deletes properties (only works with LazyWatch proxies)
-- `patchObject()` is a static method for patching normal objects (non-proxies) with the same merge semantics as `patch()`
+- `overwrite()` deletes properties missing from source (except on arrays) — on proxy and plain targets alike, at every merged level
+- `patch()` never deletes missing properties (merge semantics); `null` values still delete
 
 ### Supported Values
 - Only plain objects and arrays are deep-watched; the root must be one
 - Date and RegExp are leaf values: returned as-is from the `get` trap (methods work), but in-place mutations are not tracked — only wholesale property replacement emits a diff
-- Map, Set, WeakMap, WeakSet, Promise, ArrayBuffer, and typed arrays are rejected with a TypeError at every entry point (constructor, `set` trap, `overwrite`/`patch`/`patchObject`) — their internal-slot mutations bypass the proxy and would silently desync replicas
+- Map, Set, WeakMap, WeakSet, Promise, ArrayBuffer, and typed arrays are rejected with a TypeError at every entry point (constructor, `set` trap, `overwrite`/`patch` on both target kinds) — their internal-slot mutations bypass the proxy and would silently desync replicas
 - Class instances (any non-plain object) are rejected the same way: cloning and JSON strip their prototype, silently losing methods. `Utils.isPlainObject` accepts prototypes that are null or one step from null (covers `Object.create(null)` and cross-realm plain objects); the symbol-key escape hatch still allows instances as local-only values
 - `Utils.assertSupported(value, path)` performs the cycle-safe deep validation and throws naming the offending path; validation runs before any mutation, so rejected operations leave state untouched
 - `NaN`/`±Infinity` are rejected (JSON would serialize them as `null` = deletion); assigning `undefined` is normalized to a deletion (emitted as `null`)

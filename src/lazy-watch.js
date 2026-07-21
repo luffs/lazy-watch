@@ -73,9 +73,13 @@ export class LazyWatch {
   }
 
   /**
-   * Get the LazyWatch instance from a watched proxy
+   * Get the LazyWatch instance from a watched proxy, or null when the
+   * value is not a LazyWatch proxy (e.g. a normal object). A disposed
+   * proxy still resolves to its instance — callers #checkDisposed so a
+   * disposed proxy fails loudly instead of degrading to plain-object
+   * behavior.
    */
-  static #getInstance(watched) {
+  static #tryGetInstance(watched) {
     // Try to get instance from the proxy using our symbol
     try {
       const instance = watched[LAZYWATCH_INSTANCE];
@@ -83,7 +87,14 @@ export class LazyWatch {
     } catch (e) {}
 
     // Fallback to WeakMap lookup
-    const instance = LazyWatch.#instances.get(watched);
+    return LazyWatch.#instances.get(watched) ?? null;
+  }
+
+  /**
+   * Get the LazyWatch instance from a watched proxy
+   */
+  static #getInstance(watched) {
+    const instance = LazyWatch.#tryGetInstance(watched);
     if (!instance) {
       throw new Error('Not a LazyWatch proxy or instance has been disposed');
     }
@@ -147,50 +158,92 @@ export class LazyWatch {
   }
 
   /**
-   * Overwrite the watched object with new values
-   * Deletes properties not present in source (unless target is array)
+   * Overwrite the target with new values: shared properties are updated,
+   * nested objects merged recursively, and properties missing from
+   * `source` (or `null` in it) are deleted at every level. Arrays are
+   * never trimmed key-by-key; a real source array is a wholesale
+   * replacement, as everywhere else.
    *
-   * Works on the root proxy or any nested proxy (overwriting just that
-   * subtree); the diff is recorded and emitted at the subtree's path, so
-   * listeners and mirrors stay consistent.
-   * @param {Object} watched - The LazyWatch proxy (or a nested proxy within it)
-   * @param {Object} source - The new values
+   * The target may be a LazyWatch proxy — root or nested (the diff,
+   * deletions included, is recorded and emitted at the subtree's path) —
+   * or a normal object/array, which is mutated in place with the same
+   * semantics but no change tracking. The classic normal-object use is
+   * applying an authoritative snapshot to a plain mirror (e.g. a Vue
+   * `reactive` object) on reconnect, where `patch` would leave keys alive
+   * that were deleted while disconnected.
+   * @param {Object} target - A LazyWatch proxy (root or nested) or a
+   *   normal object/array
+   * @param {Object} source - The authoritative state to match
    */
-  static overwrite(watched, source) {
-    const instance = LazyWatch.#getInstance(watched);
-    instance.#checkDisposed();
-    instance.#proxyHandler.overwrite(
-      watched, source, instance.#proxyHandler.getProxyPath(watched));
+  static overwrite(target, source) {
+    const instance = LazyWatch.#tryGetInstance(target);
+    if (instance) {
+      instance.#checkDisposed();
+      instance.#proxyHandler.overwrite(
+        target, source, instance.#proxyHandler.getProxyPath(target));
+      return;
+    }
+    LazyWatch.#assertPlainTarget(target, 'overwrite');
+    // Reject Map/Set/typed arrays etc. anywhere in the source
+    Utils.assertSupported(LazyWatch.resolveIfProxy(source));
+    LazyWatch.#patchObjectInto(target, source, true);
   }
 
   /**
-   * Patch (merge) new values without deleting missing properties
+   * Patch (merge) new values without deleting missing properties.
    *
-   * Works on the root proxy or any nested proxy (patching just that
-   * subtree); the diff is recorded and emitted at the subtree's path, so
-   * listeners and mirrors stay consistent.
-   * @param {Object} watched - The LazyWatch proxy (or a nested proxy within it)
+   * The target may be a LazyWatch proxy — root or nested (the diff is
+   * recorded and emitted at the subtree's path) — or a normal
+   * object/array, which is mutated in place with the same merge
+   * semantics but no change tracking (e.g. applying received diffs to a
+   * plain mirror such as a Vue `reactive` object).
+   * @param {Object} target - A LazyWatch proxy (root or nested) or a
+   *   normal object/array
    * @param {Object} source - The values to merge
    */
-  static patch(watched, source) {
-    const instance = LazyWatch.#getInstance(watched);
-    instance.#checkDisposed();
-    instance.#proxyHandler.patch(
-      watched, source, instance.#proxyHandler.getProxyPath(watched));
-  }
-
-  /**
-   * Helper method to patch normal (non-proxy) objects
-   * @param {Object} target - The target object to patch
-   * @param {Object} source - The source object with values to merge
-   */
-  static patchObject(target, source) {
+  static patch(target, source) {
+    const instance = LazyWatch.#tryGetInstance(target);
+    if (instance) {
+      instance.#checkDisposed();
+      instance.#proxyHandler.patch(
+        target, source, instance.#proxyHandler.getProxyPath(target));
+      return;
+    }
+    LazyWatch.#assertPlainTarget(target, 'patch');
     // Reject Map/Set/typed arrays etc. anywhere in the source
     Utils.assertSupported(LazyWatch.resolveIfProxy(source));
     LazyWatch.#patchObjectInto(target, source);
   }
 
-  static #patchObjectInto(target, source) {
+  /**
+   * Alias of {@link LazyWatch.patch}, kept for backward compatibility.
+   * @deprecated Use LazyWatch.patch — it accepts normal objects too
+   */
+  static patchObject(target, source) {
+    LazyWatch.patch(target, source);
+  }
+
+  /**
+   * Alias of {@link LazyWatch.overwrite}, kept for backward compatibility.
+   * @deprecated Use LazyWatch.overwrite — it accepts normal objects too
+   */
+  static overwriteObject(target, source) {
+    LazyWatch.overwrite(target, source);
+  }
+
+  /**
+   * A non-proxy target must be a plain container; failing loudly here
+   * beats the confusing native errors mutating a primitive or Date would
+   * produce inside the applier.
+   */
+  static #assertPlainTarget(target, method) {
+    if (!Utils.isObjectOrArray(target)) {
+      throw new TypeError(
+        `LazyWatch.${method} target must be a LazyWatch proxy or a plain object/array`);
+    }
+  }
+
+  static #patchObjectInto(target, source, deleteMissing = false) {
     const resolvedSource = LazyWatch.resolveIfProxy(source);
 
     // Apply compact structural array ops before merging the node's other
@@ -227,7 +280,7 @@ export class LazyWatch {
         // are wholesale values (fragments are the merge form), and inside
         // one every entry is a full value too — both replace below, like
         // the proxy appliers.
-        LazyWatch.#patchObjectInto(target[prop], resolvedSource[prop]);
+        LazyWatch.#patchObjectInto(target[prop], resolvedSource[prop], deleteMissing);
       } else {
         // No container to merge into (or the value is a wholesale
         // replacement): revive index-keyed array diffs so they become real
@@ -240,6 +293,17 @@ export class LazyWatch {
           ? Utils.cloneWithoutNulls(sourceValue)
           : sourceValue;
         target[prop] = clonedValue;
+      }
+    }
+
+    // Overwrite semantics (overwrite on a normal object): delete target
+    // properties the source doesn't carry. Arrays are exempt — their tail is handled by
+    // the wholesale length adoption above, like the proxy appliers.
+    if (deleteMissing && !Array.isArray(target)) {
+      for (const prop of Object.keys(target)) {
+        if (resolvedSource[prop] === null || resolvedSource[prop] === undefined) {
+          delete target[prop];
+        }
       }
     }
   }

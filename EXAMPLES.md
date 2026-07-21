@@ -10,6 +10,7 @@ This document provides comprehensive real-world examples demonstrating how to us
 - [Form Validation](#example-4-form-validation)
 - [Silent Initialization](#example-5-silent-initialization)
 - [Conditional Change Broadcasting](#example-6-conditional-change-broadcasting)
+- [Framework Adapters (Vue, Svelte, React)](#example-7-framework-adapters)
 - [Advanced Topics](#advanced-topics)
 - [TypeScript](#typescript)
 
@@ -433,6 +434,206 @@ state.subscribe((changes) => {
 state.internalUpdate({ internal: 42 }); // No broadcast
 state.publicUpdate({ count: 1 }); // Broadcasts to subscribers
 ```
+
+---
+
+## Example 7: Framework Adapters
+
+LazyWatch is framework-agnostic, and its listener API (`LazyWatch.on`
+returning an unsubscribe function) slots into every major framework's
+external-store contract in a few lines. A property worth exploiting in all
+of them: **listeners on nested proxies only fire when their subtree
+changes**, so a component subscribed to `app.user` never re-renders for
+`app.todos` traffic.
+
+### Vue 3 — `reactive` state and `patch`
+
+Vue has its own proxy-based reactivity, so the simplest integration needs
+**no adapter and no client-side LazyWatch instance at all**: a Vue
+`reactive` object *is* the client state, and LazyWatch acts purely as the
+wire-format applier. Incoming diffs are applied with
+`LazyWatch.patch`, whose granular property writes Vue's reactivity
+observes directly — components reference `appState.user` or
+`appState.todos` as usual, and computed props and component updates stay
+fine-grained instead of rebuilding on every change:
+
+```javascript
+// state.js — the reactive object IS the state
+import { reactive } from 'vue';
+import { LazyWatch } from 'lazy-watch';
+
+export const appState = reactive({ user: {}, todos: [] });
+
+server.on('patch', diff => {
+  LazyWatch.patch(appState, diff);
+});
+```
+
+```vue
+<script setup>
+import { appState } from './state.js';
+</script>
+
+<template>
+  <span>{{ appState.user.name }}</span>
+  <ul><li v-for="todo in appState.todos" :key="todo.id">{{ todo.text }}</li></ul>
+</template>
+```
+
+Applied to a plain object, `patch` applies the full wire format — nested merges, `null`
+deletions, `$splice` array ops, wholesale array replacement — so whatever
+a LazyWatch instance on the server emits lands correctly in Vue. This
+fits server-owned state (the receive side of the
+[WebSocket example](#example-3-websocket-mirroring-with-reconnect-resync)):
+the client renders and sends *intents* (commands, RPC calls) rather than
+diffs. One thing to handle: `patch` has merge semantics, so a reconnect
+**snapshot** needs [`overwrite`](docs/API.md#overwriting) instead — it
+deletes whatever drifted (at every nesting level) while disconnected, and
+Vue only re-renders what actually differed:
+
+```javascript
+server.on('snapshot', data => {
+  LazyWatch.overwrite(appState, data); // appState now matches exactly
+});
+```
+
+### Vue 3 — mirror of a LazyWatch instance
+
+When the client also *originates* changes that must sync out as diffs — or
+needs local batching, undo, or transactions — the source of truth becomes a
+LazyWatch instance, and Vue gets a read-only `reactive` mirror fed by the
+same plain-object `patch` mechanism:
+
+```javascript
+import { reactive, onScopeDispose } from 'vue';
+import { LazyWatch } from 'lazy-watch';
+
+/** A read-only Vue-reactive view of `watched` (root or nested proxy). */
+export function useLazyWatch(watched) {
+  const mirror = reactive(LazyWatch.snapshot(watched));
+  const stop = LazyWatch.on(watched, diff => LazyWatch.patch(mirror, diff));
+  onScopeDispose(stop);
+  return mirror;
+}
+```
+
+```vue
+<script setup>
+import { app } from './state.js'; // const app = new LazyWatch({ user: ..., todos: [] })
+import { useLazyWatch } from './useLazyWatch.js';
+
+const user = useLazyWatch(app.user);
+</script>
+
+<template>
+  <!-- Renders from the mirror; mutate the LazyWatch proxy, not the mirror -->
+  <input :value="user.name" @input="e => { app.user.name = e.target.value; }" />
+</template>
+```
+
+The mirror is one-way by design: write to the LazyWatch proxy (the source
+of truth that emits, syncs, and undoes) and let diffs flow into Vue.
+
+### Svelte — store contract
+
+A LazyWatch proxy wraps into Svelte's
+[store contract](https://svelte.dev/docs/svelte/stores) (`subscribe` calling
+the callback immediately and on every change, returning an unsubscribe) in
+five lines, enabling `$store` auto-subscription syntax:
+
+```javascript
+import { LazyWatch } from 'lazy-watch';
+
+/** Wrap a LazyWatch proxy (root or nested) as a Svelte-compatible store. */
+export function lazyWatchStore(watched) {
+  return {
+    subscribe(run) {
+      run(watched);
+      return LazyWatch.on(watched, () => run(watched));
+    }
+  };
+}
+```
+
+```svelte
+<script>
+  import { app } from './state.js';
+  import { lazyWatchStore } from './lazyWatchStore.js';
+
+  const user = lazyWatchStore(app.user);
+</script>
+
+<input value={$user.name} on:input={e => { app.user.name = e.target.value; }} />
+```
+
+Svelte always re-runs subscribers for object-valued stores (it cannot know
+what changed inside), which is exactly right here since the proxy identity is
+stable. In Svelte 5 runes mode, the Vue-style pattern works too: keep a
+`$state` mirror and apply diffs with `LazyWatch.patch` for fine-grained
+signal updates.
+
+### React — `useSyncExternalStore`
+
+React's [`useSyncExternalStore`](https://react.dev/reference/react/useSyncExternalStore)
+wants a `subscribe(onStoreChange) => unsubscribe` function and a
+`getSnapshot` that returns a new value only when the store changed. A
+version counter satisfies the snapshot contract cheaply; components then
+read state directly off the proxy:
+
+```jsx
+import { useMemo, useSyncExternalStore } from 'react';
+import { LazyWatch } from 'lazy-watch';
+
+/** Re-render when `watched` (a root OR nested LazyWatch proxy) changes. */
+function useLazyWatch(watched) {
+  const store = useMemo(() => {
+    let version = 0;
+    return {
+      subscribe: onStoreChange =>
+        LazyWatch.on(watched, () => { version++; onStoreChange(); }),
+      getSnapshot: () => version,
+      getServerSnapshot: () => 0 // SSR: the initial render is version 0
+    };
+  }, [watched]);
+  useSyncExternalStore(store.subscribe, store.getSnapshot, store.getServerSnapshot);
+  return watched;
+}
+
+// One shared instance, module-scope or via context
+const app = new LazyWatch({ user: { name: 'Alice' }, todos: [] });
+
+function UserCard() {
+  const user = useLazyWatch(app.user); // nested proxy: re-renders ONLY on user changes
+  return <input value={user.name} onChange={e => { user.name = e.target.value; }} />;
+}
+
+function TodoCount() {
+  const todos = useLazyWatch(app.todos);
+  return <span>{todos.length}</span>;
+}
+```
+
+Mutations are plain property writes from anywhere — event handlers, WebSocket
+callbacks, timers — and each microtask batch produces one version bump, so
+React coalesces a burst of writes into a single re-render. For animation-heavy
+state, pair this with the
+[custom scheduler](docs/API.md#with-a-custom-scheduler-frame-alignment)
+(`{ schedule: cb => requestAnimationFrame(cb) }`) to cap re-renders at one
+per frame.
+
+### Which pattern for which framework
+
+| Pattern | Fits | Why |
+|---|---|---|
+| Reactive object as the state, plain-object `patch`/`overwrite` as the applier | Vue (and Svelte 5 runes) mirroring server-owned state | No adapter and no client instance — wire diffs apply directly onto the framework's own reactivity |
+| Reactive mirror of a LazyWatch instance | Vue, Svelte 5 runes, MobX-style systems, when local edits must emit diffs or undo locally | The framework tracks per-property access; granular writes preserve that |
+| Store contract wrapper | Svelte 4, RxJS-adjacent code | The framework consumes `subscribe`/unsubscribe directly |
+| Version counter + direct proxy reads | React, Solid, anything with an external-store hook | The framework re-renders from scratch anyway; it only needs a change signal |
+
+All the patterns compose with the rest of the library: the same instance can
+simultaneously drive a UI adapter, a [WebSocket mirror](#example-3-websocket-mirroring-with-reconnect-resync),
+and an [undo manager](docs/API.md#undo-manager) — undo/redo and remote patches
+flow through the adapters as ordinary batches.
 
 ---
 

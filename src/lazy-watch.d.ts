@@ -309,56 +309,75 @@ export interface LazyWatchStatic {
     off<T extends object>(watched: T, listener: ChangeListener<T>): void;
 
     /**
-     * Overwrite the watched object with new values
-     * Deletes properties not present in source (unless target is array)
-     * Works on the root proxy or any nested proxy (overwriting just that
-     * subtree); the diff is recorded and emitted at the subtree's path
-     * @param watched - The LazyWatch proxy (or a nested proxy within it)
-     * @param source - The new values (may be a diff received from a listener)
-     * @throws {TypeError} If source is not an object
-     * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
+     * Overwrite the target with new values: shared properties are updated,
+     * nested objects merged recursively, and properties missing from
+     * `source` (or `null` in it) are **deleted** at every level. Arrays
+     * are never trimmed key-by-key; a real source array is a wholesale
+     * replacement.
+     *
+     * The target may be a LazyWatch proxy — root or nested (the diff,
+     * deletions included, is recorded and emitted at the subtree's path) —
+     * or a normal object/array, mutated in place with the same semantics
+     * but no change tracking. The classic normal-object use is applying an
+     * authoritative snapshot to a plain mirror (e.g. a Vue `reactive`
+     * object) on reconnect, where `patch` would leave keys alive that
+     * were deleted while disconnected
+     * @param target - A LazyWatch proxy (root or nested) or a normal object/array
+     * @param source - The authoritative state to match
+     * @throws {TypeError} If source is not an object, or a non-proxy
+     * target is not a plain object/array
+     * @throws {Error} If a proxy target's instance has been disposed
      *
      * @example
      * const watched = new LazyWatch({ a: 1, b: 2, c: 3 });
      * LazyWatch.overwrite(watched, { a: 10, d: 4 });
-     * // watched is now { a: 10, d: 4 } - b and c are deleted
+     * // watched is now { a: 10, d: 4 } - b and c are deleted (and emitted)
+     *
+     * @example
+     * const mirror = { a: 1, b: 2, c: { d: 3, e: 4 } };
+     * LazyWatch.overwrite(mirror, { a: 10, c: { d: 30 } });
+     * // mirror is now { a: 10, c: { d: 30 } } — b and c.e are deleted, untracked
      */
-    overwrite<T extends object>(watched: T, source: Patch<T> | ChangeSet): void;
+    overwrite<T extends object>(target: T, source: Patch<T> | ChangeSet): void;
 
     /**
-     * Patch (merge) new values without deleting missing properties
-     * Works on the root proxy or any nested proxy (patching just that
-     * subtree); the diff is recorded and emitted at the subtree's path
-     * @param watched - The LazyWatch proxy (or a nested proxy within it)
+     * Patch (merge) new values without deleting missing properties.
+     *
+     * The target may be a LazyWatch proxy — root or nested (the diff is
+     * recorded and emitted at the subtree's path) — or a normal
+     * object/array, mutated in place with the same merge semantics but no
+     * change tracking (e.g. applying received diffs to a plain mirror
+     * such as a Vue `reactive` object)
+     * @param target - A LazyWatch proxy (root or nested) or a normal object/array
      * @param source - The values to merge (may be a diff received from a listener)
-     * @throws {TypeError} If source is not an object
-     * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
+     * @throws {TypeError} If source is not an object, or a non-proxy
+     * target is not a plain object/array
+     * @throws {Error} If a proxy target's instance has been disposed
      *
      * @example
      * const watched = new LazyWatch({ a: 1, b: 2, c: 3 });
      * LazyWatch.patch(watched, { a: 10, d: 4 });
      * // watched is now { a: 10, b: 2, c: 3, d: 4 } - b and c remain
-     */
-    patch<T extends object>(watched: T, source: Patch<T> | ChangeSet): void;
-
-    /**
-     * Patch (merge) new values into a normal (non-proxy) object without deleting missing properties
-     * This utility method applies LazyWatch's patching semantics to regular objects
-     * @param target - A normal object or array (not a LazyWatch proxy)
-     * @param source - The values to merge into the target
      *
      * @example
-     * const normalObj = { a: 1, b: 2, c: { d: 3 } };
-     * LazyWatch.patchObject(normalObj, { a: 10, c: { d: 30, e: 40 } });
-     * // normalObj is now { a: 10, b: 2, c: { d: 30, e: 40 } }
-     *
-     * @example
-     * // Using null to delete properties
+     * // Normal objects work too; null deletes
      * const obj = { a: 1, b: 2, c: 3 };
-     * LazyWatch.patchObject(obj, { b: null, c: 30 });
+     * LazyWatch.patch(obj, { b: null, c: 30 });
      * // obj is now { a: 1, c: 30 }
      */
+    patch<T extends object>(target: T, source: Patch<T> | ChangeSet): void;
+
+    /**
+     * Alias of {@link patch}, kept for backward compatibility
+     * @deprecated Use `LazyWatch.patch` — it accepts normal objects too
+     */
     patchObject<T extends object>(target: T, source: Patch<T> | ChangeSet): void;
+
+    /**
+     * Alias of {@link overwrite}, kept for backward compatibility
+     * @deprecated Use `LazyWatch.overwrite` — it accepts normal objects too
+     */
+    overwriteObject<T extends object>(target: T, source: Patch<T> | ChangeSet): void;
 
     /**
      * Compose two sequential diffs into one equivalent diff: applying the

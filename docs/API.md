@@ -21,7 +21,7 @@ mirroring, undo/redo, form validation), see [EXAMPLES.md](../EXAMPLES.md).
 - [Transactions](#transactions)
 - [Undo Manager](#undo-manager)
 - [Applying Changes](#applying-changes)
-  - [Patching LazyWatch Proxies](#patching-lazywatch-proxies) · [Overwriting LazyWatch Proxies](#overwriting-lazywatch-proxies) · [Patching Normal Objects](#patching-normal-objects)
+  - [Patching](#patching) · [Overwriting](#overwriting)
 - [Composing Diffs](#composing-diffs)
 - [Identifying and Unwrapping Proxies](#identifying-and-unwrapping-proxies)
 - [Disposing](#disposing)
@@ -509,39 +509,64 @@ at a time (dispose the current one first).
 
 ## Applying Changes
 
-### Patching LazyWatch Proxies
+`LazyWatch.patch` and `LazyWatch.overwrite` accept **two kinds of target**:
+
+- **A LazyWatch proxy** — root or nested. Changes are applied through the
+  tracked write path: the diff is recorded and emitted at the (sub)tree's
+  path, so listeners and mirrors receive the full transition. A nested
+  proxy patches just its subtree — `LazyWatch.patch(app.user, { name: 'Bob' })`
+  emits `{ user: { name: 'Bob' } }`, not a root-level fragment.
+- **A normal object or array** — mutated in place with exactly the same
+  semantics, but with **no change tracking**: nothing is recorded or
+  emitted. This is the receive side for plain mirrors (a Vue `reactive`
+  object, a worker-thread copy, a config object). A disposed proxy still
+  throws rather than degrading to this mode, and a target that is neither
+  a proxy nor a plain container (a `Date`, `Map`, primitive, ...) is
+  rejected with a `TypeError`.
+
+Shared applier behavior, both targets: nested objects merge recursively,
+`null` (or `undefined`) values delete, objects/arrays from the source are
+deep-cloned (never aliased), index-keyed array fragments and `$splice` ops
+merge into arrays, a real source array is a wholesale replacement whose
+`length` the target adopts, and reserved prototype-polluting keys are
+refused. Validation runs before any mutation, so a rejected source leaves
+the target untouched.
+
+> `LazyWatch.patchObject` and `LazyWatch.overwriteObject` remain as
+> **deprecated aliases** delegating to `patch` and `overwrite` — existing
+> code keeps working, but new code should use the unified names.
+
+### Patching
 
 ```js
-LazyWatch.patch(watchedObject, diffObject);
+LazyWatch.patch(target, diffObject);
 ```
 
-Applies changes from a diff object to a watched LazyWatch proxy. Properties not present in the diff are preserved (merge behavior, not replacement).
+Applies changes with **merge semantics**: properties not present in the
+diff are preserved.
 
-Works on the root proxy or any nested proxy (patching just that subtree) —
-the diff is recorded and emitted at the subtree's path, so listeners and
-mirrors receive `{ user: { name: 'Bob' } }` from
-`LazyWatch.patch(app.user, { name: 'Bob' })`, not a root-level fragment.
-
-**Example:**
 ```js
 const data = new LazyWatch({ a: 1, b: 2, c: { d: 3 } });
 
 LazyWatch.patch(data, { a: 10, c: { d: 30, e: 40 } });
 // Result: { a: 10, b: 2, c: { d: 30, e: 40 } }
 // Note: 'b' is preserved, nested object 'c' is merged
+
+// The same call on a plain object — same merge, no tracking:
+const plain = { a: 1, b: 2, c: 3 };
+LazyWatch.patch(plain, { b: null, c: 30 });
+// plain is now: { a: 1, c: 30 } — null deletes
 ```
 
-### Overwriting LazyWatch Proxies
+### Overwriting
 
 ```js
-LazyWatch.overwrite(watchedObject, source);
+LazyWatch.overwrite(target, source);
 ```
 
-Makes the watched state exactly match `source`: shared properties are
-updated and properties missing from `source` (or `null` in it) are
-**deleted** — replacement semantics, where `patch` merges. All changes,
-including the deletions, are recorded and emitted as one batch, so
-listeners and mirrors receive the full transition:
+Makes the target exactly match `source` — **replacement semantics**, where
+`patch` merges: shared properties are updated and properties missing from
+`source` (or `null` in it) are **deleted at every level**:
 
 ```js
 const data = new LazyWatch({ a: 1, b: 2, c: { d: 3 } });
@@ -555,53 +580,19 @@ Arrays are the exception: their elements are merged by index and never
 deleted for being missing, but a shorter source array truncates the target
 via its `length`.
 
-Like `patch`, `overwrite` works on the root proxy or any nested proxy
-(replacing just that subtree), with the diff — deletions included —
-recorded at the subtree's path.
-
-Use `overwrite` to force a replica into an authoritative state — for
-example applying a full snapshot on reconnect (see the
+Use `overwrite` to force a replica into an authoritative state — applying
+a full snapshot on reconnect (see the
 [WebSocket example](../EXAMPLES.md#example-3-websocket-mirroring-with-reconnect-resync))
-— and `patch` for incremental diffs.
-
-### Patching Normal Objects
+— and `patch` for incremental diffs. On a plain mirror (e.g. a Vue
+`reactive` object fed by `patch`, see the
+[framework adapters](../EXAMPLES.md#example-7-framework-adapters)), the
+same call deletes exactly the drift, at every nesting level:
 
 ```js
-LazyWatch.patchObject(targetObject, sourceObject);
+socket.on('snapshot', data => {
+  LazyWatch.overwrite(appState, data); // appState now matches exactly
+});
 ```
-
-Applies changes from a source object to a normal (non-proxy) object. This is useful when you want to use LazyWatch's patching semantics on regular objects without creating a watched proxy.
-
-**Parameters:**
-- `targetObject` - A normal object or array (not a LazyWatch proxy)
-- `sourceObject` - The object with values to merge into the target
-
-**Behavior:**
-- Merges properties from source into target (mutates target in place)
-- Missing properties in source are preserved in target
-- Nested objects are recursively merged
-- Properties with `null` values are deleted from target
-- Objects/arrays are deep cloned to avoid reference sharing
-- A real array in the source is a wholesale replacement: the target array
-  adopts its length (truncating any tail), matching `patch` on proxies
-
-**Example:**
-```js
-const normalObj = { a: 1, b: 2, c: { d: 3 } };
-
-LazyWatch.patchObject(normalObj, { a: 10, c: { d: 30, e: 40 } });
-// normalObj is now: { a: 10, b: 2, c: { d: 30, e: 40 } }
-
-// Using null to delete properties
-const obj2 = { a: 1, b: 2, c: 3 };
-LazyWatch.patchObject(obj2, { b: null, c: 30 });
-// obj2 is now: { a: 1, c: 30 }
-```
-
-**Use cases:**
-- Applying server-side state updates to local objects
-- Merging configuration objects
-- Synchronizing state between watched and non-watched objects
 
 ## Composing Diffs
 
@@ -740,8 +731,8 @@ data.items.unshift('a');
 // (not { 0: 'a', 1: 'b', 2: 'c', length: 3 })
 ```
 
-Each op is `[start, deleteCount, items]`, applied by `patch`/`overwrite`/
-`patchObject` **before** the fragment's index keys, so an op followed by index
+Each op is `[start, deleteCount, items]`, applied by `patch`/`overwrite`
+(on proxies and plain objects alike) **before** the fragment's index keys, so an op followed by index
 or nested writes in the same batch stays correct. Consecutive structural ops
 in one batch append to the same `$splice` list; if index writes are already
 pending on that array when a structural op happens, LazyWatch falls back to
@@ -778,8 +769,8 @@ emits `{ k: { b: 2, a: null } }` and mirrors converge exactly.
 Applied to a replica that already has `items` as an array, the fragment merges
 in-place. But when replicas disagree about which fields exist — typically after
 a schema migration, or with clients running different versions — a fragment can
-arrive where there is no array to merge into. `patch`, `overwrite`, and
-`patchObject` detect this case and revive the fragment into a real array instead
+arrive where there is no array to merge into. `patch` and `overwrite`
+detect this case and revive the fragment into a real array instead
 of storing it verbatim as a plain object:
 
 ```js
@@ -820,7 +811,7 @@ state.when = new Date();     // tracked — emits { when: Date }
 Collections that mutate through internal slots — `Map`, `Set`, `WeakMap`,
 `WeakSet`, `Promise`, `ArrayBuffer`, and typed arrays — are **rejected with a
 `TypeError`** wherever they enter watched state: the constructor, property
-assignment, and `patch`/`overwrite`/`patchObject`. Their mutations
+assignment, and `patch`/`overwrite`. Their mutations
 (`map.set(...)`) bypass the proxy entirely and would silently desync replicas,
 and they don't survive JSON serialization anyway — so LazyWatch fails loudly
 instead of half-tracking them:
@@ -869,7 +860,7 @@ A few more wire-safety rules, all enforced with a `TypeError` at write time:
   convention and emitted as `{ prop: null }`
 - **`__proto__`, `constructor`, and `prototype` are reserved** — writing them
   would mutate prototypes instead of data. They are rejected on the way into
-  watched state, and `patch`/`overwrite`/`patchObject` refuse diffs containing
+  watched state, and `patch`/`overwrite` refuse diffs containing
   them, so a malicious or corrupt diff received over the network cannot cause
   prototype pollution
 - **`Object.defineProperty` is tracked; everything exotic is rejected** — a

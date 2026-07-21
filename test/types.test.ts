@@ -73,7 +73,7 @@ LazyWatch.patch(watched, { tags: { 1: 'b', length: 2 } } as ChangeSet);
 LazyWatch.overwrite(watched, { name: 'Bob' });
 
 const plain = { a: 1, b: 2, c: { d: 3 } };
-LazyWatch.patchObject(plain, { b: null, c: { d: 30 } });
+LazyWatch.patch(plain, { b: null, c: { d: 30 } });
 
 // composeDiffs takes and returns plain diffs
 const composed: ChangeSet = LazyWatch.composeDiffs({ a: 1 }, { a: null, b: 2 });
@@ -126,6 +126,16 @@ void txResult;
 LazyWatch.transaction(inv, () => {}); // void callbacks are fine
 LazyWatch.dispose(inv);
 LazyWatch.dispose(watched);
+
+// patch/overwrite accept normal objects too
+const plainMirror = { name: 'Alice', age: 30 };
+LazyWatch.overwrite(plainMirror, { name: 'Bob' });
+LazyWatch.overwrite(plainMirror, { age: null }); // null deletes
+// @ts-expect-error - target must be an object
+LazyWatch.overwrite(42, { name: 'Bob' });
+// Deprecated aliases keep compiling
+LazyWatch.patchObject(plainMirror, { name: 'Bob' });
+LazyWatch.overwriteObject(plainMirror, { name: 'Bob' });
 
 // Custom scheduler
 const scheduled = new LazyWatch({ n: 1 }, { schedule: cb => setTimeout(cb, 16) });
