@@ -12,7 +12,7 @@ LazyWatch is a lightweight reactive proxy-based object change tracker for JavaSc
 ```bash
 npm test
 ```
-This executes the test suite in `test/tests.js` using a custom test runner (not Jest). The runner sets a non-zero exit code when any test fails.
+This executes the test suite via the `test/tests.js` entry point (per-topic suites in `test/suites/`, shared runner/assertions in `test/helpers.js`) using a custom test runner (not Jest). The runner sets a non-zero exit code when any test fails.
 
 **Running tests with coverage:**
 ```bash
@@ -193,10 +193,11 @@ This is an ES module project (`"type": "module"` in package.json):
 
 ## Testing
 
-Tests use a custom test runner (`TestRunner` class in `test/tests.js`), not Jest:
+Tests use a custom test runner (`TestRunner` class in `test/helpers.js`), not Jest:
 - Tests are async-aware (uses `await` for microtask batching)
-- Custom assertion functions: `assertEquals()`, `assertObjectEqual()`
-- Single test file covers all functionality
+- Custom assertion functions: `assertEquals()`, `assertObjectEqual()` — shared assertions and convergence helpers (`assertConverged`, `assertComposeEquivalent`) live in `test/helpers.js`
+- `test/tests.js` is the entry point: it builds the runner, registers every suite from `test/suites/` (each exports a `register(runner)` default), prints the usage examples (`test/examples.js`), and runs
+- Suites are split by topic (core, timing, listeners, arrays, values, inverse, undo-manager, compose-diffs, convergence, nested-patch, traps, scheduler, plain-targets, deep-array-diffs); add new tests to the matching suite, or a new `test/suites/*.test.js` registered in `test/tests.js`
 
 **Type checking:**
 ```bash
