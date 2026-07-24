@@ -24,7 +24,7 @@ export default function register(runner) {
   });
 
   runner.test('composeDiffs should be pure', () => {
-    const older = { nested: { x: 1 }, list: { $splice: [[0, 0, [{ v: 1 }]]], length: 1 } };
+    const older = { nested: { x: 1 }, list: { $splice: [[0, 0, [{ v: 1 }]]], $length: 1 } };
     const newer = { nested: { y: 2 } };
     const olderBefore = JSON.stringify(older);
     const newerBefore = JSON.stringify(newer);
@@ -62,10 +62,10 @@ export default function register(runner) {
   });
 
   runner.test('an array fragment following a deletion should revive to a real array', () => {
-    const composed = LazyWatch.composeDiffs({ k: null }, { k: { 0: 'a', 1: 'b', length: 2 } });
+    const composed = LazyWatch.composeDiffs({ k: null }, { k: { 0: 'a', 1: 'b', $length: 2 } });
     assertTrue(Array.isArray(composed.k), 'the fragment should be revived');
     assertEquals(composed.k, ['a', 'b']);
-    assertComposeEquivalent({ k: [9, 9, 9] }, { k: null }, { k: { 0: 'a', 1: 'b', length: 2 } });
+    assertComposeEquivalent({ k: [9, 9, 9] }, { k: null }, { k: { 0: 'a', 1: 'b', $length: 2 } });
   });
 
   runner.test('$splice op lists should concatenate and converge', async () => {
@@ -89,8 +89,8 @@ export default function register(runner) {
 
   runner.test('index writes before later $splice ops should refuse to compose', () => {
     assertThrows(() => LazyWatch.composeDiffs(
-      { items: { 0: 'x', length: 3 } },
-      { items: { $splice: [[0, 1]], length: 2 } }
+      { items: { 0: 'x', $length: 3 } },
+      { items: { $splice: [[0, 1]], $length: 2 } }
     ), 'ops cannot jump the queue past earlier index writes');
   });
 

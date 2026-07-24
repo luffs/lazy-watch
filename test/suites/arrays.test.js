@@ -4,14 +4,14 @@ import { assertEquals, assertTrue, assertThrows, assertConverged, wait } from '.
 
 export default function register(runner) {
   // Array diff revival tests
-  // Array mutations are emitted as index-keyed fragments like { 1: 'b', length: 2 }.
+  // Array mutations are emitted as index-keyed fragments like { 1: 'b', $length: 2 }.
   // Applied where the target already has the array they merge fine, but applied
   // where the field is missing they used to be stored verbatim as plain objects.
 
   runner.test('patch should revive an array diff when the target lacks the field', () => {
     const watched = new LazyWatch({});
 
-    LazyWatch.patch(watched, { items: { 0: 'a', 1: 'b', length: 2 } });
+    LazyWatch.patch(watched, { items: { 0: 'a', 1: 'b', $length: 2 } });
 
     assertTrue(Array.isArray(LazyWatch.resolveIfProxy(watched.items)), 'items should be a real array');
     assertEquals(watched.items.length, 2, 'length should come from the fragment');
@@ -24,7 +24,7 @@ export default function register(runner) {
 
     // A task created remotely, carrying its own index-keyed subtasks fragment.
     LazyWatch.patch(watched, {
-      tasks: { 0: { title: 'x', subtasks: { 0: { done: false }, length: 1 } }, length: 1 },
+      tasks: { 0: { title: 'x', subtasks: { 0: { done: false }, $length: 1 } }, $length: 1 },
     });
 
     assertTrue(Array.isArray(LazyWatch.resolveIfProxy(watched.tasks)), 'tasks should be an array');
@@ -39,7 +39,7 @@ export default function register(runner) {
   runner.test('patch should still merge array diffs into existing arrays', () => {
     const watched = new LazyWatch({ items: ['a', 'b', 'c'] });
 
-    LazyWatch.patch(watched, { items: { 1: 'B', length: 3 } });
+    LazyWatch.patch(watched, { items: { 1: 'B', $length: 3 } });
 
     assertTrue(Array.isArray(LazyWatch.resolveIfProxy(watched.items)), 'items should stay an array');
     assertEquals(LazyWatch.resolveIfProxy(watched.items), ['a', 'B', 'c']);
@@ -47,10 +47,13 @@ export default function register(runner) {
   });
 
   runner.test('patch should leave genuine objects alone when the target has one', () => {
-    // Target shape wins: an existing plain object is merged into, not converted.
+    // Target shape wins: an existing plain object is merged into, not
+    // converted. (An array-like object is legal state now that `$length`
+    // marks fragments; the fragment's own `$length` is dropped on the
+    // non-array target instead of landing as data.)
     const watched = new LazyWatch({ weird: { 0: 'x', length: 5 } });
 
-    LazyWatch.patch(watched, { weird: { 1: 'z', length: 5 } });
+    LazyWatch.patch(watched, { weird: { 1: 'z', $length: 5 } });
 
     const weird = LazyWatch.resolveIfProxy(watched.weird);
     assertTrue(!Array.isArray(weird), 'existing object should not become an array');
@@ -69,10 +72,38 @@ export default function register(runner) {
     LazyWatch.dispose(watched);
   });
 
+  runner.test('a pure-truncation fragment should stay an array diff', async () => {
+    // { $length: n } with no index keys is unambiguous now that the key is
+    // reserved: it merges into an existing array as a truncation and even
+    // revives on a receiver that lacks the field (the old `length`-marked
+    // form could not — data like { length: 5 } was indistinguishable)
+    const src = new LazyWatch({ items: ['a', 'b', 'c'] });
+    const aligned = new LazyWatch({ items: ['a', 'b', 'c'] });
+    const missing = new LazyWatch({});
+    let diff = null;
+    LazyWatch.on(src, d => {
+      diff = d;
+      LazyWatch.patch(aligned, d);
+      LazyWatch.patch(missing, d);
+    });
+
+    src.items.length = 1;
+    await wait(10);
+
+    assertEquals(diff, { items: { $length: 1 } }, 'truncation should emit only $length');
+    assertConverged(src, aligned, 'aligned mirror should truncate');
+    assertTrue(Array.isArray(LazyWatch.resolveIfProxy(missing.items)),
+      'a receiver without the field should revive an array, not store an object');
+    assertEquals(missing.items.length, 1);
+    LazyWatch.dispose(src);
+    LazyWatch.dispose(aligned);
+    LazyWatch.dispose(missing);
+  });
+
   runner.test('patch on a plain object should revive array diffs when the target lacks the field', () => {
     const target = { existing: true };
 
-    LazyWatch.patch(target, { items: { 0: 'a', length: 1 }, existing: false });
+    LazyWatch.patch(target, { items: { 0: 'a', $length: 1 }, existing: false });
 
     assertTrue(Array.isArray(target.items), 'items should be a real array');
     assertEquals(target.items, ['a']);
@@ -81,7 +112,7 @@ export default function register(runner) {
 
   runner.test('replicas with shape drift should converge to identical arrays', async () => {
     // The receiver never got the diff that introduced `assignees` — the exact
-    // drift that used to persist an { 0: ..., length: 1 } object downstream.
+    // drift that used to persist an index-keyed fragment as an object downstream.
     const sender = new LazyWatch({ tasks: [{ id: 1, assignees: [] }] });
     const receiver = new LazyWatch({ tasks: [{ id: 1 }] });
 
@@ -112,7 +143,7 @@ export default function register(runner) {
   runner.test('overwrite should revive array diffs when the target lacks the field', () => {
     const watched = new LazyWatch({ keep: 1 });
 
-    LazyWatch.overwrite(watched, { keep: 1, items: { 0: 'a', length: 1 } });
+    LazyWatch.overwrite(watched, { keep: 1, items: { 0: 'a', $length: 1 } });
 
     assertTrue(Array.isArray(LazyWatch.resolveIfProxy(watched.items)), 'items should be a real array');
     assertEquals(watched.items[0], 'a');
@@ -129,9 +160,9 @@ export default function register(runner) {
     watched.items.unshift(-1);
     await wait(10);
 
-    assertEquals(Object.keys(diff.items).sort(), ['$splice', 'length'], 'diff should only contain $splice and length');
+    assertEquals(Object.keys(diff.items).sort(), ['$length', '$splice'], 'diff should only contain $splice and $length');
     assertEquals(diff.items.$splice, [[0, 0, [-1]]]);
-    assertEquals(diff.items.length, 101);
+    assertEquals(diff.items.$length, 101);
     assertEquals(watched.items[0], -1);
     assertEquals(watched.items.length, 101);
     LazyWatch.dispose(watched);
@@ -146,7 +177,7 @@ export default function register(runner) {
     await wait(10);
     assertEquals(shifted, 'a', 'shift should return the removed element');
     assertEquals(diff.items.$splice, [[0, 1, []]]);
-    assertEquals(diff.items.length, 3);
+    assertEquals(diff.items.$length, 3);
 
     const removed = watched.items.splice(1, 2, 'X');
     await wait(10);
@@ -263,13 +294,13 @@ export default function register(runner) {
 
   runner.test('patch should apply $splice ops to plain objects', () => {
     const plain = { items: ['a', 'b', 'c'] };
-    LazyWatch.patch(plain, { items: { $splice: [[1, 1, ['X', 'Y']]], length: 4 } });
+    LazyWatch.patch(plain, { items: { $splice: [[1, 1, ['X', 'Y']]], $length: 4 } });
     assertEquals(plain.items, ['a', 'X', 'Y', 'c']);
   });
 
   runner.test('$splice fragments should revive into arrays when the target lacks the field', () => {
     const watched = new LazyWatch({});
-    LazyWatch.patch(watched, { items: { $splice: [[0, 0, ['a', 'b']]], length: 2 } });
+    LazyWatch.patch(watched, { items: { $splice: [[0, 0, ['a', 'b']]], $length: 2 } });
     assertTrue(Array.isArray(LazyWatch.resolveIfProxy(watched.items)), 'items should be a real array');
     assertEquals(JSON.parse(JSON.stringify(LazyWatch.resolveIfProxy(watched.items))), ['a', 'b']);
     LazyWatch.dispose(watched);

@@ -1,7 +1,7 @@
 // values.test.js - Supported-value rules: collection/class-instance rejection, Date/RegExp leaves,
 // prototype pollution and wire safety, and symbol-keyed local-only metadata
 import { LazyWatch } from '../../src/lazy-watch.js';
-import { assertEquals, assertTrue, assertThrows, wait } from '../helpers.js';
+import { assertEquals, assertTrue, assertThrows, assertConverged, wait } from '../helpers.js';
 
 export default function register(runner) {
   runner.test('should throw when watching a Map or Set directly', () => {
@@ -105,6 +105,223 @@ export default function register(runner) {
     LazyWatch.dispose(watched);
   });
 
+  // --- Wire-format reserved keys ($splice, $length) that state may not contain ---
+
+  runner.test('should throw when writing the reserved wire key "$splice" into watched state', () => {
+    const watched = new LazyWatch({ config: {}, items: [] });
+    assertThrows(() => { watched.$splice = 'data'; }, 'direct assignment should throw');
+    assertThrows(() => { watched.config.$splice = 'data'; }, 'nested assignment should throw');
+    assertThrows(() => { watched.config = { $splice: 'data' }; }, 'inside an assigned value should throw');
+    assertThrows(() => { watched.config = { deep: { $splice: 1 } }; }, 'deeply nested should throw');
+    assertThrows(
+      () => Object.defineProperty(watched, '$splice', {
+        value: 1, enumerable: true, writable: true, configurable: true
+      }),
+      'defineProperty should throw'
+    );
+    assertThrows(() => { watched.items.splice(0, 0, { $splice: 1 }); }, 'a spliced-in item should throw');
+    assertThrows(() => { watched.items.push({ $splice: 1 }); }, 'a pushed item should throw');
+    assertThrows(() => new LazyWatch({ $splice: 'data' }), 'the initial object should throw');
+    assertThrows(() => new LazyWatch({ deep: { $splice: 'data' } }), 'nested in the initial object should throw');
+    assertEquals(LazyWatch.resolveIfProxy(watched), { config: {}, items: [] }, 'state should be untouched');
+    LazyWatch.dispose(watched);
+  });
+
+  runner.test('the "$splice" rejection should name the key and the path', () => {
+    const watched = new LazyWatch({});
+    try {
+      watched.deep = { nested: { $splice: 1 } };
+      throw new Error('should have thrown');
+    } catch (e) {
+      assertTrue(e instanceof TypeError, 'should be a TypeError');
+      assertTrue(e.message.includes('$splice'), `message should name the key: ${e.message}`);
+      assertTrue(e.message.includes('deep.nested'), `message should name the path: ${e.message}`);
+    }
+    LazyWatch.dispose(watched);
+  });
+
+  runner.test('"$splice" should still be accepted as a structural op inside a diff', async () => {
+    // The state-side rejection must not break the wire format that owns the key
+    const watched = new LazyWatch({ items: ['b'] });
+    const mirror = new LazyWatch({ items: ['b'] });
+    LazyWatch.on(watched, d => LazyWatch.patch(mirror, JSON.parse(JSON.stringify(d))));
+
+    LazyWatch.patch(watched, { items: { $splice: [[0, 0, ['a']]], $length: 2 } });
+    await wait(10);
+
+    assertEquals(LazyWatch.resolveIfProxy(watched.items), ['a', 'b'], 'ops should apply');
+    assertConverged(watched, mirror, 'relayed ops should converge');
+
+    // The compact form must still be emitted by senders, and compose
+    const emitted = [];
+    const src = new LazyWatch({ items: ['b'] });
+    LazyWatch.on(src, d => emitted.push(d));
+    src.items.unshift('a');
+    await wait(10);
+    assertEquals(emitted[0], { items: { $splice: [[0, 0, ['a']]], $length: 2 } }, 'senders still emit $splice');
+    assertEquals(
+      LazyWatch.composeDiffs({ items: { $splice: [[0, 0, ['a']]], $length: 2 } }, { items: { $splice: [[2, 0, ['c']]], $length: 3 } }),
+      { items: { $splice: [[0, 0, ['a']], [2, 0, ['c']]], $length: 3 } },
+      'composeDiffs still accepts $splice'
+    );
+
+    // A plain-object mirror applies ops too
+    const plain = { items: ['b'] };
+    LazyWatch.patch(plain, { items: { $splice: [[0, 0, ['a']]], $length: 2 } });
+    assertEquals(plain.items, ['a', 'b'], 'plain targets still apply ops');
+
+    LazyWatch.dispose(watched);
+    LazyWatch.dispose(mirror);
+    LazyWatch.dispose(src);
+  });
+
+  runner.test('should throw when writing the reserved wire key "$length" into watched state', () => {
+    // `$length` marks array lengths in fragments, so receivers consume it
+    // on arrays and drop it everywhere else — as data it could never arrive
+    const watched = new LazyWatch({ config: {}, items: [] });
+    assertThrows(() => { watched.$length = 5; }, 'direct assignment should throw');
+    assertThrows(() => { watched.config.$length = 5; }, 'nested assignment should throw');
+    assertThrows(() => { watched.config = { $length: 5 }; }, 'inside an assigned value should throw');
+    assertThrows(() => { watched.config = { deep: { $length: 5 } }; }, 'deeply nested should throw');
+    assertThrows(
+      () => Object.defineProperty(watched, '$length', {
+        value: 5, enumerable: true, writable: true, configurable: true
+      }),
+      'defineProperty should throw'
+    );
+    assertThrows(() => { watched.items.splice(0, 0, { $length: 5 }); }, 'a spliced-in item should throw');
+    assertThrows(() => { watched.items.push({ $length: 5 }); }, 'a pushed item should throw');
+    assertThrows(() => new LazyWatch({ $length: 5 }), 'the initial object should throw');
+    assertThrows(() => new LazyWatch({ deep: { $length: 5 } }), 'nested in the initial object should throw');
+    assertEquals(LazyWatch.resolveIfProxy(watched), { config: {}, items: [] }, 'state should be untouched');
+    LazyWatch.dispose(watched);
+  });
+
+  runner.test('array-like objects should be ordinary, syncable data', async () => {
+    // With `$length` marking fragments, a plain `length` key is never wire
+    // vocabulary: objects that look like arrays are legal state and arrive
+    // on mirrors as the objects they are
+    const src = new LazyWatch({});
+    const mirror = new LazyWatch({});
+    LazyWatch.on(src, d => LazyWatch.patch(mirror, JSON.parse(JSON.stringify(d))));
+
+    src.weird = { 0: 'x', length: 2 };
+    src.dimensions = { length: 5 };
+    src.mixed = { 0: 'a', name: 'x', length: 1 };
+    src.real = ['a', 'b'];
+    await wait(10);
+
+    assertConverged(src, mirror, 'array-like objects should sync as objects');
+    assertTrue(!Array.isArray(LazyWatch.resolveIfProxy(mirror.weird)),
+      'the mirror should hold an object, not a revived array');
+
+    // The incremental route converges too: building the shape key by key
+    // (this desynced mirrors when `length` doubled as the fragment marker)
+    src.built = { 0: 'x' };
+    src.built.length = 2;
+    await wait(10);
+    assertConverged(src, mirror, 'incrementally built array-likes should sync');
+    assertTrue(!Array.isArray(LazyWatch.resolveIfProxy(mirror.built)),
+      'the mirror should hold the built object, not an array');
+
+    LazyWatch.dispose(src);
+    LazyWatch.dispose(mirror);
+  });
+
+  runner.test('array fragments must stay applicable as diffs under the reserved-key rules', async () => {
+    // The reserved keys are rejected from state only: fragments are the
+    // merge form and must keep working, including revival where the
+    // receiver has no field
+    const receiver = new LazyWatch({});
+    LazyWatch.patch(receiver, { items: { 1: 'b', $length: 2 } });
+    assertTrue(Array.isArray(LazyWatch.resolveIfProxy(receiver.items)), 'fragment should revive into an array');
+
+    const merging = new LazyWatch({ items: ['a', 'b'] });
+    LazyWatch.patch(merging, { items: { 1: 'B', $length: 2 } });
+    assertEquals(LazyWatch.resolveIfProxy(merging.items), ['a', 'B'], 'fragment should merge into an array');
+
+    // Inverse diffs carry index-keyed fragments too
+    const undoable = new LazyWatch({ items: ['a', 'b'] }, { inverse: true });
+    let inverse = null;
+    LazyWatch.on(undoable, (d, inv) => { inverse = inv; });
+    undoable.items[1] = 'B';
+    await wait(10);
+    LazyWatch.patch(undoable, inverse);
+    assertEquals(LazyWatch.resolveIfProxy(undoable.items), ['a', 'b'], 'inverse should still apply');
+
+    LazyWatch.dispose(receiver);
+    LazyWatch.dispose(merging);
+    LazyWatch.dispose(undoable);
+  });
+
+  runner.test('a rejected splice item should leave the array untouched on every recording path', () => {
+    // Items are validated before any branch runs. The compact path always
+    // did this; the two fallback paths ran the native method straight away,
+    // so the shift writes landed before the bad item was rejected
+    // (['b','c'] came out as ['b','b','c']).
+    const compact = new LazyWatch({ items: ['b', 'c'] });
+    assertThrows(() => { compact.items.splice(0, 0, new Map()); });
+    assertEquals(LazyWatch.resolveIfProxy(compact.items), ['b', 'c'], 'compact path');
+
+    // Fallback 1: inverse recording disables compact $splice ops
+    const inverse = new LazyWatch({ items: ['b', 'c'] }, { inverse: true });
+    assertThrows(() => { inverse.items.splice(0, 0, new Map()); });
+    assertEquals(LazyWatch.resolveIfProxy(inverse.items), ['b', 'c'], 'inverse fallback');
+    assertThrows(() => { inverse.items.unshift({ $length: 1 }); });
+    assertEquals(LazyWatch.resolveIfProxy(inverse.items), ['b', 'c'], 'inverse fallback, unshift');
+
+    // Fallback 2: pending index writes dirty the array's diff node
+    const dirty = new LazyWatch({ items: ['b', 'c'] });
+    dirty.items[1] = 'C';
+    assertThrows(() => { dirty.items.splice(0, 0, new Map()); });
+    assertEquals(LazyWatch.resolveIfProxy(dirty.items), ['b', 'C'], 'dirty-node fallback');
+
+    LazyWatch.dispose(compact);
+    LazyWatch.dispose(inverse);
+    LazyWatch.dispose(dirty);
+  });
+
+  runner.test('reserved wire keys can no longer desync a mirror', async () => {
+    // Regression: a `$splice`-keyed value used to be written into state,
+    // emitted, and then silently dropped by the receiver's applier
+    const src = new LazyWatch({ config: { ok: 0 } });
+    const mirror = new LazyWatch({ config: { ok: 0 } });
+    LazyWatch.on(src, d => LazyWatch.patch(mirror, JSON.parse(JSON.stringify(d))));
+
+    assertThrows(() => { src.config.$splice = 'user-data'; });
+    assertThrows(() => { src.config.$length = 7; });
+    src.config.ok = 1; // a legal write still flows
+    await wait(10);
+
+    assertConverged(src, mirror, 'replicas should converge after the rejected writes');
+    assertEquals(LazyWatch.resolveIfProxy(mirror), { config: { ok: 1 } });
+    LazyWatch.dispose(src);
+    LazyWatch.dispose(mirror);
+  });
+
+  runner.test('hostile $splice op items should be rejected atomically at entry', () => {
+    // Op items are full values entering state, so diff validation holds
+    // them to the state rules — the whole patch is rejected before any of
+    // it applies, on proxy and plain targets alike
+    const hostile = { aaa: 1, items: { $splice: [[0, 0, [{ $splice: 'x' }]]], $length: 2 } };
+
+    const proxy = new LazyWatch({ aaa: 0, items: ['a'] });
+    assertThrows(() => LazyWatch.patch(proxy, hostile), 'proxy target should reject');
+    assertEquals(LazyWatch.resolveIfProxy(proxy), { aaa: 0, items: ['a'] },
+      'no part of the patch should apply, not even sibling keys');
+
+    const plain = { aaa: 0, items: ['a'] };
+    assertThrows(() => LazyWatch.patch(plain, hostile), 'plain target should reject');
+    assertEquals(plain, { aaa: 0, items: ['a'] }, 'plain target should be untouched');
+
+    assertThrows(
+      () => LazyWatch.patch(plain, { items: { $splice: [[0, 0, [new Map()]]], $length: 2 } }),
+      'collection types inside op items should be rejected too'
+    );
+    assertEquals(plain, { aaa: 0, items: ['a'] });
+    LazyWatch.dispose(proxy);
+  });
+
   runner.test('assigning undefined should delete and sync as null', async () => {
     const src = new LazyWatch({ x: 1, y: 2 });
     const dst = new LazyWatch({ x: 1, y: 2 });
@@ -160,7 +377,7 @@ export default function register(runner) {
     await wait(10);
 
     assertTrue(!('4' in diff.items), 'stale index beyond new length should be dropped');
-    assertEquals(diff.items.length, 2);
+    assertEquals(diff.items.$length, 2);
     LazyWatch.dispose(watched);
   });
 

@@ -6,6 +6,15 @@
 // skipped when applying received diffs.
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
+// The diff wire format's structural markers: `$splice` carries structural
+// array ops, `$length` the array's resulting length. Receivers consume both
+// on array nodes and drop them everywhere else, so either key in watched
+// state would never arrive as data on any mirror — the sender keeps it, the
+// receivers consume or drop it, and the two desync silently. They are
+// rejected on the way into state instead; inside a diff they are of course
+// the format itself.
+const RESERVED_DIFF_KEYS = new Set(['$splice', '$length']);
+
 // Error-path helper: renders a path prefix for validation messages
 const pathLabel = path => path.length ? ` at "${path.map(String).join('.')}"` : '';
 
@@ -16,6 +25,14 @@ export const Utils = {
    */
   isUnsafeKey(key) {
     return UNSAFE_KEYS.has(key);
+  },
+
+  /**
+   * True for property names the diff wire format reserves for itself. Legal
+   * inside a diff, rejected in watched state — see RESERVED_DIFF_KEYS
+   */
+  isReservedDiffKey(key) {
+    return RESERVED_DIFF_KEYS.has(key);
   },
   /**
    * Check if value is an object or array that can be deep-watched.
@@ -71,12 +88,19 @@ export const Utils = {
    * non-finite number, or a reserved property name. Date and RegExp pass as
    * leaf values and are not walked into. Cycle-safe.
    *
+   * `isDiff` relaxes the reserved-diff-key rule, which exists only because
+   * state has to survive the round trip through the wire format — inside a
+   * diff those keys are the format doing its job. `$splice` op items are
+   * the exception: they are full values entering state, so they are held to
+   * state rules even in diff context. Use `assertSupportedDiff` for diff
+   * call sites.
+   *
    * Perf note: the walk mutates `path` push/pop-style instead of copying it
    * per key, and only renders it into a string on the (cold) error path.
    * The array is restored before returning; on a throw it is abandoned
    * mid-walk, which is fine — every caller passes a fresh array.
    */
-  assertSupported(value, path = [], seen = new WeakSet()) {
+  assertSupported(value, path = [], seen = new WeakSet(), isDiff = false) {
     if (typeof value === 'number' && !Number.isFinite(value)) {
       throw new TypeError(
         `LazyWatch cannot track non-finite number ${value}${pathLabel(path)}: JSON serializes it as null, which receivers interpret as a deletion.`
@@ -107,32 +131,61 @@ export const Utils = {
           `LazyWatch cannot use reserved property name "${key}"${pathLabel(path)}: it collides with the prototype machinery.`
         );
       }
+      if (this.isReservedDiffKey(key)) {
+        if (!isDiff) {
+          throw new TypeError(
+            `LazyWatch cannot use reserved property name "${key}"${pathLabel(path)}: it belongs to the diff wire format (structural array ops and lengths), so receivers consume or drop it instead of storing it as data, and mirrors desync silently. Rename the property.`
+          );
+        }
+        // In diff context the key is the format's own vocabulary — but
+        // `$splice` op items are full values entering state, so they are
+        // held to state rules here, before the applier mutates anything.
+        // The generic recursion below still covers the ops' numeric fields
+        // (the seen guard keeps already-walked items from being rewalked).
+        if (key === '$splice' && Array.isArray(value[key])) {
+          path.push(key);
+          for (const op of value[key]) {
+            if (Array.isArray(op) && Array.isArray(op[2])) {
+              for (const item of op[2]) {
+                this.assertSupported(item, path, seen, false);
+              }
+            }
+          }
+          path.pop();
+        }
+      }
       path.push(key);
-      this.assertSupported(value[key], path, seen);
+      this.assertSupported(value[key], path, seen, isDiff);
       path.pop();
     }
   },
 
   /**
-   * True for array diff fragments: a plain object whose keys are all array
-   * indices and/or a `$splice` op list, plus a numeric `length` —
-   * e.g. { 1: 'b', length: 2 } or { $splice: [[0, 0, ['a']]], length: 3 }.
-   * At least one index or `$splice` key is required, so plain data like
-   * { length: 5 } is never mistaken for an array diff.
+   * Deep-check a diff (a patch fragment, an inverse, a snapshot handed to
+   * `overwrite`) rather than a value entering state. Same rules, except that
+   * the wire format's own reserved keys (`$splice`, `$length`) are allowed —
+   * while `$splice` op items, being full values, still get the state rules.
+   */
+  assertSupportedDiff(value, path = []) {
+    this.assertSupported(value, path, new WeakSet(), true);
+  },
+
+  /**
+   * True for array diff fragments: a plain object carrying the wire
+   * format's numeric `$length` marker, whose other keys are all array
+   * indices and/or a `$splice` op list — e.g. { 1: 'b', $length: 2 } or
+   * { $splice: [[0, 0, ['a']]], $length: 3 }. `$length` alone is a valid
+   * fragment (a pure truncation); since the key is reserved, plain data
+   * can never be mistaken for one.
    */
   isArrayDiff(val) {
     if (!val || typeof val !== 'object' || Array.isArray(val)) return false;
-    if (!Number.isInteger(val.length) || val.length < 0) return false;
-    let hasContent = false;
+    if (!Number.isInteger(val.$length) || val.$length < 0) return false;
     for (const key of Object.keys(val)) {
-      if (key === 'length') continue;
-      if (key === '$splice' || /^\d+$/.test(key)) {
-        hasContent = true;
-        continue;
-      }
+      if (key === '$length' || key === '$splice' || /^\d+$/.test(key)) continue;
       return false;
     }
-    return hasContent;
+    return true;
   },
 
   /**
@@ -158,11 +211,11 @@ export const Utils = {
         }
       }
       for (const key of Object.keys(value)) {
-        if (key !== 'length' && key !== '$splice') {
+        if (key !== '$length' && key !== '$splice') {
           arr[Number(key)] = this.reviveArrayDiffs(value[key]);
         }
       }
-      arr.length = value.length;
+      arr.length = value.$length;
       return arr;
     }
 
@@ -209,14 +262,16 @@ export const Utils = {
    * plain clone; for patch fragments — including inverse-diff arrays,
    * whose elements carry null markers for keys to delete — dropping the
    * marker is exactly the deletion, since the wholesale write replaces the
-   * old container anyway. Reserved names are skipped like everywhere else.
+   * old container anyway. Reserved names are skipped like everywhere else —
+   * including the wire format's own (`$splice`, `$length`), which callers
+   * have already consumed and which must never be stored as data.
    */
   cloneWithoutNulls(value) {
     if (!this.isObjectOrArray(value)) return this.deepClone(value);
     const out = Array.isArray(value) ? [] : {};
     if (Array.isArray(value)) out.length = value.length;
     for (const key of Object.keys(value)) {
-      if (this.isUnsafeKey(key)) continue;
+      if (this.isUnsafeKey(key) || this.isReservedDiffKey(key)) continue;
       const entry = value[key];
       if (entry === null || entry === undefined) continue;
       out[key] = this.isObjectOrArray(entry) ? this.cloneWithoutNulls(entry) : this.deepClone(entry);

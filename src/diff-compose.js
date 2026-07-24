@@ -34,7 +34,7 @@ function normalize(value) {
  *   is only sound when `b`'s ops don't jump the queue past `a`'s index
  *   writes — receivers apply all ops before a node's other keys, so that
  *   pairing throws.
- * - `length` from `b` wins; `a`'s is kept only when `b` doesn't restate it
+ * - `$length` from `b` wins; `a`'s is kept only when `b` doesn't restate it
  *   and has no ops (ops change the length, staling `a`'s).
  *
  * Shared keys defer to composeValue. Everything placed in the result is
@@ -55,7 +55,7 @@ export function composeFragments(a, b, applyFragment, path = []) {
   if (bOps) {
     // Receivers apply a node's $splice ops before its index keys, so a's
     // index writes cannot stay chronologically before b's ops in a single
-    // fragment. A pure-op `a` (only $splice and length) is fine: the op
+    // fragment. A pure-op `a` (only $splice and $length) is fine: the op
     // lists concatenate, and a's interim length is dropped below — it
     // equals the post-op length on any aligned receiver, so only the
     // final length matters.
@@ -73,19 +73,19 @@ export function composeFragments(a, b, applyFragment, path = []) {
   }
 
   for (const key of Object.keys(a)) {
-    if (key === '$splice' || key === 'length' || Utils.isUnsafeKey(key)) continue;
+    if (key === '$splice' || key === '$length' || Utils.isUnsafeKey(key)) continue;
     if (!(key in b)) out[key] = Utils.deepClone(normalize(a[key]));
   }
   for (const key of Object.keys(b)) {
-    if (key === '$splice' || key === 'length' || Utils.isUnsafeKey(key)) continue;
+    if (key === '$splice' || key === '$length' || Utils.isUnsafeKey(key)) continue;
     const bv = normalize(b[key]);
     out[key] = (key in a)
       ? composeValue(normalize(a[key]), bv, applyFragment, [...path, key])
       : Utils.deepClone(bv);
   }
 
-  if ('length' in b) out.length = b.length;
-  else if ('length' in a && !bOps) out.length = a.length;
+  if ('$length' in b) out.$length = b.$length;
+  else if ('$length' in a && !bOps) out.$length = a.$length;
   return out;
 }
 

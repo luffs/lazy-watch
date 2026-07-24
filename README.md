@@ -79,7 +79,7 @@ LazyWatch.on(app, diff => console.log(diff));
 
 app.user.name = 'Bob';
 app.todos.push('ship it');
-// One batch: { user: { name: 'Bob' }, todos: { 0: 'ship it', length: 1 } }
+// One batch: { user: { name: 'Bob' }, todos: { 0: 'ship it', $length: 1 } }
 ```
 
 That holds even when you replace whole structures: arrays and objects are

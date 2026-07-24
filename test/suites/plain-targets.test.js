@@ -27,7 +27,7 @@ export default function register(runner) {
 
   runner.test('overwrite on a plain object should apply $splice fragments without trimming array keys', () => {
     const target = { items: ['b', 'c'] };
-    LazyWatch.overwrite(target, { items: { $splice: [[0, 0, ['a']]], length: 3 } });
+    LazyWatch.overwrite(target, { items: { $splice: [[0, 0, ['a']]], $length: 3 } });
     assertEquals(target.items, ['a', 'b', 'c'], 'ops applied; elements not deleted for being missing');
   });
 

@@ -69,7 +69,7 @@ LazyWatch.on(watched, 'not a function');
 // Patches allow partial updates, null deletions, and diff fragments
 LazyWatch.patch(watched, { age: 32 });
 LazyWatch.patch(watched, { age: null });
-LazyWatch.patch(watched, { tags: { 1: 'b', length: 2 } } as ChangeSet);
+LazyWatch.patch(watched, { tags: { 1: 'b', $length: 2 } } as ChangeSet);
 LazyWatch.overwrite(watched, { name: 'Bob' });
 
 const plain = { a: 1, b: 2, c: { d: 3 } };
@@ -159,9 +159,9 @@ new LazyWatch(42);
 new LazyWatch(null);
 
 // Utils
-const isDiff: boolean = LazyWatch.Utils.isArrayDiff({ 0: 'a', length: 1 });
+const isDiff: boolean = LazyWatch.Utils.isArrayDiff({ 0: 'a', $length: 1 });
 void isDiff;
-LazyWatch.Utils.reviveArrayDiffs({ items: { 1: 'b', length: 2 } });
+LazyWatch.Utils.reviveArrayDiffs({ items: { 1: 'b', $length: 2 } });
 const cloned: User = LazyWatch.Utils.deepClone(user);
 void cloned;
 const isObj: boolean = LazyWatch.Utils.isObjectOrArray([]);

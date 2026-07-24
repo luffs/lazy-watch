@@ -670,10 +670,10 @@ LazyWatch.composeDiffs({ c: { x: 1 } }, { c: null });
 // { c: null } — the newer deletion wins
 
 LazyWatch.composeDiffs(
-  { items: { $splice: [[1, 1]], length: 2 } },
-  { items: { $splice: [[0, 0, ['a']]], length: 3 } }
+  { items: { $splice: [[1, 1]], $length: 2 } },
+  { items: { $splice: [[0, 0, ['a']]], $length: 3 } }
 );
-// { items: { $splice: [[1, 1], [0, 0, ['a']]], length: 3 } } — ops concatenate
+// { items: { $splice: [[1, 1], [0, 0, ['a']]], $length: 3 } } — ops concatenate
 ```
 
 Composition is not defined for every pair. Two sequences have no
@@ -773,7 +773,7 @@ Array changes are emitted as index-keyed fragments rather than full arrays:
 ```js
 const data = new LazyWatch({ items: ['a'] });
 data.items.push('b');
-// Emits: { items: { 1: 'b', length: 2 } }
+// Emits: { items: { 1: 'b', $length: 2 } }
 ```
 
 Structural mutations — `splice`, `unshift`, and `shift` — are emitted as
@@ -782,8 +782,8 @@ compact `$splice` ops instead of re-emitting every shifted index:
 ```js
 const data = new LazyWatch({ items: ['b', 'c'] });
 data.items.unshift('a');
-// Emits: { items: { $splice: [[0, 0, ['a']]], length: 3 } }
-// (not { 0: 'a', 1: 'b', 2: 'c', length: 3 })
+// Emits: { items: { $splice: [[0, 0, ['a']]], $length: 3 } }
+// (not { 0: 'a', 1: 'b', 2: 'c', $length: 3 })
 ```
 
 Each op is `[start, deleteCount, items]`, applied by `patch`/`overwrite`
@@ -849,23 +849,33 @@ of storing it verbatim as a plain object:
 
 ```js
 const receiver = new LazyWatch({}); // never saw `items` before
-LazyWatch.patch(receiver, { items: { 1: 'b', length: 2 } });
-Array.isArray(receiver.items); // true — not { 1: 'b', length: 2 }
+LazyWatch.patch(receiver, { items: { 1: 'b', $length: 2 } });
+Array.isArray(receiver.items); // true — not stored as a plain object
 ```
 
-Detection requires the fragment to carry a numeric `length` plus at least one
-index key, and only applies where the target has no existing container — an
-existing plain object is always merged as an object (target shape wins), and
-data like `{ length: 5 }` alone is never converted. Array diffs emitted by this
-version always include `length`, so fragments are self-describing on the wire.
+Detection keys on the fragment's numeric `$length` marker, and revival only
+applies where the target has no existing container — an existing plain
+object is always merged as an object (target shape wins; the fragment's
+`$length` and `$splice` markers are dropped there rather than landing as
+data). Array diffs emitted by this version always include `$length`, so
+fragments are self-describing on the wire — a pure truncation
+(`{ $length: 1 }`) revives correctly too.
 
-For repairing data that older versions stored in the corrupted object form, the
-detection and revival helpers are exposed:
+Because `$length` is a [reserved name](#supported-values) that can never
+appear in watched state, plain data is never mistaken for a fragment: an
+array-like object (`{ 0: 'x', length: 2 }`) is ordinary state, syncs as the
+object it is, and its `length` key is just data.
+
+The detection and revival helpers are exposed:
 
 ```js
-LazyWatch.Utils.isArrayDiff({ 0: 'a', length: 1 }); // true
-LazyWatch.Utils.reviveArrayDiffs(storedState);      // deep-revives, copy-on-write
+LazyWatch.Utils.isArrayDiff({ 0: 'a', $length: 1 }); // true
+LazyWatch.Utils.reviveArrayDiffs(storedState);       // deep-revives, copy-on-write
 ```
+
+(They speak the current `$length`-marked format. Data corrupted by pre-4.2
+versions — fragments stored verbatim as objects — carries the old
+`length`-marked form; repair it with a 4.x release before upgrading.)
 
 For best results, keep replicas structurally aligned: initialize new fields
 everywhere (e.g. `task.assignees ??= []`) before mutating them.
@@ -937,6 +947,18 @@ A few more wire-safety rules, all enforced with a `TypeError` at write time:
   watched state, and `patch`/`overwrite` refuse diffs containing
   them, so a malicious or corrupt diff received over the network cannot cause
   prototype pollution
+- **`$splice` and `$length` are reserved by the wire format** — they mark
+  [structural array ops and array lengths](#array-diffs-and-shape-drift), so
+  every receiver's applier consumes them on arrays and drops them everywhere
+  else. Either key in state would live on the sender and nowhere else, so
+  both are rejected at write time. Inside a diff they are of course still
+  the format itself — senders emit them and
+  `patch`/`overwrite`/`composeDiffs` accept them as always. (Items *inside*
+  a `$splice` op are full values entering state, so they are held to the
+  state rules even in a diff.) Because the fragment marker is a reserved
+  key rather than a data shape, array-like objects such as
+  `{ 0: 'x', length: 2 }` are ordinary, syncable state — their `length` is
+  just data
 - **`Object.defineProperty` is tracked; everything exotic is rejected** — a
   descriptor whose net effect equals a plain assignment (a data value whose
   property stays enumerable, writable, and configurable; attributes absent

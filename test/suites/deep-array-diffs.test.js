@@ -64,13 +64,13 @@ export default function register(runner) {
 
     src.list = [1, 2, 3];        // growth
     await wait(10);
-    assertObjectEqual(diffs[0], { list: { 2: 3, length: 3 } }, 'growth should record the new index and length');
+    assertObjectEqual(diffs[0], { list: { 2: 3, $length: 3 } }, 'growth should record the new index and length');
     assertConverged(src, dst, 'after growth');
     assertEquals(plain.list, [1, 2, 3], 'plain mirror after growth');
 
     src.list = [9];              // shrink + change
     await wait(10);
-    assertObjectEqual(diffs[1], { list: { 0: 9, length: 1 } }, 'shrink should record the changed index and new length');
+    assertObjectEqual(diffs[1], { list: { 0: 9, $length: 1 } }, 'shrink should record the changed index and new length');
     assertConverged(src, dst, 'after shrink');
     assertEquals(plain.list, [9], 'plain mirror after shrink');
     LazyWatch.dispose(src);
@@ -103,7 +103,7 @@ export default function register(runner) {
     src.matrix = [[1, 2], [3, 5]];
     await wait(10);
 
-    assertObjectEqual(diff, { matrix: { 1: { 1: 5, length: 2 } } },
+    assertObjectEqual(diff, { matrix: { 1: { 1: 5, $length: 2 } } },
       'only the changed inner index should be recorded');
     assertConverged(src, dst);
     LazyWatch.dispose(src);

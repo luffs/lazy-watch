@@ -4,6 +4,86 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
+## [5.0.0] - 2026-07-24
+
+**Breaking wire-format change.** Array fragments now carry their length
+under the reserved `$length` marker instead of the `length` key
+(`{ 1: 'b', $length: 2 }`, `{ $splice: [[0, 0, ['a']]], $length: 3 }`).
+The old form overloaded a legal data key: a plain object that happened to
+look like `{ 0: 'x', length: 2 }` was byte-for-byte an array fragment on
+the wire, so receivers revived it into a real array while the sender kept
+an object — a silent-desync hole that no state-side validation could fully
+close (the shape could always be assembled incrementally from legal
+writes). With the marker moved to a reserved key, the ambiguity is gone
+structurally: array-like objects are ordinary, syncable state, and
+fragments can never be mistaken for data.
+
+All replicas must upgrade together — 4.x receivers do not understand
+`$length` fragments, and there is deliberately no legacy acceptance of
+`length`-marked fragments (accepting them would reintroduce the desync for
+exactly the array-like data this release legalizes). Diffs persisted by
+4.x (send buffers, stored undo histories) cannot be applied by this
+version; resync with `snapshot` + `overwrite` instead.
+
+### Changed
+
+- **`$length` replaces `length` as the array-fragment marker** in emitted
+  diffs, inverse diffs, `$splice` fragments, and everything
+  `patch`/`overwrite`/`composeDiffs` consume. `length` keys in diffs are
+  now ordinary data everywhere
+- **`$splice` and `$length` are reserved property names** in watched
+  state, joining `__proto__` and friends: rejected at every entry point
+  (assignment, `defineProperty`, spliced-in items, the constructor) with a
+  `TypeError` naming the key and path. Receivers consume or drop these
+  keys instead of storing them, so state carrying them could never arrive
+  on a mirror. Being key-level, the check cannot be bypassed by building a
+  value incrementally
+- `Utils.assertSupported` gained an internal diff-context flag, exposed as
+  `Utils.assertSupportedDiff(value, path)`: same rules, except the wire
+  format's reserved keys are allowed. Applier and `composeDiffs` sources
+  validate through it. `Utils.isReservedDiffKey(key)` is exposed alongside
+  `isUnsafeKey`; `Utils.isArrayDiff`/`reviveArrayDiffs` now speak the
+  `$length`-marked format (data corrupted by pre-4.2 versions carries the
+  old form — repair it with a 4.x release before upgrading)
+
+### Fixed
+
+- **`$splice` in watched state silently desynced every mirror.** A
+  property named `$splice` was recorded and emitted by the sender, then
+  dropped by every applier (proxy and plain targets alike), leaving the
+  sender holding a value no replica had. Now rejected as a reserved name
+  (see above)
+- **Array-like objects desynced mirrors.** `{ 0: 'x', length: 2 }` in
+  state was emitted as bytes identical to an array fragment, so receivers
+  without the field revived it into a real array while the sender kept an
+  object. Solved structurally by the `$length` rename rather than by
+  validation: such objects are now legal state and sync as the objects
+  they are, however they are built
+- **A rejected `splice`/`unshift` item could leave the array corrupted.**
+  Inserted items were validated only on the compact `$splice` recording
+  path; the two fallback paths (inverse recording enabled, or pending
+  index writes on that array) ran the native method first, so its shift
+  writes landed before the per-index set trap rejected the bad item —
+  `['b','c'].splice(0, 0, new Map())` threw with the array left as
+  `['b','b','c']`. Items are now validated ahead of every branch,
+  restoring the documented guarantee that a rejected operation leaves
+  state untouched
+- **Hostile `$splice` op items are rejected atomically at entry.** Items
+  inside a `$splice` op are full values entering state, so diff validation
+  holds them to the state rules (no reserved keys, no collection types).
+  Previously a diff carrying a poisoned op item could apply sibling keys
+  before throwing mid-application on proxy targets, and applied entirely
+  on plain targets — the same diff now fails up front on both, leaving
+  targets untouched
+
+### Added
+
+- **Pure-truncation fragments revive.** `{ $length: n }` with no index
+  keys is unambiguous now that the marker is reserved, so a truncation
+  arriving where the receiver lacks the field revives into a real array —
+  the old `{ length: n }` form was indistinguishable from data and was
+  stored verbatim as an object
+
 ## [4.2.0] - 2026-07-24
 
 Deep diffs now cover arrays: replacing an array with a freshly built one

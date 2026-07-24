@@ -206,6 +206,15 @@ export class ProxyHandler {
       );
     }
 
+    // The wire format claims these names for structural array ops and
+    // lengths, so every receiver's applier consumes or drops them — the
+    // value would live on the sender and nowhere else
+    if (Utils.isReservedDiffKey(prop)) {
+      throw new TypeError(
+        `LazyWatch cannot set reserved property name "${prop}": it belongs to the diff wire format (structural array ops and lengths), so receivers consume or drop it instead of storing it as data, and mirrors desync silently. Rename the property.`
+      );
+    }
+
     // Resolve if value is a proxy
     value = this.resolveIfProxy(value);
 
@@ -405,6 +414,21 @@ export class ProxyHandler {
     const native = Array.prototype[method];
     const len = target.length;
 
+    // Inserted items are full values landing in state, so validate them
+    // before anything mutates. This has to happen ahead of the fallback
+    // branches below: those run the native method straight away, and the
+    // per-index set traps would then reject mid-splice, after the shift
+    // writes had already moved elements.
+    const inserted = method === 'splice' ? args.slice(2)
+      : method === 'unshift' ? args
+      : [];
+    if (inserted.length) {
+      const itemPath = [...path, method];
+      for (const item of inserted) {
+        Utils.assertSupported(this.resolveIfProxy(item), itemPath);
+      }
+    }
+
     // Inverse tracking disables the compact form entirely: a $splice op
     // cannot be correctly interleaved with per-key inverse entries
     // (receivers apply $splice before a node's other keys, breaking
@@ -444,17 +468,12 @@ export class ProxyHandler {
     // the node's other keys, so earlier writes must not share a node with
     // a later op. Consecutive ops append to the same $splice list.
     const node = this.#diffTracker.getDiffObject(path);
-    const clean = Object.keys(node).every(key => key === '$splice' || key === 'length');
+    const clean = Object.keys(node).every(key => key === '$splice' || key === '$length');
     if (!clean) {
       return native.apply(receiver, args);
     }
 
-    // Validate before mutating so a rejected item leaves state untouched
-    // (assertSupported restores the path array, so it is safe to reuse)
-    const itemPath = [...path, method];
-    for (const item of items) {
-      Utils.assertSupported(item, itemPath);
-    }
+    // Items were validated above, before any branch could mutate
 
     this.#suppress = true;
     let result;
@@ -470,7 +489,7 @@ export class ProxyHandler {
       deleteCount,
       items.map(item => Utils.isObjectOrArray(item) ? Utils.deepClone(item) : item)
     ]);
-    node.length = target.length;
+    node.$length = target.length;
     this.#eventEmitter.scheduleEmit();
     return result;
   }
@@ -534,11 +553,16 @@ export class ProxyHandler {
   #recordChange(target, prop, value, path) {
     const diff = this.#diff(path);
 
-    // Handle array index updates when length was previously set
-    if (typeof diff.length === 'number') {
+    // An array's `length` is recorded in the diff under the wire format's
+    // `$length` marker; `length` on a plain object is ordinary data
+    const isArrayLength = Array.isArray(target) && prop === 'length';
+    const diffKey = isArrayLength ? '$length' : prop;
+
+    // Handle array index updates when $length was previously set
+    if (typeof diff.$length === 'number') {
       const index = parseInt(prop, 10);
-      if (!isNaN(index) && diff.length <= index) {
-        diff.length = index + 1;
+      if (!isNaN(index) && diff.$length <= index) {
+        diff.$length = index + 1;
       }
     }
 
@@ -546,12 +570,13 @@ export class ProxyHandler {
     const clonedValue = Utils.isObjectOrArray(value) ? Utils.deepClone(value) : value;
     const isArrayIndex = Array.isArray(target) && prop !== 'length' && /^\d+$/.test(String(prop));
 
-    // Capture pre-change values before the writes below
+    // Capture pre-change values before the writes below (inverse diffs are
+    // wire fragments, so they carry the same $length marker)
     if (this.#inverseActive()) {
       this.#diffTracker.recordInverse(
-        path, prop, prop in target ? target[prop] : undefined, clonedValue);
+        path, diffKey, prop in target ? target[prop] : undefined, clonedValue);
       if (isArrayIndex) {
-        this.#diffTracker.recordInverse(path, 'length', target.length);
+        this.#diffTracker.recordInverse(path, '$length', target.length);
       }
     }
 
@@ -564,15 +589,15 @@ export class ProxyHandler {
     // The diff copy may diverge from the state copy: a recreation over a
     // container destroyed earlier this batch carries null markers for the
     // receivers' stale keys, which must never enter local state
-    diff[prop] = this.#staleFilledDiffValue(clonedValue, path, prop);
+    diff[diffKey] = this.#staleFilledDiffValue(clonedValue, path, prop);
     target[prop] = clonedValue;
 
-    // Array fragments always carry `length`, so receivers can tell them apart
-    // from plain objects even when the field doesn't exist on their side.
-    // (push() never records length itself: the index assignment auto-updates
-    // it, making the explicit set a no-op.)
+    // Array fragments always carry `$length`, so receivers can tell them
+    // apart from plain objects even when the field doesn't exist on their
+    // side. (push() never records length itself: the index assignment
+    // auto-updates it, making the explicit set a no-op.)
     if (isArrayIndex) {
-      diff.length = target.length;
+      diff.$length = target.length;
     }
 
     this.#scheduleEmit();
@@ -603,8 +628,10 @@ export class ProxyHandler {
     // Validate external entry only; recursive calls and the set trap have
     // already validated their subtrees. (An explicit flag, not a
     // path-emptiness check: external calls may enter at a nested path.)
+    // Diff context: the source is a patch fragment, so `$splice` ops and
+    // index-keyed array fragments are the format, not corrupt data.
     if (!internal) {
-      Utils.assertSupported(this.resolveIfProxy(source));
+      Utils.assertSupportedDiff(this.resolveIfProxy(source));
     }
 
     // Get the target object (resolve proxy if needed)
@@ -638,19 +665,20 @@ export class ProxyHandler {
     if (Array.isArray(rawTarget) && Array.isArray(rawSource) && rawTarget.length !== rawSource.length) {
       this.#handleArrayLengthChange(rawTarget, rawSource.length, path);
       if (this.#inverseActive()) {
-        this.#diffTracker.recordInverse(path, 'length', rawTarget.length);
+        this.#diffTracker.recordInverse(path, '$length', rawTarget.length);
       }
       rawTarget.length = rawSource.length;
-      getDiff().length = rawSource.length;
+      getDiff().$length = rawSource.length;
       hasChanges = true;
     }
 
     for (const prop in rawSource) {
-      // $splice was applied above (or dropped when the target isn't an array:
-      // target shape wins, same as other drift cases). Reserved names in
-      // hostile wire data are never applied — writing them would mutate
-      // prototypes instead of data.
-      if (prop === '$splice' || Utils.isUnsafeKey(prop)) continue;
+      // $splice was applied above and $length is applied after the loop
+      // (both dropped when the target isn't an array: target shape wins,
+      // same as other drift cases). Reserved names in hostile wire data
+      // are never applied — writing them would mutate prototypes instead
+      // of data.
+      if (prop === '$splice' || prop === '$length' || Utils.isUnsafeKey(prop)) continue;
       if (rawSource[prop] === null || rawSource[prop] === undefined) {
         // Record the deletion so relaying mirrors propagate it downstream
         if (prop in rawTarget) {
@@ -698,7 +726,7 @@ export class ProxyHandler {
           this.#diffTracker.recordInverse(
             path, prop, prop in rawTarget ? prevValue : undefined, clonedValue);
           if (Array.isArray(rawTarget) && /^\d+$/.test(String(prop))) {
-            this.#diffTracker.recordInverse(path, 'length', rawTarget.length);
+            this.#diffTracker.recordInverse(path, '$length', rawTarget.length);
           }
         }
         this.#recordLoss(path, prop, prevValue);
@@ -708,10 +736,24 @@ export class ProxyHandler {
         rawTarget[prop] = clonedValue;
         // Keep array fragments self-describing (see #recordChange).
         if (Array.isArray(rawTarget) && /^\d+$/.test(String(prop))) {
-          getDiff().length = rawTarget.length;
+          getDiff().$length = rawTarget.length;
         }
         hasChanges = true;
       }
+    }
+
+    // A fragment's `$length` marker adopts the array's final length after
+    // its index keys have merged, matching the sender-side ordering (the
+    // real-array case was handled before the loop; on a non-array target
+    // the marker is dropped — target shape wins, like `$splice`)
+    if (Array.isArray(rawTarget) && !Array.isArray(rawSource) &&
+      typeof rawSource.$length === 'number' && rawTarget.length !== rawSource.$length) {
+      if (this.#inverseActive()) {
+        this.#diffTracker.recordInverse(path, '$length', rawTarget.length);
+      }
+      rawTarget.length = rawSource.$length;
+      getDiff().$length = rawSource.$length;
+      hasChanges = true;
     }
 
     // A hole in a real-array source means the slot is empty: for-in

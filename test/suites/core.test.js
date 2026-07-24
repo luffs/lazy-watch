@@ -67,7 +67,7 @@ export default function register(runner) {
 
     // The truncation cleanup drops the redundant `2: null` entry — the
     // receiver's length assignment trims that index anyway
-    assertEquals(changesCaught, { items: { 0: 10, 1: 3, length: 2 } });
+    assertEquals(changesCaught, { items: { 0: 10, 1: 3, $length: 2 } });
     LazyWatch.dispose(watched);
   });
 

@@ -3,10 +3,11 @@
 /**
  * Represents the changes detected by LazyWatch
  * Keys are property names, values are the new values (null for deletions).
- * Array changes appear as index-keyed fragments carrying a numeric `length`,
- * e.g. { 1: 'b', length: 2 }. Structural array mutations (splice, unshift,
- * shift) appear as compact op lists applied before the fragment's index keys:
- * { $splice: [[start, deleteCount, items]], length: n }.
+ * Array changes appear as index-keyed fragments carrying the wire format's
+ * numeric `$length` marker, e.g. { 1: 'b', $length: 2 }. Structural array
+ * mutations (splice, unshift, shift) appear as compact op lists applied
+ * before the fragment's index keys:
+ * { $splice: [[start, deleteCount, items]], $length: n }.
  */
 export type ChangeSet = Record<string, any>;
 
@@ -83,14 +84,31 @@ export interface UtilsInterface {
 
     /**
      * Deep-check a value entering watched state; throws a TypeError naming
-     * the offending path if it contains a rejected collection type.
-     * Date and RegExp pass as leaf values. Cycle-safe
+     * the offending path if it contains a rejected collection type or a
+     * reserved property name (including the wire format's `$splice` and
+     * `$length`). Date and RegExp pass as leaf values. Cycle-safe
      */
     assertSupported(value: any, path?: Array<string | number>): void;
 
     /**
-     * True for index-keyed array diff fragments, e.g. { 1: 'b', length: 2 }:
-     * a plain object whose keys are all array indices plus a numeric `length`
+     * Deep-check a diff rather than a value entering state: same rules,
+     * except that the wire format's own reserved keys (`$splice`,
+     * `$length`) are allowed. `$splice` op items are full values entering
+     * state, so they are still held to the state rules
+     */
+    assertSupportedDiff(value: any, path?: Array<string | number>): void;
+
+    /**
+     * True for property names the diff wire format reserves for itself
+     * (`$splice`, `$length`). Legal inside a diff, rejected in watched
+     * state
+     */
+    isReservedDiffKey(key: string): boolean;
+
+    /**
+     * True for array diff fragments, e.g. { 1: 'b', $length: 2 }: a plain
+     * object carrying a numeric `$length` whose other keys are all array
+     * indices and/or a `$splice` op list
      */
     isArrayDiff(val: any): boolean;
 

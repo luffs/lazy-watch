@@ -185,7 +185,7 @@ export class LazyWatch {
     }
     LazyWatch.#assertPlainTarget(target, 'overwrite');
     // Reject Map/Set/typed arrays etc. anywhere in the source
-    Utils.assertSupported(LazyWatch.resolveIfProxy(source));
+    Utils.assertSupportedDiff(LazyWatch.resolveIfProxy(source));
     LazyWatch.#patchObjectInto(target, source, true);
   }
 
@@ -211,7 +211,7 @@ export class LazyWatch {
     }
     LazyWatch.#assertPlainTarget(target, 'patch');
     // Reject Map/Set/typed arrays etc. anywhere in the source
-    Utils.assertSupported(LazyWatch.resolveIfProxy(source));
+    Utils.assertSupportedDiff(LazyWatch.resolveIfProxy(source));
     LazyWatch.#patchObjectInto(target, source);
   }
 
@@ -268,10 +268,10 @@ export class LazyWatch {
     }
 
     for (const prop in resolvedSource) {
-      // $splice handled above (or dropped when the target isn't an array);
-      // reserved names are never applied — writing them would mutate
-      // prototypes instead of data
-      if (prop === '$splice' || Utils.isUnsafeKey(prop)) continue;
+      // $splice handled above and $length after the loop (both dropped
+      // when the target isn't an array); reserved names are never
+      // applied — writing them would mutate prototypes instead of data
+      if (prop === '$splice' || prop === '$length' || Utils.isUnsafeKey(prop)) continue;
       if (resolvedSource[prop] === null || resolvedSource[prop] === undefined) {
         delete target[prop];
       } else if (Utils.isObjectOrArray(target[prop]) && Utils.isObjectOrArray(resolvedSource[prop]) &&
@@ -294,6 +294,14 @@ export class LazyWatch {
           : sourceValue;
         target[prop] = clonedValue;
       }
+    }
+
+    // A fragment's `$length` marker adopts the array's final length after
+    // its index keys have merged, matching the sender-side ordering; on a
+    // non-array target it is dropped — target shape wins, like `$splice`
+    if (Array.isArray(target) && !Array.isArray(resolvedSource) &&
+      typeof resolvedSource.$length === 'number') {
+      target.length = resolvedSource.$length;
     }
 
     // Overwrite semantics (overwrite on a normal object): delete target
@@ -352,8 +360,8 @@ export class LazyWatch {
     }
     // Reject Map/Set/typed arrays, non-finite numbers, and reserved names
     // anywhere in either diff, like the appliers do
-    Utils.assertSupported(a);
-    Utils.assertSupported(b);
+    Utils.assertSupportedDiff(a);
+    Utils.assertSupportedDiff(b);
     return composeFragments(a, b,
       (target, fragment) => LazyWatch.#patchObjectInto(target, fragment));
   }
