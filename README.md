@@ -14,6 +14,7 @@ Deep watch JavaScript objects using Proxy and emit diffs asynchronously. LazyWat
 - ⏱️ Asynchronous batched updates
 - 🔍 Detailed change tracking with diffs
 - 🧩 Support for nested objects and arrays
+- 📉 Minimal diffs, arrays included — replacing an array emits only the elements that changed
 - ⏸️ Pause and resume event emissions
 - 🤫 Silent mutations without triggering events
 - ↩️ Opt-in inverse diffs (undo) and atomic transactions with rollback
@@ -81,6 +82,18 @@ app.todos.push('ship it');
 // One batch: { user: { name: 'Bob' }, todos: { 0: 'ship it', length: 1 } }
 ```
 
+That holds even when you replace whole structures: arrays and objects are
+diffed deeply, so assigning a freshly built value — a mapped API response,
+a poller's latest snapshot — emits only what actually changed:
+
+```js
+const stats = new LazyWatch({ procs: [{ name: 'api', cpu: 1 }, { name: 'db', cpu: 0 }] });
+LazyWatch.on(stats, diff => console.log(diff));
+
+stats.procs = [{ name: 'api', cpu: 2 }, { name: 'db', cpu: 0 }];
+// Emits just: { procs: { 0: { cpu: 2 } } } — unchanged elements aren't re-sent
+```
+
 Diffs are plain JSON — deletions are represented as `null` — so they travel
 over any transport, and applying them to another instance keeps a mirror in
 sync:
@@ -121,8 +134,9 @@ semantics, edge cases, and examples for each — lives in
 Two reference sections are worth reading before shipping sync:
 
 - [Array diffs and shape drift](docs/API.md#array-diffs-and-shape-drift) —
-  how array changes are encoded (index fragments, compact `$splice` ops,
-  wholesale values) and how replicas with different shapes converge
+  how array changes are encoded (element-wise diffing of assigned arrays,
+  index fragments, compact `$splice` ops) and how replicas with different
+  shapes converge
 - [Supported values](docs/API.md#supported-values) — what belongs in watched
   state, what is rejected loudly and why, and the symbol-key escape hatch
   for local-only data

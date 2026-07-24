@@ -35,7 +35,7 @@ CI (`.github/workflows/test.yml`) runs tests on Node 22/24/26 and Bun (invoked a
 ```bash
 npm run test:size
 ```
-Bundles/minifies via `npx esbuild`, gzips, and fails if the gzipped size exceeds the budget in `scripts/size.js` (8 kB; ~7.2 kB actual as of the undo grouping/persistence work). When the printed size drifts from the "~7 kB min+gzip" claim, update README.md along with the budget.
+Bundles/minifies via `npx esbuild`, gzips, and fails if the gzipped size exceeds the budget in `scripts/size.js` (8 kB; ~7.0 kB actual as of the deep-array-diff work). When the printed size drifts from the "~7 kB min+gzip" claim, update README.md along with the budget.
 
 ## Documentation Layout
 
@@ -169,7 +169,7 @@ The constructor returns a Proxy, not the LazyWatch instance. This means:
 - `LazyWatch.createUndoManager(watched, { limit })` layers undo/redo stacks on top of inverse diffs (see the UndoManager component above); `LazyWatch.silent` changes bypass emission and are never recorded as steps
 
 ### Array Handling
-- Real arrays in diffs are wholesale values (fragments are the merge form): the appliers replace them outright rather than merging elements — including elements inside them, which are full values too. Null markers inside are dropped during the write (`Utils.cloneWithoutNulls`), which is how inverse-diff arrays encode deletions; a deep-equal re-application records and emits nothing (echo stability, `Utils.deepEqual`)
+- Real arrays in diffs are full values (fragments are the merge form): they mean "this slot is exactly this array", elements included. But array-over-array is **diffed element-wise** on proxy targets (assignment via the set trap, `overwrite`/`patch` appliers alike): length is adopted with trap-equivalent semantics (`#handleArrayLengthChange`), unchanged elements are untouched (identity preserved — cached child proxies stay valid), and only real differences are recorded, so the wire carries a minimal fragment instead of the wholesale array. A `wholesale` flag threads through `overwrite()`: it is set by the set trap (an assigned value is a full value) and inside any real-array source, and forces same-kind-only merging plus delete-missing even in patch mode — receivers converge to the exact wholesale outcome while re-emitting compact fragments (relay chains stay compact). A real array is emitted only when there is no array to diff against (new property, or leaf/object slot becoming an array); a real array assigned over a plain *object* replaces it wholesale (merging would leave an object with index keys behind). Sparse-source holes clear the target slot like the wholesale write did. Null markers inside wholesale-applied arrays are dropped during the write (`Utils.cloneWithoutNulls`), which is how inverse-diff arrays encode deletions; a deep-equal re-application records and emits nothing (echo stability, `Utils.deepEqual`)
 - Array mutations (push, index writes) are tracked via length and index changes
 - `splice`/`unshift`/`shift` are intercepted in the `get` trap and recorded as compact `$splice` ops (`[start, deleteCount, items]` triples) instead of per-index writes; the mutation still executes as the native method through the proxy, because trap-driven slot-merge semantics keep cached child-proxy paths valid — raw splicing would move elements and stale them
 - Compact recording requires a clean diff node for that array (only `$splice`/`length` keys); otherwise the op falls back to per-index recording so ordering stays correct. Receivers apply `$splice` before merging a node's other keys

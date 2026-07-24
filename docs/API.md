@@ -578,10 +578,11 @@ exactly, applied and emitted to other listeners as one batch.
 Shared applier behavior, both targets: nested objects merge recursively,
 `null` (or `undefined`) values delete, objects/arrays from the source are
 deep-cloned (never aliased), index-keyed array fragments and `$splice` ops
-merge into arrays, a real source array is a wholesale replacement whose
-`length` the target adopts, and reserved prototype-polluting keys are
-refused. Validation runs before any mutation, so a rejected source leaves
-the target untouched.
+merge into arrays, a real source array makes the target array exactly
+match it (element-wise on proxies, so only real differences are recorded
+and emitted; the target adopts its `length`), and reserved
+prototype-polluting keys are refused. Validation runs before any
+mutation, so a rejected source leaves the target untouched.
 
 > `LazyWatch.patchObject` and `LazyWatch.overwriteObject` remain as
 > **deprecated aliases** delegating to `patch` and `overwrite` — existing
@@ -627,9 +628,12 @@ LazyWatch.overwrite(data, { a: 10, e: 5 });
 // Emits:  { a: 10, e: 5, b: null, c: null }
 ```
 
-Arrays are the exception: their elements are merged by index and never
-deleted for being missing, but a shorter source array truncates the target
-via its `length`.
+Arrays are trimmed via `length` rather than key-by-key: a shorter source
+array truncates the target. Elements merge by index with full-value
+semantics — keys an object element doesn't carry in the source are
+deleted, so the array ends up exactly matching the source — and only real
+differences are recorded and emitted (see
+[Array diffs](#array-diffs-and-shape-drift)).
 
 Use `overwrite` to force a replica into an authoritative state — applying
 a full snapshot on reconnect (see the
@@ -799,17 +803,36 @@ and a throwing `sort` comparator leaves the array untouched. Comparators
 see the raw elements — reads behave exactly as through the proxy — and must
 not mutate them.
 
-**Real arrays are wholesale values.** Index-keyed fragments are the *merge*
-form; when a diff carries an actual array (as emitted for
-`obj.list = [...]` replacements), receivers replace their array outright —
-elements included, since a replacement's elements are full values, not
-sub-diffs:
+**Real arrays are full values.** Index-keyed fragments are the *merge*
+form; when a diff carries an actual array, it means "this slot is now
+exactly this array" — elements included, since a full value's elements
+are full values too, not sub-diffs:
 
 ```js
 const mirror = new LazyWatch({ list: [{ a: 1 }] });
 LazyWatch.patch(mirror, { list: [{ b: 2 }] });
 mirror.list; // [{ b: 2 }] — not [{ a: 1, b: 2 }]
 ```
+
+Senders rarely put a real array on the wire, though: assigning an array
+over an existing array — `obj.list = [...]`, or `overwrite` with a
+snapshot containing arrays — is **diffed element-wise** and emitted as a
+minimal fragment. Unchanged elements are not re-sent (and keep their
+identity locally, so cached child proxies stay valid), changed object
+elements merge per key — with keys the new element doesn't carry deleted,
+as befits a full value — and length changes ride along:
+
+```js
+const data = new LazyWatch({ procs: [{ name: 'api', cpu: 1 }, { name: 'db', cpu: 0 }] });
+data.procs = [{ name: 'api', cpu: 2 }, { name: 'db', cpu: 0 }];
+// Emits: { procs: { 0: { cpu: 2 } } } — not the whole array
+```
+
+A real array is emitted only when there is no existing array to diff
+against: a newly created property, or a leaf/object slot becoming an
+array. A receiver applying such a wholesale array over an existing array
+converges to exactly the sender's value and re-emits the difference
+element-wise downstream, so relay chains stay compact.
 
 Re-applying an identical array is detected and records nothing, so
 bidirectional mirrors can't echo. Deleting a container and recreating it

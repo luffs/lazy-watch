@@ -243,12 +243,17 @@ export class ProxyHandler {
       this.#handleArrayLengthChange(target, value, path);
     }
 
-    // When assigning a new array to a property, treat it as replacement not merge
-    const isArrayReplacement = Array.isArray(currentValue) && Array.isArray(value) && currentValue !== value;
-
-    // Merge if both are objects (but not array replacement)
-    if (currentIsObject && valueIsObject && !isArrayReplacement) {
-      this.overwrite(receiver[prop], value, [...path, prop], true);
+    // Merge container-over-container writes: object over object, fragment
+    // over array, and array over array (element-wise, recording a minimal
+    // array fragment instead of the wholesale value). The exception is a
+    // real array assigned over a plain object — merging that would leave a
+    // plain object with index keys behind, so it replaces wholesale below.
+    // An assigned value is a full value, so the merge runs in wholesale
+    // mode: it must delete what the value doesn't carry even during patch
+    // application (structural-op slot writes ride through this trap).
+    const arrayOverObject = currentIsObject && Array.isArray(value) && !Array.isArray(currentValue);
+    if (currentIsObject && valueIsObject && !arrayOverObject) {
+      this.overwrite(receiver[prop], value, [...path, prop], true, true);
     } else if (currentValue !== value) {
       this.#recordChange(target, prop, value, path);
     }
@@ -582,8 +587,15 @@ export class ProxyHandler {
    *   diff is recorded where the subtree lives)
    * @param {boolean} internal - True for recursive calls and the set trap,
    *   whose subtrees are already validated
+   * @param {boolean} wholesale - True when `source` is a full value rather
+   *   than a patch fragment (set-trap assignments, and everything inside a
+   *   real-array source — the wire contract makes real arrays wholesale).
+   *   Containers still merge element-wise so the recorded diff stays
+   *   minimal, but only between same-kind containers, and missing keys are
+   *   deleted even in patch mode — giving receivers the exact wholesale
+   *   outcome
    */
-  overwrite(target, source, path = [], internal = false) {
+  overwrite(target, source, path = [], internal = false, wholesale = false) {
     if (!source || typeof source !== 'object') {
       throw new TypeError('Source must be an object');
     }
@@ -598,6 +610,9 @@ export class ProxyHandler {
     // Get the target object (resolve proxy if needed)
     const rawTarget = this.resolveIfProxy(target);
     const rawSource = this.resolveIfProxy(source);
+    // Inside a real-array source every entry is a full value, never a
+    // fragment; the whole subtree below it applies with wholesale semantics
+    wholesale = wholesale || Array.isArray(rawSource);
     let diff = null; // Lazy initialization
     let hasChanges = false;
 
@@ -616,14 +631,13 @@ export class ProxyHandler {
       hasChanges = true;
     }
 
-    // Track array length changes
+    // Track array length changes, with the same semantics as a `length`
+    // assignment through the trap: inverse capture and container-loss
+    // recording for truncated elements, and stale diff indices beyond the
+    // new length trimmed
     if (Array.isArray(rawTarget) && Array.isArray(rawSource) && rawTarget.length !== rawSource.length) {
+      this.#handleArrayLengthChange(rawTarget, rawSource.length, path);
       if (this.#inverseActive()) {
-        for (let i = rawSource.length; i < rawTarget.length; i++) {
-          if (i in rawTarget) {
-            this.#diffTracker.recordInverse(path, String(i), rawTarget[i]);
-          }
-        }
         this.#diffTracker.recordInverse(path, 'length', rawTarget.length);
       }
       rawTarget.length = rawSource.length;
@@ -649,13 +663,18 @@ export class ProxyHandler {
           hasChanges = true;
         }
       } else if (Utils.isObjectOrArray(rawTarget[prop]) && Utils.isObjectOrArray(rawSource[prop]) &&
-        !Array.isArray(rawSource[prop]) && !Array.isArray(rawSource)) {
-        // Merge patch fragments. Real arrays are excluded: a real array in
-        // a source is a wholesale value (fragments are the merge form), and
-        // inside one every entry is a full value too — merging either into
-        // the receiver's container would leave stale elements/keys alive.
-        // Those fall through to the wholesale branch below.
-        this.overwrite(rawTarget[prop], rawSource[prop], [...path, prop], true);
+        (wholesale
+          ? Array.isArray(rawTarget[prop]) === Array.isArray(rawSource[prop])
+          : !(Array.isArray(rawSource[prop]) && !Array.isArray(rawTarget[prop])))) {
+        // Merge containers instead of replacing them, so the recorded diff
+        // carries only real differences. In fragment context (a received
+        // diff), an object merges into an object or an array — but a real
+        // array is a wholesale value, so it only merges element-wise into
+        // another array, never into a plain object. In wholesale context
+        // every entry is a full value: same-kind containers merge (with
+        // missing keys deleted, giving the exact wholesale outcome), and a
+        // kind mismatch falls through to the replacement branch below.
+        this.overwrite(rawTarget[prop], rawSource[prop], [...path, prop], true, wholesale);
       } else if (rawTarget[prop] !== rawSource[prop]) {
         const prevValue = rawTarget[prop];
         // Re-applying an already-applied wholesale value must record and
@@ -695,8 +714,28 @@ export class ProxyHandler {
       }
     }
 
-    // Delete missing properties (unless in patch mode or target is array)
-    if (!this.#patchMode && !Array.isArray(rawTarget)) {
+    // A hole in a real-array source means the slot is empty: for-in
+    // skipped it above, but the wholesale outcome leaves that slot empty,
+    // so clear any element the target still holds there
+    if (Array.isArray(rawTarget) && Array.isArray(rawSource)) {
+      for (let i = 0; i < rawSource.length; i++) {
+        if (!(i in rawSource) && i in rawTarget) {
+          const prop = String(i);
+          if (this.#inverseActive()) {
+            this.#diffTracker.recordInverse(path, prop, rawTarget[prop]);
+          }
+          this.#recordLoss(path, prop, rawTarget[prop]);
+          getDiff()[prop] = null;
+          delete rawTarget[prop];
+          hasChanges = true;
+        }
+      }
+    }
+
+    // Delete missing properties (unless in patch mode or target is array).
+    // Wholesale context deletes even in patch mode: the source there is a
+    // full value, and keys it doesn't carry are gone
+    if ((!this.#patchMode || wholesale) && !Array.isArray(rawTarget)) {
       for (const prop in rawTarget) {
         if (Object.hasOwnProperty.call(rawTarget, prop) &&
           (rawSource[prop] === null || rawSource[prop] === undefined)) {

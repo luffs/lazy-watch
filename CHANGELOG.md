@@ -4,6 +4,43 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
+## [4.2.0] - 2026-07-24
+
+Deep diffs now cover arrays: replacing an array with a freshly built one
+emits only the elements that actually changed, instead of re-sending the
+whole array. The wire format is unchanged — receivers on older versions
+converge on the same state — and two array-convergence bugs found during
+the work are fixed. No API changes.
+
+### Changed
+
+- **Deep diffs now work for arrays**: assigning an array over an existing
+  array (`obj.list = [...]`) — and `overwrite`/`patch` with real arrays in
+  the source — is diffed element-wise instead of recorded wholesale. Only
+  real differences go on the wire as an index-keyed fragment (`{ 0: { cpu: 2 } }`
+  instead of the whole array), unchanged elements keep their identity (cached
+  child proxies stay valid), changed object elements merge per key with keys
+  missing from the new element deleted (full-value semantics, so receivers
+  converge to the exact wholesale outcome), and length changes ride along.
+  A real array is emitted only when there is no existing array to diff
+  against (new property, or a leaf/object slot becoming an array); receivers
+  applying such a wholesale array re-emit the difference element-wise, so
+  relay chains stay compact. The wire format is unchanged — fragments are
+  the form receivers always understood — so mixed-version replicas converge
+
+### Fixed
+
+- Relayed `$splice` ops with object elements could leave stale keys on the
+  receiver: the native splice's slot-shift writes merged shifted elements
+  into the old slot values without delete-missing during patch application
+  (sender `[{ b: 2 }]`, receiver `[{ a: 1, b: 2 }]`). Set-trap merges now
+  run with full-value semantics, so the shifted element replaces the slot
+  exactly and mirrors converge
+- Assigning a real array over a plain object (`obj.slot = [7, 8]` where
+  `slot` was `{ a: 1 }`) merged the array into the object, leaving a plain
+  object with index keys (`{ 0: 7, 1: 8 }`) instead of an array. It is now
+  a wholesale replacement, locally and on the wire
+
 ## [4.1.0] - 2026-07-21
 
 Feature and hardening release: `patch`/`overwrite` now work on normal
