@@ -22,7 +22,7 @@ export default function register(runner) {
     await wait(10);
 
     assertTrue(!Array.isArray(diff.list), 'diff should be a fragment, not a wholesale array');
-    assertObjectEqual(diff, { list: { 0: { cpu: 2 } } }, 'only the changed key of the changed element should be recorded');
+    assertObjectEqual(diff, { list: { 0: { cpu: 2 }, $length: 2 } }, 'only the changed key of the changed element should be recorded');
     assertEquals(LazyWatch.snapshot(watched).list[0].cpu, 2);
     LazyWatch.dispose(watched);
   });
@@ -86,7 +86,7 @@ export default function register(runner) {
     src.list = [{ a: 2 }];
     await wait(10);
 
-    assertObjectEqual(diff, { list: { 0: { a: 2, stale: null } } },
+    assertObjectEqual(diff, { list: { 0: { a: 2, stale: null }, $length: 1 } },
       'the dropped key should be recorded as a null deletion');
     assertEquals(LazyWatch.snapshot(src).list, [{ a: 2 }], 'no stale key locally');
     assertConverged(src, dst, 'mirror should drop the stale key too');
@@ -103,7 +103,7 @@ export default function register(runner) {
     src.matrix = [[1, 2], [3, 5]];
     await wait(10);
 
-    assertObjectEqual(diff, { matrix: { 1: { 1: 5, $length: 2 } } },
+    assertObjectEqual(diff, { matrix: { 1: { 1: 5, $length: 2 }, $length: 2 } },
       'only the changed inner index should be recorded');
     assertConverged(src, dst);
     LazyWatch.dispose(src);
@@ -118,7 +118,7 @@ export default function register(runner) {
     LazyWatch.overwrite(src, { procs: [{ name: 'api', cpu: 7 }, { name: 'worker', cpu: 0 }], other: 1 });
     await wait(10);
 
-    assertObjectEqual(diff, { procs: { 0: { cpu: 7 } } }, 'overwrite should diff arrays element-wise');
+    assertObjectEqual(diff, { procs: { 0: { cpu: 7 }, $length: 2 } }, 'overwrite should diff arrays element-wise');
     LazyWatch.dispose(src);
   });
 

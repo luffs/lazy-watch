@@ -39,10 +39,11 @@ export type Patch<T> = {
  * ancestor of it) is deleted they receive `null` (hence the nullable
  * parameter; narrow before use); when it is replaced wholesale by a leaf
  * value (string, number, boolean) they receive that value directly (cast
- * when handling this case). A listener under an array slot
- * that a structural op (`splice`/`unshift`/`shift`) or truncation displaced
- * receives `null` when the slot is gone and otherwise the full value now at
- * its path.
+ * when handling this case). While a listener sits below an array, that
+ * array's structural ops are recorded per index, so an element listener
+ * receives the exact diff for its slot; a slot truncated away or destroyed
+ * by a kind change delivers `null`. A container replacing the subtree is
+ * delivered as the full value, an empty `[]`/`{}` included.
  *
  * When the instance was created with `{ inverse: true }` (or has an undo
  * manager attached), listeners receive a second argument: the inverse diff
@@ -113,6 +114,24 @@ export interface UtilsInterface {
      * Cycle-safe
      */
     assertTrackable(value: any, path?: Array<string | number>): void;
+
+    /**
+     * True when a plain-object diff value carries the wire format's array
+     * markers (a numeric `$length` or a `$splice` op list) and so describes
+     * an array. Every array node a sender emits carries `$length`; an
+     * object without a marker arriving where the receiver holds an array
+     * is a plain object that replaced it
+     */
+    hasArrayMarker(value: any): boolean;
+
+    /**
+     * The merge-or-replace rule both appliers follow: true when `source`
+     * merges into `target`, false when it replaces it. Same-kind containers
+     * merge; a real array replaces a plain object; an unmarked object
+     * replaces an array; a marked fragment replaces a plain object with its
+     * revived array. In wholesale context only same-kind containers merge
+     */
+    canMerge(target: any, source: any, wholesale?: boolean): boolean;
 
     /**
      * True for property names the diff wire format reserves for itself

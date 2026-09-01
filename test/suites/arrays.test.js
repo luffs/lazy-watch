@@ -46,18 +46,25 @@ export default function register(runner) {
     LazyWatch.dispose(watched);
   });
 
-  runner.test('patch should leave genuine objects alone when the target has one', () => {
-    // Target shape wins: an existing plain object is merged into, not
-    // converted. (An array-like object is legal state now that `$length`
-    // marks fragments; the fragment's own `$length` is dropped on the
-    // non-array target instead of landing as data.)
-    const watched = new LazyWatch({ weird: { 0: 'x', length: 5 } });
+  runner.test('a marked fragment arriving on a plain object should replace it with the revived array', () => {
+    // `$length` is reserved, so a marked fragment can only come from a
+    // sender that holds an ARRAY at that path: the receiver's object is
+    // drift (or a kind change) and is replaced by the array the fragment
+    // describes. An unmarked object still merges as an object.
+    const watched = new LazyWatch({ weird: { 0: 'x', length: 5 }, plain: { a: 1 } });
+    const diffs = [];
+    LazyWatch.on(watched, d => diffs.push(d));
 
-    LazyWatch.patch(watched, { weird: { 1: 'z', $length: 5 } });
+    LazyWatch.patch(watched, { weird: { 1: 'z', $length: 5 }, plain: { 0: 'zero' } });
 
     const weird = LazyWatch.resolveIfProxy(watched.weird);
-    assertTrue(!Array.isArray(weird), 'existing object should not become an array');
-    assertEquals(weird, { 0: 'x', 1: 'z', length: 5 });
+    assertTrue(Array.isArray(weird), 'the marked fragment should revive into an array');
+    assertEquals(weird.length, 5);
+    assertEquals(weird[1], 'z');
+    assertEquals(LazyWatch.resolveIfProxy(watched.plain), { a: 1, 0: 'zero' }, 'unmarked objects merge');
+    LazyWatch.flush(watched);
+    assertEquals(diffs.length, 1);
+    assertTrue(Array.isArray(diffs[0].weird), 'the replacement is re-emitted as a real array');
     LazyWatch.dispose(watched);
   });
 
@@ -497,7 +504,7 @@ export default function register(runner) {
     LazyWatch.on(patched, d => diffs.push(d));
     LazyWatch.on(overwritten, d => diffs.push(d));
 
-    LazyWatch.patch(patched, { arr: { 1: null } }); // a fragment without the marker
+    LazyWatch.patch(patched, { arr: { 1: null, $length: 3 } });
     await wait(5);
     LazyWatch.overwrite(overwritten, { arr: [1, , 3] }); // sparse source: the hole clears slot 1
     await wait(5);

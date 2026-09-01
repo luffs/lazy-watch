@@ -21,7 +21,7 @@ Deep watch JavaScript objects using Proxy and emit diffs asynchronously. LazyWat
 - 🕑 Built-in undo/redo manager with configurable history depth
 - 📦 Efficient patching mechanism
 - 🌐 Works in browsers and Node.js
-- 🪶 Tiny: ~8 kB min+gzip, zero dependencies, no build step
+- 🪶 Tiny: ~9 kB min+gzip, zero dependencies, no build step
 
 ## Scope and Non-Goals
 
@@ -51,7 +51,7 @@ npm install lazy-watch
 ```
 
 The published package is plain ES modules — the same readable source that
-lives in `src/`. No build step, no dependencies, about 8 kB min+gzip for
+lives in `src/`. No build step, no dependencies, about 9 kB min+gzip for
 the whole library (checked in CI with `npm run test:size`).
 
 ## Quick Start
@@ -91,7 +91,7 @@ const stats = new LazyWatch({ procs: [{ name: 'api', cpu: 1 }, { name: 'db', cpu
 LazyWatch.on(stats, diff => console.log(diff));
 
 stats.procs = [{ name: 'api', cpu: 2 }, { name: 'db', cpu: 0 }];
-// Emits just: { procs: { 0: { cpu: 2 } } } — unchanged elements aren't re-sent
+// Emits just: { procs: { 0: { cpu: 2 }, $length: 2 } } — unchanged elements aren't re-sent
 ```
 
 Diffs are plain JSON — deletions are represented as `null` — so they travel
@@ -169,6 +169,14 @@ TypeScript definitions, `npm run test:coverage` enforces coverage thresholds
 (~98% statements at the time of writing), `npm run test:size` verifies the
 bundle-size budget, and `npm run benchmark:check` runs the performance suite
 with an order-of-magnitude regression guard.
+
+The test run also includes a short fixed-seed pass of the **convergence
+fuzzer** (`test/fuzz/`): random mutation sequences — nested writes,
+structural array ops, `patch`/`overwrite`, held handles, transactions —
+checked after every batch against a JSON-fed mirror, a relay of that
+mirror, a plain-object mirror, `composeDiffs` buffers, inverse diffs,
+nested listeners, and the undo manager. `npm run fuzz` runs a longer
+randomized campaign; a failure prints the seed and a reproduction command.
 
 ## Contributing
 

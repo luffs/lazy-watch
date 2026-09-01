@@ -4,6 +4,13 @@ import {Utils} from "./utils.js";
 export class DiffTracker {
   #masterDiff = {};
   #masterInverse = {};
+  // Inverse nodes that are full clones of a replaced container. A clone
+  // is a complete record: nothing below it needs recording (restoring it
+  // restores everything), and no later bookkeeping for whatever now lives
+  // at that path — possibly a container of another kind — may land on it.
+  // Only null-fill against later replacements still applies (keys the new
+  // value introduces must be deleted on undo).
+  #completeInverse = new WeakSet();
   // Containers destroyed this batch (deleted, replaced by a leaf, or
   // truncated away), keyed by their path. If the same slot is recreated as
   // an object later in the batch, the recreation overwrites the recorded
@@ -21,20 +28,63 @@ export class DiffTracker {
   // option, and temporarily by LazyWatch.transaction().
   inverseEnabled = false;
 
-  constructor() {}
+  // The live watched tree, walked alongside a path so diff nodes that
+  // stand for arrays can be stamped with `$length` as they are created
+  #root;
 
   /**
-   * Get or create a nested diff object at the given path
+   * @param {Object|Array} root - The watched object (kept by reference)
+   */
+  constructor(root) {
+    this.#root = root;
+  }
+
+  /**
+   * Get or create a nested diff object at the given path.
+   *
+   * Every node created for an array — the target of the write and every
+   * array ancestor on the way down — is stamped with the array's current
+   * `$length`, so array nodes are self-describing on the wire even when
+   * only something below them changed. Receivers rely on the marker to
+   * tell an array fragment (merge) from a plain object replacing an array
+   * (which carries no marker). Length-changing ops on the array itself
+   * keep the stamp current.
    */
   getDiffObject(path = []) {
-    let diffObj = this.#masterDiff;
+    let node = this.#masterDiff;
+    let live = this.#root;
+    // The root's kind is fixed for the instance's life
+    this.#stampLength(node, live);
     for (let i = 0; i < path.length; i++) {
-      if (!diffObj[path[i]]) {
-        diffObj[path[i]] = {};
+      const seg = path[i];
+      live = Utils.isObjectOrArray(live) ? live[seg] : undefined;
+      if (!node[seg]) {
+        node = node[seg] = {};
+        // Stamp only nodes created here: a node is created for a path
+        // whose own value has not been recorded this batch, so the live
+        // value there is the batch-start value and its kind is the kind
+        // the node describes. An existing node is never re-stamped.
+        this.#stampLength(node, live);
+      } else {
+        node = node[seg];
       }
-      diffObj = diffObj[path[i]];
     }
-    return diffObj;
+    return node;
+  }
+
+  /**
+   * A node created for a deeper write records the length as it stands
+   * then, and every later length change on the array itself restates it.
+   * In the inverse that makes the stamp the pre-batch length, since any
+   * earlier length change would already have recorded one.
+   */
+  #stampLength(node, live) {
+    // A real array in the diff (assigned wholesale this batch) is a full
+    // value: its own length is the marker, and receivers ignore `$length`
+    // on real arrays anyway
+    if (Array.isArray(live) && !Array.isArray(node) && typeof node.$length !== 'number') {
+      node.$length = live.length;
+    }
   }
 
   /**
@@ -60,16 +110,37 @@ export class DiffTracker {
    */
   recordInverse(path, prop, prev, next) {
     if (!this.inverseEnabled) return;
-    const node = this.#inverseNode(path);
-    if (node === null) return; // covered by a recorded ancestor value
+    const found = this.#inverseNode(path);
+    if (found === null) return; // covered by a recorded ancestor value
+    const { node, complete, live } = found;
+
+    if (complete) {
+      // Below a complete record the pre-batch values are all captured, but
+      // undo applies it with merge semantics onto the post-batch state: a
+      // key it does not carry is new since the batch started and must be
+      // recorded as null so undo deletes it. Unless the batch has put a
+      // container of the other kind there — undo then replaces it
+      // wholesale, and an object key would only corrupt an array fragment
+      // (or the reverse)
+      if (Utils.hasArrayMarker(node) !== Array.isArray(live)) return;
+      if (!(prop in node)) {
+        node[prop] = null;
+      } else if (Utils.isObjectOrArray(node[prop]) && Utils.isObjectOrArray(next)) {
+        // A recorded container replaced by a new one of the same kind:
+        // keys the new value introduces must be deleted on undo too
+        this.#nullFill(node[prop], next);
+      }
+      return;
+    }
 
     const prevMissing = prev === undefined;
     if (!(prop in node)) {
       node[prop] = prevMissing
         ? null
         : (Utils.isObjectOrArray(prev) ? Utils.deepClone(prev) : prev);
-      if (!prevMissing && Utils.isObjectOrArray(node[prop]) && Utils.isObjectOrArray(next)) {
-        this.#nullFill(node[prop], next);
+      if (!prevMissing && Utils.isObjectOrArray(node[prop])) {
+        this.#completeInverse.add(node[prop]);
+        if (Utils.isObjectOrArray(next)) this.#nullFill(node[prop], next);
       }
       return;
     }
@@ -80,8 +151,15 @@ export class DiffTracker {
     if (existing === null || !Utils.isObjectOrArray(existing) || Array.isArray(existing)) {
       return;
     }
-    if (!prevMissing && Utils.isObjectOrArray(prev)) {
+    // A complete clone needs no gap-fill (and `prev` here is already a
+    // post-change value, not the pre-batch one); a partial fragment is
+    // backfilled from the live container it stands for
+    if (!this.#completeInverse.has(existing) && !prevMissing && Utils.isObjectOrArray(prev)) {
       this.#gapFill(existing, prev);
+      // A container is only recorded at its own key when it is deleted or
+      // replaced wholesale, so the backfilled fragment now describes the
+      // entire pre-batch container: complete, like a clone
+      this.#completeInverse.add(existing);
     }
     if (Utils.isObjectOrArray(next)) {
       this.#nullFill(existing, next);
@@ -90,22 +168,39 @@ export class DiffTracker {
 
   /**
    * Walk to (creating as needed) the inverse node for a path. Returns null
-   * when an ancestor is already recorded as a complete value (leaf, null,
-   * or wholesale array) — changes below it are covered by restoring it.
+   * when an ancestor is already recorded as a leaf, null, or wholesale
+   * array — changes below it are covered by restoring it. A complete
+   * object clone on the way is descended (its nested plain objects are
+   * complete too) with `complete` set, so the caller records only what a
+   * merge-applied clone cannot undo on its own. Array nodes are stamped
+   * with their pre-batch `$length` like forward nodes, so an inverse
+   * fragment stays self-describing.
+   * @returns {{ node: Object, complete: boolean, live: * } | null} —
+   *   `live` is the current value at `path`, for kind checks
    */
   #inverseNode(path) {
-    let cur = this.#masterInverse;
+    let node = this.#masterInverse;
+    let live = this.#root;
+    let complete = false;
+    this.#stampLength(node, live);
     for (let i = 0; i < path.length; i++) {
       const seg = path[i];
-      if (!(seg in cur)) {
-        cur = cur[seg] = {};
+      live = Utils.isObjectOrArray(live) ? live[seg] : undefined;
+      if (!(seg in node)) {
+        // Below a complete clone every container the batch created was
+        // recorded as null at its own key, so a missing segment cannot
+        // occur; created nodes elsewhere are stamped as in getDiffObject
+        if (complete) return null;
+        node = node[seg] = {};
+        this.#stampLength(node, live);
         continue;
       }
-      const next = cur[seg];
+      const next = node[seg];
       if (!Utils.isObjectOrArray(next) || Array.isArray(next)) return null;
-      cur = next;
+      if (this.#completeInverse.has(next)) complete = true;
+      node = next;
     }
-    return cur;
+    return { node, complete, live };
   }
 
   /**
@@ -121,7 +216,13 @@ export class DiffTracker {
           ? Utils.deepClone(prev[key])
           : prev[key];
       } else if (Utils.isObjectOrArray(fragment[key]) && !Array.isArray(fragment[key]) &&
-        Utils.isObjectOrArray(prev[key])) {
+        !this.#completeInverse.has(fragment[key]) && Utils.isObjectOrArray(prev[key]) &&
+        Utils.hasArrayMarker(fragment[key]) === Array.isArray(prev[key])) {
+        // Backfill partial fragments only. A complete clone needs nothing,
+        // and the live value below it may already be of another kind
+        // (the batch replaced the object it records with an array);
+        // likewise a partial fragment is only backfilled from a live
+        // container of the kind it describes
         this.#gapFill(fragment[key], prev[key]);
       }
     }
@@ -134,8 +235,14 @@ export class DiffTracker {
    * truncates anything the new value added beyond it.
    */
   #nullFill(fragment, next) {
+    // A kind change (object replaced by an array or vice versa) is undone
+    // by wholesale replacement — receivers replace across kinds — so the
+    // new value's keys need no null markers; they would only corrupt the
+    // fragment (an array fragment gaining object keys can no longer be
+    // revived into an array)
+    const describesArray = Array.isArray(fragment) || Utils.hasArrayMarker(fragment);
+    if (describesArray !== Array.isArray(next)) return;
     if (Array.isArray(fragment)) {
-      if (!Array.isArray(next)) return;
       const n = Math.min(fragment.length, next.length);
       for (let i = 0; i < n; i++) {
         if (Utils.isObjectOrArray(fragment[i]) && Utils.isObjectOrArray(next[i])) {
@@ -155,39 +262,77 @@ export class DiffTracker {
   }
 
   /**
-   * Record a container destroyed at path+prop this batch (first loss wins)
+   * The diff node at `path` if one exists, without creating it
    */
-  recordContainerLoss(path, prop, container) {
+  peekDiffObject(path) {
+    let node = this.#masterDiff;
+    for (let i = 0; i < path.length; i++) {
+      if (!Utils.isObjectOrArray(node)) return undefined;
+      node = node[path[i]];
+    }
+    return Utils.isObjectOrArray(node) ? node : undefined;
+  }
+
+  /**
+   * Record a container destroyed at path+prop this batch (first loss
+   * wins), together with the diff node recorded for it so far: keys the
+   * batch already deleted from the container are gone from the live
+   * object but still held by receivers, and only the node's null markers
+   * remember them once the node is replaced.
+   * @param {Object} [node] - The container's diff node at loss time
+   */
+  recordContainerLoss(path, prop, container, node) {
     const key = JSON.stringify([...path, prop]);
     if (!this.#lostContainers.has(key)) {
-      this.#lostContainers.set(key, container);
+      this.#lostContainers.set(key, { container, node, order: this.#lostContainers.size });
     }
   }
 
   /**
-   * The container destroyed at path+prop earlier this batch, if any.
-   * The size guard keeps the common case (no destruction this batch) free
-   * of the path-key allocation on the write path.
+   * What receivers still hold at path+prop when it was destroyed earlier
+   * this batch, as `{ container, node }`, or undefined. Receivers are at
+   * the pre-batch state, so the earliest loss on the way down wins: when
+   * an ancestor was lost first, its recorded container and diff node are
+   * walked down to the slot (an ancestor lost later than the slot itself
+   * changes nothing about what receivers hold there). The size guard
+   * keeps the common case (no destruction this batch) free of the
+   * path-key allocations on the write path.
    */
   getContainerLoss(path, prop) {
     if (this.#lostContainers.size === 0) return undefined;
-    return this.#lostContainers.get(JSON.stringify([...path, prop]));
+    const full = [...path, prop];
+    let best = null;
+    let bestDepth = 0;
+    for (let depth = full.length; depth >= 1; depth--) {
+      const entry = this.#lostContainers.get(JSON.stringify(full.slice(0, depth)));
+      if (entry && (best === null || entry.order < best.order)) {
+        best = entry;
+        bestDepth = depth;
+      }
+    }
+    if (best === null) return undefined;
+    let { container, node } = best;
+    for (let i = bestDepth; i < full.length; i++) {
+      container = Utils.isObjectOrArray(container) ? container[full[i]] : undefined;
+      node = Utils.isObjectOrArray(node) ? node[full[i]] : undefined;
+    }
+    if (!Utils.isObjectOrArray(container) && !Utils.isObjectOrArray(node)) return undefined;
+    return { container, node };
   }
 
   /**
    * Get the current master diff and reset it.
    *
-   * Returns a deep clone: during a batch, wholesale container assignments
-   * alias diff nodes to the live target subtrees, so handing out the raw
-   * diff would let later mutations retroactively rewrite a diff a consumer
-   * kept (send buffers, undo stacks, ...).
+   * The diff shares no references with live state — every container it
+   * records is its own copy (see ProxyHandler.#staleFilledDiffValue) — so
+   * it is handed out as-is; nothing writes into it after this point.
    */
   consumeDiff() {
     const diff = this.#masterDiff;
     this.#masterDiff = {};
     // Batch boundary: receivers are caught up once this diff is applied
     this.#lostContainers.clear();
-    return Utils.deepClone(diff);
+    return diff;
   }
 
   /**
@@ -197,6 +342,7 @@ export class DiffTracker {
   consumeInverse() {
     const inverse = this.#masterInverse;
     this.#masterInverse = {};
+    this.#completeInverse = new WeakSet();
     return inverse;
   }
 
@@ -222,6 +368,7 @@ export class DiffTracker {
   clear() {
     this.#masterDiff = {};
     this.#masterInverse = {};
+    this.#completeInverse = new WeakSet();
     this.#lostContainers.clear();
   }
 }

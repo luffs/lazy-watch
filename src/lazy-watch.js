@@ -59,12 +59,12 @@ export class LazyWatch {
    * @throws {TypeError} If original is not an object or array
    */
   constructor(original, options = {}) {
-    this.#diffTracker = new DiffTracker();
+    this.#diffTracker = new DiffTracker(original);
     this.#diffTracker.inverseEnabled = !!options.inverse;
     this.#eventEmitter = new EventEmitter(this.#diffTracker, options);
     this.#proxyHandler = new ProxyHandler(original, this.#diffTracker, this.#eventEmitter);
-    // Nested listeners under an array slot displaced by a structural op
-    // receive the live value at their path (see EventEmitter)
+    // The emitter consults the live tree to tell an object merge from an
+    // object replacing an array under a nested listener (see EventEmitter)
     this.#eventEmitter.setStateResolver(path => this.#proxyHandler.valueAt(path));
     this.#proxy = this.#proxyHandler.createRootProxy(this);
 
@@ -278,8 +278,10 @@ export class LazyWatch {
       if (resolvedSource[prop] === null || resolvedSource[prop] === undefined) {
         delete target[prop];
       } else if (Utils.isObjectOrArray(target[prop]) && Utils.isObjectOrArray(resolvedSource[prop]) &&
-        !Array.isArray(resolvedSource[prop]) && !Array.isArray(resolvedSource)) {
-        // Recursively patch nested objects. Real arrays are excluded: they
+        !Array.isArray(resolvedSource[prop]) && !Array.isArray(resolvedSource) &&
+        Utils.canMerge(target[prop], resolvedSource[prop])) {
+        // Recursively patch nested containers (see Utils.canMerge for
+        // what merges and what replaces). Real arrays are excluded: they
         // are wholesale values (fragments are the merge form), and inside
         // one every entry is a full value too — both replace below, like
         // the proxy appliers.

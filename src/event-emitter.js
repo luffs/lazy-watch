@@ -19,9 +19,10 @@ export class EventEmitter {
   #scheduledGeneration = null;
   #lastEmitTime = 0;
   #paused = false;
-  // (path) => { found, value }: the live watched state, for nested
-  // listeners whose array slot a structural op displaced (see
-  // #filterDiffByPath). Injected by LazyWatch after the handler exists.
+  // (path) => { found, value }: the live watched state, consulted by
+  // #filterDiffByPath for the one diff shape that cannot say whether a
+  // nested listener's slot survived. Injected by LazyWatch after the
+  // handler exists.
   #resolveState = null;
 
   constructor(diffTracker, options = {}) {
@@ -217,13 +218,13 @@ export class EventEmitter {
         // that was truncated away restates `$length`, which must not
         // re-notify the slot's listener
         if (filteredDiff === null && entry.gone) return;
-        // undefined means the batch didn't touch this listener's subtree;
-        // an empty object means a diff node was created but nothing was
-        // recorded in it. null and leaf values are meaningful: the subtree
-        // was deleted or replaced wholesale.
-        const hasChanges = filteredDiff !== undefined &&
-          !(Utils.isObjectOrArray(filteredDiff) && Object.keys(filteredDiff).length === 0);
-        if (hasChanges) {
+        // undefined means the batch didn't touch this listener's subtree.
+        // Everything else is meaningful: null (deleted), a leaf (replaced
+        // by it), a fragment, or a wholesale container value — an empty
+        // one included (`x = []` over an object replaces it; diff nodes
+        // are only created when something is recorded, so an empty
+        // container is always a real value)
+        if (filteredDiff !== undefined) {
           entry.gone = filteredDiff === null;
           // Mark before invoking so a throwing once-listener is still removed
           if (entry.once) {
@@ -254,12 +255,15 @@ export class EventEmitter {
    *   batch didn't touch this path at all. (Diffs never store `undefined` —
    *   it is normalized to `null` at write time — so it is a safe sentinel.)
    *
-   * Array fragments can change what a slot holds without naming its index:
-   * a `$splice` op shifts elements, and `$length` truncates them. A
-   * listener under such a slot is treated as touched — it receives `null`
-   * when the slot was truncated away, and otherwise the live value now at
-   * its path (a full value, like a wholesale replacement), since the diff
-   * alone cannot say what moved into the slot.
+   * Three shapes destroy a listener's slot without naming it in the diff,
+   * and each yields `null`: a real array value (a wholesale replacement)
+   * that lacks the key; an array fragment whose `$length` truncated the
+   * slot away; and a plain object without array markers replacing the
+   * array the slot lived in — indistinguishable from an object merge that
+   * left the key alone, so that one case consults the live tree.
+   * (Structural array ops are recorded per index whenever a listener
+   * exists below the array, so a `$splice` node never hides a slot
+   * change from a listener registered before the op.)
    */
   #filterDiffByPath(diff, path) {
     if (path.length === 0) {
@@ -276,16 +280,25 @@ export class EventEmitter {
       if (current === null || !Utils.isObjectOrArray(current)) {
         return null;
       }
-      // Fragments are plain objects; a real array in a diff is a full
-      // value whose elements are addressed by index like any other key
-      if (!Array.isArray(current) && INDEX_RE.test(segment)) {
-        const index = Number(segment);
-        if (Array.isArray(current.$splice) && this.#spliceTouches(current.$splice, index)) {
-          return this.#liveValue(path);
+      if (Array.isArray(current)) {
+        // A real array is a full value: the subtree was replaced
+        // wholesale, and a key the new value doesn't carry is gone
+        if (!(segment in current)) return null;
+        current = current[segment];
+        continue;
+      }
+      if (INDEX_RE.test(segment) && !(segment in current)) {
+        if (Utils.hasArrayMarker(current)) {
+          // An array fragment: a slot at or beyond the new length was
+          // truncated away; anything else is untouched
+          return typeof current.$length === 'number' && Number(segment) >= current.$length
+            ? null
+            : undefined;
         }
-        if (typeof current.$length === 'number' && index >= current.$length) {
-          return null;
-        }
+        // An unmarked object at an index step: either an object merge that
+        // left this key alone, or a plain object that replaced the array
+        // the slot lived in. Only the live tree can tell the two apart.
+        return this.#pathExists(path.slice(0, i + 1)) ? undefined : null;
       }
       if (!(segment in current)) {
         // No changes at this path
@@ -298,33 +311,21 @@ export class EventEmitter {
   }
 
   /**
-   * Whether a `$splice` op list can have changed what sits at `index`. An
-   * op shifts every index from its start onward unless it deletes exactly
-   * as many elements as it inserts, in which case only the replaced range
-   * moves. Ops are checked independently of each other's shifts, so this
-   * errs toward "touched" — the listener then receives the live value,
-   * which is correct either way.
+   * Whether `path` currently resolves in the watched state (true when no
+   * resolver was injected, keeping the emitter usable standalone)
    */
-  #spliceTouches(ops, index) {
-    for (const op of ops) {
-      const start = op[0];
-      const deleteCount = op[1];
-      const inserted = Array.isArray(op[2]) ? op[2].length : 0;
-      if (index >= start && (deleteCount !== inserted || index < start + inserted)) {
-        return true;
-      }
-    }
-    return false;
+  #pathExists(path) {
+    return this.#resolveState ? this.#resolveState(path).found : true;
   }
 
   /**
-   * The value now at `path` in the watched state, as an independent clone
-   * (diffs never alias live state); `null` when the path no longer exists
+   * True when any listener is registered strictly below `path`. Structural
+   * array ops fall back to per-index recording for such arrays, so those
+   * listeners receive exact path-relative diffs.
    */
-  #liveValue(path) {
-    const result = this.#resolveState ? this.#resolveState(path) : { found: false };
-    if (!result.found || result.value === undefined) return null;
-    return Utils.isObjectOrArray(result.value) ? Utils.deepClone(result.value) : result.value;
+  hasListenersBelow(path) {
+    return this.#listeners.some(entry =>
+      entry.path.length > path.length && path.every((segment, i) => entry.path[i] === segment));
   }
 
   /**

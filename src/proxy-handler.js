@@ -203,7 +203,7 @@ export class ProxyHandler {
     this.#recordLoss(path, prop, target[prop]);
     const diff = this.#diff(path);
     diff[prop] = null;
-    if (isArray) diff.$length = target.length;
+    if (isArray) this.#setDiffLength(diff, target.length);
   }
 
   /**
@@ -318,16 +318,19 @@ export class ProxyHandler {
       this.#handleArrayLengthChange(target, value, path);
     }
 
-    // Merge container-over-container writes: object over object, fragment
-    // over array, and array over array (element-wise, recording a minimal
-    // array fragment instead of the wholesale value). The exception is a
-    // real array assigned over a plain object — merging that would leave a
-    // plain object with index keys behind, so it replaces wholesale below.
-    // An assigned value is a full value, so the merge runs in wholesale
-    // mode: it must delete what the value doesn't carry even during patch
-    // application (structural-op slot writes ride through this trap).
-    const arrayOverObject = currentIsObject && Array.isArray(value) && !Array.isArray(currentValue);
-    if (currentIsObject && valueIsObject && !arrayOverObject) {
+    // Merge same-kind container writes: object over object, and array over
+    // array (element-wise, recording a minimal array fragment instead of
+    // the wholesale value). A kind change — a real array over a plain
+    // object, or a plain object over an array — replaces wholesale below:
+    // merging would leave an object with index keys, or an array carrying
+    // the object's keys as junk properties. (An assigned object is never
+    // an array fragment: the wire format's markers are reserved names that
+    // cannot enter state.) An assigned value is a full value, so the merge
+    // runs in wholesale mode: it must delete what the value doesn't carry
+    // even during patch application (structural-op slot writes ride
+    // through this trap).
+    const sameKind = Array.isArray(currentValue) === Array.isArray(value);
+    if (currentIsObject && valueIsObject && sameKind) {
       this.overwrite(receiver[prop], value, [...path, prop], true, true);
     } else if (currentValue !== value) {
       this.#recordChange(target, prop, value, path);
@@ -401,57 +404,109 @@ export class ProxyHandler {
    */
   #recordLoss(path, prop, value) {
     if (!this.#suppress && Utils.isObjectOrArray(value)) {
-      this.#diffTracker.recordContainerLoss(path, prop, value);
+      this.#diffTracker.recordContainerLoss(
+        path, prop, value, this.#diffTracker.peekDiffObject([...path, prop]));
     }
   }
 
   /**
    * The value to record in the diff for a wholesale write at path+prop.
    *
-   * Plain when nothing stale exists. When a container was destroyed at
-   * this slot earlier in the batch (or `stale` is passed directly by a
-   * replacement site), receivers still hold it — a plain object recorded
-   * here would merge into it instead of replacing it. The returned copy
-   * records null for every stale key the new value doesn't carry
-   * (recursing through shared plain-object keys), so applying the diff
-   * deletes them. The copy is separate from the target's value: the null
-   * markers belong on the wire, never in local state.
+   * Always the diff's own copy, never the object that lands in state: a
+   * diff node aliased to a live container would receive the bookkeeping
+   * of same-batch writes below it (`$length` stamps, null markers) as
+   * real properties of the state. Leaves and suppressed (throwaway)
+   * recordings need no copy.
    *
-   * Arrays need no filling — receivers apply real arrays wholesale.
+   * When a container was destroyed at this slot earlier in the batch (or
+   * `stale` is passed directly by a replacement site), receivers still
+   * hold it — a plain object recorded here would merge into it instead of
+   * replacing it. The copy then records null for every stale key the new
+   * value doesn't carry (recursing through shared plain-object keys), so
+   * applying the diff deletes them; the null markers belong on the wire,
+   * never in local state. Arrays need no filling — receivers apply real
+   * arrays wholesale — and neither does an object replacing an array:
+   * receivers replace those wholesale too.
    */
   #staleFilledDiffValue(clonedValue, path, prop, stale) {
-    if (this.#suppress || !Utils.isObjectOrArray(clonedValue) || Array.isArray(clonedValue)) {
+    if (this.#suppress || !Utils.isObjectOrArray(clonedValue)) {
       return clonedValue;
     }
+    const copy = Utils.deepClone(clonedValue);
     // The batch's first loss wins over a same-call replacement: receivers
     // are at the pre-batch state
-    const lost = this.#diffTracker.getContainerLoss(path, prop) ??
-      (Utils.isObjectOrArray(stale) ? stale : undefined);
-    if (!lost || Array.isArray(lost)) return clonedValue;
-
-    const filled = Utils.deepClone(clonedValue);
-    this.#nullFillStale(filled, lost);
-    return filled;
+    const loss = this.#diffTracker.getContainerLoss(path, prop) ??
+      (Utils.isObjectOrArray(stale) ? { container: stale, node: undefined } : undefined);
+    if (loss) {
+      this.#nullFillStale(copy, loss.container, loss.node, [...path, prop]);
+    }
+    return copy;
   }
 
   /**
-   * Record null in `diffValue` for every key of the stale container it
-   * doesn't carry; recurse where both sides are plain objects. Array and
-   * leaf values in the diff are applied wholesale by receivers, so
-   * recursion stops there.
+   * Record null in `diffValue` for every key receivers may still hold
+   * that it doesn't carry. Two sources describe what they hold: the
+   * container destroyed at the slot earlier this batch (its keys as they
+   * were then), and the diff node it had at loss time (keys the batch had
+   * already deleted — gone from the container, remembered only as null
+   * markers — and keys it had written). A marker for a key receivers
+   * never had is a harmless no-op, so every key of either source counts.
+   * Sources of the other kind are ignored: a kind change is replaced
+   * wholesale by receivers and needs no filling.
+   *
+   * Recurses through same-kind containers: object elements of a real
+   * array are full values too, and a nested listener under one cannot
+   * tell a full value from a fragment, so they carry their own markers
+   * (receivers applying the array wholesale drop them). Array slots
+   * missing from the new array need no marker — its length truncates them.
    */
-  #nullFillStale(diffValue, stale) {
-    for (const key of Object.keys(stale)) {
+  #nullFillStale(diffValue, container, node, path) {
+    const wantArray = Array.isArray(diffValue);
+    const stale = Utils.isObjectOrArray(container) && Array.isArray(container) === wantArray
+      ? container : undefined;
+    let recorded;
+    if (Utils.isObjectOrArray(node)) {
+      const nodeIsArray = Array.isArray(node) || Utils.hasArrayMarker(node);
+      if (nodeIsArray === wantArray) recorded = node;
+    }
+    if (!stale && !recorded) return;
+
+    if (wantArray) {
+      for (let i = 0; i < diffValue.length; i++) {
+        this.#nullFillStaleChild(diffValue, stale, recorded, path, String(i));
+      }
+      return;
+    }
+    const keys = new Set(stale ? Object.keys(stale) : []);
+    if (recorded) {
+      for (const key of Object.keys(recorded)) {
+        if (!Utils.isReservedDiffKey(key)) keys.add(key);
+      }
+    }
+    for (const key of keys) {
       if (Utils.isUnsafeKey(key)) continue;
       if (!(key in diffValue)) {
         diffValue[key] = null;
-      } else if (
-        Utils.isObjectOrArray(diffValue[key]) && !Array.isArray(diffValue[key]) &&
-        Utils.isObjectOrArray(stale[key]) && !Array.isArray(stale[key])
-      ) {
-        this.#nullFillStale(diffValue[key], stale[key]);
+      } else {
+        this.#nullFillStaleChild(diffValue, stale, recorded, path, key);
       }
     }
+  }
+
+  /**
+   * Recurse into one key. What receivers hold there is the batch's first
+   * loss recorded at (or above) that path when any — a key deleted from
+   * the stale container earlier in the batch is gone from it, and even
+   * one still present may have been replaced since the batch started —
+   * and the sources' own children otherwise.
+   */
+  #nullFillStaleChild(diffValue, stale, recorded, path, key) {
+    const child = diffValue[key];
+    if (!Utils.isObjectOrArray(child)) return;
+    const loss = this.#diffTracker.getContainerLoss(path, key);
+    const container = loss ? loss.container : (stale ? stale[key] : undefined);
+    const node = loss ? loss.node : (recorded ? recorded[key] : undefined);
+    this.#nullFillStale(child, container, node, [...path, key]);
   }
 
   /**
@@ -502,7 +557,10 @@ export class ProxyHandler {
     // (receivers apply $splice before a node's other keys, breaking
     // chronological undo ordering), while plain trap-driven recording is
     // handled exactly by the per-key inverse rules. Correct, just larger.
-    if (this.#diffTracker.inverseEnabled) {
+    // Listeners registered below this array disable it too: a compact op
+    // cannot say what moved into their slot, while per-index recording
+    // gives each of them the exact path-relative diff.
+    if (this.#diffTracker.inverseEnabled || this.#eventEmitter.hasListenersBelow(path)) {
       return native.apply(receiver, args);
     }
 
@@ -534,9 +592,13 @@ export class ProxyHandler {
     // Compact recording is only safe when the array's diff node carries no
     // pending index/nested changes: receivers apply $splice before merging
     // the node's other keys, so earlier writes must not share a node with
-    // a later op. Consecutive ops append to the same $splice list.
+    // a later op. Consecutive ops append to the same $splice list. A node
+    // that is the diff's real-array copy (the array was assigned wholesale
+    // this batch) is a full value, not a fragment: ops on it fall back to
+    // per-index recording, which keeps the copy itself exact.
     const node = this.#diffTracker.getDiffObject(path);
-    const clean = Object.keys(node).every(key => key === '$splice' || key === '$length');
+    const clean = !Array.isArray(node) &&
+      Object.keys(node).every(key => key === '$splice' || key === '$length');
     if (!clean) {
       return native.apply(receiver, args);
     }
@@ -557,6 +619,8 @@ export class ProxyHandler {
       deleteCount,
       items.map(item => Utils.isObjectOrArray(item) ? Utils.deepClone(item) : item)
     ]);
+    // Re-insert the stamp so the fragment serializes as { $splice, $length }
+    delete node.$length;
     node.$length = target.length;
     this.#eventEmitter.scheduleEmit();
     return result;
@@ -624,40 +688,35 @@ export class ProxyHandler {
     // An array's `length` is recorded in the diff under the wire format's
     // `$length` marker; `length` on a plain object is ordinary data
     const isArrayLength = Array.isArray(target) && prop === 'length';
-    const diffKey = isArrayLength ? '$length' : prop;
-
-    // Handle array index updates when $length was previously set
-    if (typeof diff.$length === 'number') {
-      const index = parseInt(prop, 10);
-      if (!isNaN(index) && diff.$length <= index) {
-        diff.$length = index + 1;
-      }
-    }
+    const isArrayIndex = Array.isArray(target) && !isArrayLength && /^\d+$/.test(String(prop));
 
     // Only clone if it's an object/array
     const clonedValue = Utils.isObjectOrArray(value) ? Utils.deepClone(value) : value;
-    const isArrayIndex = Array.isArray(target) && prop !== 'length' && /^\d+$/.test(String(prop));
 
     // Capture pre-change values before the writes below (inverse diffs are
     // wire fragments, so they carry the same $length marker)
     if (this.#inverseActive()) {
       this.#diffTracker.recordInverse(
-        path, diffKey, prop in target ? target[prop] : undefined, clonedValue);
+        path, isArrayLength ? '$length' : prop, prop in target ? target[prop] : undefined, clonedValue);
       if (isArrayIndex) {
         this.#diffTracker.recordInverse(path, '$length', target.length);
       }
     }
 
-    // A container replaced by a leaf is destroyed from the receivers'
-    // point of view; remember it so a same-batch recreation null-fills
-    if (!Utils.isObjectOrArray(value)) {
-      this.#recordLoss(path, prop, target[prop]);
+    if (isArrayLength) {
+      this.#setDiffLength(diff, value);
+      target.length = value;
+      this.#scheduleEmit();
+      return;
     }
 
-    // The diff copy may diverge from the state copy: a recreation over a
-    // container destroyed earlier this batch carries null markers for the
-    // receivers' stale keys, which must never enter local state
-    diff[diffKey] = this.#staleFilledDiffValue(clonedValue, path, prop);
+    // A container replaced wholesale — by a leaf, or by a container of the
+    // other kind — is destroyed from the receivers' point of view;
+    // remember it so this write, or a same-batch recreation, null-fills
+    this.#recordLoss(path, prop, target[prop]);
+
+    // The diff gets its own copy (see #staleFilledDiffValue)
+    diff[prop] = this.#staleFilledDiffValue(clonedValue, path, prop);
     target[prop] = clonedValue;
 
     // Array fragments always carry `$length`, so receivers can tell them
@@ -665,10 +724,35 @@ export class ProxyHandler {
     // side. (push() never records length itself: the index assignment
     // auto-updates it, making the explicit set a no-op.)
     if (isArrayIndex) {
-      diff.$length = target.length;
+      this.#setDiffLength(diff, target.length);
     }
 
     this.#scheduleEmit();
+  }
+
+  /**
+   * Record an array's length on its diff node. A node is normally a
+   * fragment (plain object) carrying the `$length` marker — but when the
+   * array itself was assigned wholesale earlier in the batch, its node is
+   * the diff's own real-array copy, whose length IS the marker: real
+   * arrays are full values on the wire, and receivers ignore `$length`
+   * on them.
+   */
+  #setDiffLength(diff, length) {
+    if (Array.isArray(diff)) {
+      diff.length = length;
+      return;
+    }
+    // Growth past the length recorded so far leaves a gap of slots this
+    // batch never wrote: elements the array was truncated down past
+    // earlier in the batch, or holes from a sparse write. Receivers may
+    // still hold elements there, so the gap is deleted explicitly.
+    if (typeof diff.$length === 'number') {
+      for (let i = diff.$length; i < length; i++) {
+        if (!(i in diff)) diff[i] = null;
+      }
+    }
+    diff.$length = length;
   }
 
   /**
@@ -742,7 +826,7 @@ export class ProxyHandler {
         this.#diffTracker.recordInverse(path, '$length', rawTarget.length);
       }
       rawTarget.length = rawSource.length;
-      getDiff().$length = rawSource.length;
+      this.#setDiffLength(getDiff(), rawSource.length);
       hasChanges = true;
     }
 
@@ -762,17 +846,10 @@ export class ProxyHandler {
           hasChanges = true;
         }
       } else if (Utils.isObjectOrArray(rawTarget[prop]) && Utils.isObjectOrArray(rawSource[prop]) &&
-        (wholesale
-          ? Array.isArray(rawTarget[prop]) === Array.isArray(rawSource[prop])
-          : !(Array.isArray(rawSource[prop]) && !Array.isArray(rawTarget[prop])))) {
+        Utils.canMerge(rawTarget[prop], rawSource[prop], wholesale)) {
         // Merge containers instead of replacing them, so the recorded diff
-        // carries only real differences. In fragment context (a received
-        // diff), an object merges into an object or an array — but a real
-        // array is a wholesale value, so it only merges element-wise into
-        // another array, never into a plain object. In wholesale context
-        // every entry is a full value: same-kind containers merge (with
-        // missing keys deleted, giving the exact wholesale outcome), and a
-        // kind mismatch falls through to the replacement branch below.
+        // carries only real differences; kind mismatches fall through to
+        // the replacement branch below (see Utils.canMerge)
         this.overwrite(rawTarget[prop], rawSource[prop], [...path, prop], true, wholesale);
       } else if (rawTarget[prop] !== rawSource[prop]) {
         const prevValue = rawTarget[prop];
@@ -807,7 +884,7 @@ export class ProxyHandler {
         rawTarget[prop] = clonedValue;
         // Keep array fragments self-describing (see #recordChange).
         if (Array.isArray(rawTarget) && /^\d+$/.test(String(prop))) {
-          getDiff().$length = rawTarget.length;
+          this.#setDiffLength(getDiff(), rawTarget.length);
         }
         hasChanges = true;
       }
@@ -819,11 +896,15 @@ export class ProxyHandler {
     // the marker is dropped — target shape wins, like `$splice`)
     if (Array.isArray(rawTarget) && !Array.isArray(rawSource) &&
       typeof rawSource.$length === 'number' && rawTarget.length !== rawSource.$length) {
+      // Same bookkeeping as a `length` assignment through the trap:
+      // truncated elements are captured for the inverse and recorded as
+      // container losses, and stale diff indices are trimmed
+      this.#handleArrayLengthChange(rawTarget, rawSource.$length, path);
       if (this.#inverseActive()) {
         this.#diffTracker.recordInverse(path, '$length', rawTarget.length);
       }
       rawTarget.length = rawSource.$length;
-      getDiff().$length = rawSource.$length;
+      this.#setDiffLength(getDiff(), rawSource.$length);
       hasChanges = true;
     }
 

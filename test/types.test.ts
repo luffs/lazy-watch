@@ -171,6 +171,9 @@ void isPlain;
 LazyWatch.Utils.assertSupported({ a: 1 });
 LazyWatch.Utils.assertSupportedDiff({ a: null, list: { $length: 0 } });
 LazyWatch.Utils.assertTrackable({ a: 1 }, []);
+const marked: boolean = LazyWatch.Utils.hasArrayMarker({ 0: 'a', $length: 1 });
+const merges: boolean = LazyWatch.Utils.canMerge([1], { 0: 2, $length: 1 }, false);
+void marked, merges;
 
 // Symbols
 const s1: symbol = PROXY_TARGET;

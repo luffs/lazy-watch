@@ -8,6 +8,32 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
 
 ### Breaking
 
+- **Every array node in a diff carries `$length`**, including nodes that
+  only hold a deeper change: `{ todos: { 0: { done: true }, $length: 2 } }`
+  where 5.0 emitted `{ todos: { 0: { done: true } } }`. The marker is what
+  lets receivers tell an array fragment (merge) from a plain object that
+  replaced an array (replace), so all replicas must upgrade together — a
+  5.0 fragment without the marker arriving where this version holds an
+  array is applied as a replacement
+- **Kind changes converge in both directions.** A plain object assigned
+  over an array (`state.list = {}`), or arriving in a diff without array
+  markers where the receiver holds an array, now replaces the array; 5.0
+  merged its keys into the array as junk properties on the sender and
+  every mirror. A marked fragment arriving where the receiver holds a plain
+  object now replaces the object with the revived array; 5.0 let the
+  target shape win and merged into the object
+- **`composeDiffs` refuses two more pairings** with the same TypeError:
+  a plain object following an array (value or fragment), and an object
+  written into a slot the older diff truncated away — both would merge
+  into a receiver's stale value where the sequential path replaced it.
+  Newer truncations drop older index writes beyond them, and an older
+  truncation followed by growth now deletes the gap explicitly
+- **Structural array ops are recorded per index while a listener is
+  registered below the array** (the shape `{ inverse: true }` produces),
+  so element listeners receive exact slot diffs with null markers; a
+  compact `$splice` cannot say what moved into a slot. Listen on the array
+  itself to keep compact ops. This replaces the interim "live value"
+  delivery introduced earlier in this cycle
 - **`Date` and `RegExp` are no longer accepted in watched state**, and
   neither are `bigint`, `symbol`, or function values — all rejected with a
   `TypeError` naming the path at every entry point (constructor,
@@ -22,8 +48,58 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
   and numbers instead. `Utils.deepClone`/`deepEqual` still handle Date and
   RegExp as general-purpose helpers
 
+### Added
+
+- **Convergence fuzzer** (`test/fuzz/`): seeded random mutation sequences
+  — nested writes, structural ops, `patch`/`overwrite` with perturbed
+  snapshots and hand-built fragments, held handles, delete-and-recreate,
+  throwing transactions, undo/redo — checked after every batch against a
+  JSON-fed mirror, a relay of that mirror, a plain-object mirror, a
+  `composeDiffs` buffer, inverse restore, nested-listener shadows, and the
+  undo manager. A short fixed-seed pass runs in `npm test`; `npm run fuzz`
+  runs a longer campaign and prints a reproduction command (with `--trace`
+  for a batch-by-batch log) on failure. Every bug below marked *(fuzzer)*
+  was found by it and is pinned in `test/suites/fuzz-regressions.test.js`
+- `Utils.hasArrayMarker(value)` and `Utils.canMerge(target, source,
+  wholesale)` expose the wire format's fragment test and the single
+  merge-or-replace rule both appliers follow
+
 ### Fixed
 
+- **Assigning an array and mutating it in the same batch corrupted state**
+  *(fuzzer)*: the diff node for a wholesale array assignment WAS the live
+  array, so bookkeeping written into the node by later same-batch
+  mutations — the `$length` marker, null markers — landed on the array as
+  real properties (`Object.keys` showed them, and assigning the array
+  elsewhere was rejected for carrying a reserved key). Diff values are now
+  always the diff's own copies, and a recorded wholesale array is treated
+  as a real array by the recorder (its length is the marker)
+- **Truncating then regrowing an array in one batch left stale elements on
+  receivers** *(fuzzer)*: `arr.length = 0; arr[2] = x` emitted
+  `{ 2: x, $length: 3 }`, and receivers kept their old elements 0 and 1.
+  Growth past the length recorded so far now null-fills the gap
+- **Same-batch deletions were lost across kind changes** *(fuzzer)*: a key
+  deleted, then its container replaced by an array and again by an
+  object, emitted the final object without the deletion, so receivers
+  kept the key; likewise a subtree lost with its parent and recreated with
+  a different kind history. The stale-fill now uses the lost container's
+  diff node (where deletions survive as null markers), walks up to the
+  earliest lost ancestor, and marks stale keys inside object elements of
+  real arrays too
+- **Inverse diffs and transaction rollback corrupted arrays and kind
+  changes** *(fuzzer)*: an inverse node created as the ancestor of a deeper
+  change carried no `$length`, so a rollback after deleting the array
+  restored an index-keyed object; nodes were stamped from the live value
+  even when the batch had changed its kind; a `$length` truncation applied
+  through `patch` skipped the truncated elements; and keys added below a
+  container that was deleted and recreated — or whose kind changed — in the
+  same batch were not undone. Inverse nodes are now stamped only on
+  creation, complete records are tracked so nothing records below them
+  except new keys, and gap-fill and null-fill never cross kinds
+- **Nested listeners missed replacements** *(fuzzer)*: an empty container
+  replacing a subtree (`x = []`) was filtered out as "nothing recorded",
+  and a listener under an array replaced by a plain object was never told
+  its slot was gone
 - **Frozen containers and exotic properties in the constructor argument
   produced phantom diffs.** LazyWatch keeps that object by reference, so a
   frozen/sealed/non-extensible container, a getter, or a non-writable,
@@ -58,10 +134,10 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
   `$splice` op or a `length` truncation changes what a slot holds without
   naming its index, so a listener on `app.todos[1]` (or anything below it)
   was never notified by `unshift`/`shift`/`splice` or `todos.length = 1`,
-  although the docs promised `null` on deletion. Such listeners are now
-  treated as touched: they receive `null` when the slot no longer exists,
-  and otherwise the full value now at their path. A slot reported gone is
-  not re-notified by later growth below it
+  although the docs promised `null` on deletion. Structural ops are now
+  recorded per index while such a listener exists (see Breaking), so it
+  receives the exact diff for its slot, and a truncated slot delivers
+  `null`. A slot reported gone is not re-notified by later growth below it
 
 ## [5.0.0] - 2026-07-24
 

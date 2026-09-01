@@ -204,7 +204,11 @@ registered on is deleted — or replaced wholesale by a leaf value (string,
 number, boolean) — the listener is called with `null` for a
 deletion (matching the diff convention where `null` means delete) or with the
 new leaf value for a replacement. This also applies when an *ancestor* of the
-subtree is deleted or replaced by a leaf: the listener receives `null`.
+subtree is deleted or replaced by a leaf: the listener receives `null`. A
+subtree replaced by a container of the other kind — an object where an
+array was, or the reverse — is delivered as the full new value, an empty
+`[]` or `{}` included, and listeners below the old container receive
+`null`.
 
 ```js
 const app = new LazyWatch({ user: { name: 'Alice' } });
@@ -221,25 +225,35 @@ object is later assigned at the same path, the listener resumes receiving its
 diffs.
 
 **Array slots.** Structural array ops (`splice`, `unshift`, `shift`) and
-truncation change what an index holds without naming it in the diff, so a
-listener registered on an element — or anything below it — is treated as
-touched whenever an op or truncation can have moved its slot. It receives
-`null` when the slot no longer exists, and otherwise the full value now at
-its path: a wholesale replacement from its point of view, since the diff
-alone cannot say what moved in. A slot reported gone is not re-notified by
-later growth below it; the listener resumes when something lands at its
-path again.
+truncation change what an index holds without naming it in the diff. While
+a listener is registered on an element — or anything below it — structural
+ops on that array are recorded per index instead of as a compact `$splice`
+op, so the listener receives the exact path-relative diff for its slot,
+`null` markers included for keys the element that moved in doesn't carry.
+A slot truncated away, or destroyed by the array being replaced with a
+plain object, delivers `null`; a slot reported gone is not re-notified by
+later growth below it, and the listener resumes when something lands at
+its path again. The trade-off: the wire carries per-index writes for an
+array that has element listeners (the shape `{ inverse: true }` produces
+anyway) — listen on the array itself to keep compact ops.
 
 ```js
-const app = new LazyWatch({ todos: [{ id: 1 }, { id: 2 }] });
+const app = new LazyWatch({ todos: [{ id: 1, done: true }, { id: 2 }] });
 
-LazyWatch.on(app.todos[1], changes => {
-  // { id: 1 }  — after `app.todos.unshift({ id: 0 })`: the element now at index 1
-  // null       — after `app.todos.length = 1`: the slot is gone
+LazyWatch.on(app.todos[0], changes => {
+  // { id: 0, done: null } — after `app.todos.unshift({ id: 0 })`: the element now at index 0
+  // null                  — after `app.todos.length = 0`: the slot is gone
 });
 ```
 
-(Handles work the same way: see [Detached Proxies](#detached-proxies).)
+Subscribe from a consistent state: a listener added in the middle of a
+batch receives that whole batch, including changes already visible on the
+proxy when it subscribed (and a compact `$splice` op is not idempotent).
+Take a listener's initial snapshot right after `LazyWatch.flush`, or
+before making changes.
+
+(Handles are slot-bound in the same way: see
+[Detached Proxies](#detached-proxies).)
 
 ## Removing Listeners
 
@@ -698,7 +712,7 @@ LazyWatch.composeDiffs(
 // { items: { $splice: [[1, 1], [0, 0, ['a']]], $length: 3 } } — ops concatenate
 ```
 
-Composition is not defined for every pair. Two sequences have no
+Composition is not defined for every pair. A few sequences have no
 single-diff representation in the wire format, and `composeDiffs` **throws
 a `TypeError`** (naming the path) rather than emit a diff that would
 corrupt receivers:
@@ -709,12 +723,19 @@ corrupt receivers:
   old keys alive. (Array values escape this: receivers apply
   [real arrays wholesale](#array-diffs-and-shape-drift), so array
   fragments after a deletion revive into real arrays and compose fine.)
+- **A plain object following an array** (a value or a fragment) — the
+  object replaced the array on the sender, but a receiver whose slot never
+  became an array (it still holds an object) would merge the composed
+  object into it. The same holds for an object written into a slot the
+  older diff truncated away.
 - **`$splice` ops following index writes on the same array** — receivers
   apply a fragment's ops before its index keys, which would reorder
   history.
 
-Both cases are detected precisely, so the fallback is simple — catch and
-send the pieces separately:
+Everything else composes — a marked fragment after a plain object becomes
+the revived array, and a truncation followed by growth deletes the gap
+explicitly. The refusals are detected precisely, so the fallback is simple
+— catch and send the pieces separately:
 
 ```js
 let buffer = null;
@@ -885,7 +906,7 @@ as befits a full value — and length changes ride along:
 ```js
 const data = new LazyWatch({ procs: [{ name: 'api', cpu: 1 }, { name: 'db', cpu: 0 }] });
 data.procs = [{ name: 'api', cpu: 2 }, { name: 'db', cpu: 0 }];
-// Emits: { procs: { 0: { cpu: 2 } } } — not the whole array
+// Emits: { procs: { 0: { cpu: 2 }, $length: 2 } } — not the whole array
 ```
 
 A real array is emitted only when there is no existing array to diff
@@ -913,14 +934,19 @@ LazyWatch.patch(receiver, { items: { 1: 'b', $length: 2 } });
 Array.isArray(receiver.items); // true — not stored as a plain object
 ```
 
-Detection keys on the fragment's numeric `$length` marker, and revival only
-applies where the target has no existing container — an existing plain
-object is always merged as an object (target shape wins; the fragment's
-`$length` and `$splice` markers are dropped there rather than landing as
-data). Array diffs emitted by this version always include `$length` — index
-writes, structural ops, and deletions alike — so fragments are
-self-describing on the wire; a pure truncation (`{ $length: 1 }`) revives
-correctly too.
+Detection keys on the fragment's `$length` marker. Every array node a
+sender emits carries it — index writes, structural ops, deletions, and
+nodes that only hold a deeper change alike (`{ todos: { 0: { done: true },
+$length: 2 } }`) — so array fragments are self-describing on the wire, and
+a pure truncation (`{ $length: 1 }`) revives correctly too.
+
+The marker also decides **kind changes**. A plain object *without*
+`$length`/`$splice` arriving where the receiver holds an array is not a
+fragment but a plain object that replaced the array on the sender
+(`state.list = {}`), and replaces it on the receiver too. A marked fragment
+arriving where the receiver holds a plain object describes an array the
+sender has there, and replaces the object with the revived array. Kind
+changes therefore converge in both directions, at every nesting level.
 
 Because `$length` is a [reserved name](#supported-values) that can never
 appear in watched state, plain data is never mistaken for a fragment: an

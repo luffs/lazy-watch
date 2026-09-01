@@ -709,6 +709,56 @@ export default function register(runner) {
     LazyWatch.dispose(mirror);
   });
 
+  runner.test('structural ops should record per index while element listeners exist, compactly otherwise', async () => {
+    const watched = new LazyWatch({ todos: [{ id: 1, done: true }, { id: 2 }] });
+    const diffs = [];
+    LazyWatch.on(watched, d => diffs.push(d));
+    let received = 'never-called';
+    const stop = LazyWatch.on(watched.todos[0], d => { received = d; });
+
+    watched.todos.unshift({ id: 0 });
+    await wait(10);
+    // Exact merge diff for the slot: the key the new element lacks is deleted
+    assertEquals(received, { id: 0, done: null });
+    assertTrue(!('$splice' in diffs[0].todos), 'no compact op while a listener sits below the array');
+
+    stop();
+    watched.todos.unshift({ id: -1 });
+    await wait(10);
+    assertTrue(Array.isArray(diffs[1].todos.$splice), 'compact op once no listener sits below');
+    LazyWatch.dispose(watched);
+  });
+
+  runner.test('a listener under an array replaced by a plain object should receive null', async () => {
+    const watched = new LazyWatch({ e: [{ id: 1 }, { id: 2 }], o: { 0: 'zero', 1: 'one' } });
+    const log = [];
+    LazyWatch.on(watched.e[1], d => log.push(['e.1', d]));
+    LazyWatch.on(watched.o, d => log.push(['o', d]));
+
+    watched.e = { b: 1 };  // kind change: the slot e.1 is gone
+    watched.o.x = 2;       // an object merge with an index-like sibling key left alone
+    await wait(10);
+    assertEquals(log, [['e.1', null], ['o', { x: 2 }]]);
+
+    // The object's own index-like key is addressable by path as usual
+    log.length = 0;
+    watched.e = { 1: 'back' };
+    await wait(10);
+    assertEquals(log, [['e.1', 'back']]);
+    LazyWatch.dispose(watched);
+  });
+
+  runner.test('a listener under an object replaced by an array should receive null', async () => {
+    const watched = new LazyWatch({ o: { k: { n: 1 } } });
+    let received = 'never-called';
+    LazyWatch.on(watched.o.k, d => { received = d; });
+
+    watched.o = [1, 2];
+    await wait(10);
+    assertEquals(received, null);
+    LazyWatch.dispose(watched);
+  });
+
   runner.test('element listeners should get per-index diffs when inverse recording disables compact ops', async () => {
     const watched = new LazyWatch({ todos: [{ id: 1 }, { id: 2 }] }, { inverse: true });
     let received = 'never-called';

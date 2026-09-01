@@ -84,8 +84,54 @@ export function composeFragments(a, b, applyFragment, path = []) {
       : Utils.deepClone(bv);
   }
 
-  if ('$length' in b) out.$length = b.$length;
-  else if ('$length' in a && !bOps) out.$length = a.$length;
+  if ('$length' in b) {
+    out.$length = b.$length;
+    // `b` truncated the array: index writes `a` made at or beyond the new
+    // length were destroyed (receivers apply keys before `$length`, but a
+    // later batch that recreates such a slot must not merge into them)
+    if (typeof b.$length === 'number') {
+      for (const key of Object.keys(out)) {
+        if (INDEX_RE.test(key) && Number(key) >= b.$length && !(key in b)) delete out[key];
+      }
+    }
+  } else if ('$length' in a && !bOps) {
+    out.$length = a.$length;
+  }
+
+  // `a` left the array at exactly a.$length elements; a receiver applying
+  // the composed diff to its pre-`a` array may still hold elements beyond
+  // that. Those the final `$length` does not cut off — the gap between
+  // the length after `a` (shifted by b's ops) and b's final length — must
+  // be deleted explicitly, or the receiver keeps them where the
+  // sequential path has holes.
+  if (typeof a.$length === 'number' && typeof out.$length === 'number') {
+    let base = a.$length;
+    for (const op of bOps || []) {
+      base += (Array.isArray(op[2]) ? op[2].length : 0) - op[1];
+    }
+    for (let i = Math.max(base, 0); i < out.$length; i++) {
+      const key = String(i);
+      if (!(key in out)) {
+        out[key] = null;
+        continue;
+      }
+      // A slot `a` truncated away and `b` filled again: sequentially the
+      // new value lands on nothing, but the composed diff lands on the
+      // receiver's stale element. A real array or leaf replaces it; a
+      // marked fragment can be revived into a real array; an unmarked
+      // object would merge into it — the deletion case in another guise
+      const value = out[key];
+      if (Utils.isObjectOrArray(value) && !Array.isArray(value)) {
+        const revived = Utils.reviveArrayDiffs(value);
+        if (!Array.isArray(revived)) {
+          fail([...path, key], 'a truncation followed by an object written ' +
+            'into the truncated slot has no single-diff representation (the ' +
+            "object would merge into the receiver's stale element)");
+        }
+        out[key] = Utils.deepClone(revived);
+      }
+    }
+  }
   return out;
 }
 
@@ -120,10 +166,35 @@ function composeValue(av, bv, applyFragment, path) {
       'single-diff representation (the object diff would merge into the ' +
       "receiver's stale value instead of replacing it)");
   }
+  // Array markers ($length/$splice) tell a fragment describing an array
+  // from a plain object that replaced one. An unmarked object after an
+  // array (value or fragment) is the kind-change twin of the deletion
+  // case above: sequentially it replaces the array, but a receiver whose
+  // slot never became an array (it holds an object, and `a` would have
+  // made it one) would merge the composed object instead.
+  const bMarked = Utils.hasArrayMarker(bv);
+  const aMarked = Utils.hasArrayMarker(av);
+  if (!bMarked && (Array.isArray(av) || aMarked)) {
+    fail(path, 'an array followed by a plain object has no single-diff ' +
+      'representation (a receiver still holding an object at the slot would ' +
+      'merge the composed object instead of replacing it)');
+  }
   if (Array.isArray(av)) {
     const materialized = Utils.deepClone(av);
     applyFragment(materialized, bv);
     return materialized;
+  }
+  if (!aMarked && bMarked) {
+    // `a` left a plain object at the slot; a marked `b` describes an array
+    // and replaces that object with its revived form (Utils.canMerge). If
+    // it cannot revive, the receiver merges it into the object with the
+    // markers dropped, so the composed value must not carry them either.
+    const revived = Utils.reviveArrayDiffs(bv);
+    if (Array.isArray(revived)) return Utils.deepClone(revived);
+    const out = composeFragments(av, bv, applyFragment, path);
+    delete out.$length;
+    delete out.$splice;
+    return out;
   }
   return composeFragments(av, bv, applyFragment, path);
 }

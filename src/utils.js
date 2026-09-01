@@ -234,6 +234,45 @@ export const Utils = {
   },
 
   /**
+   * True when a plain-object diff value carries the wire format's array
+   * markers — a numeric `$length` or a `$splice` op list — and so describes
+   * an array (a fragment to merge into one). Every array node a sender
+   * emits carries `$length`, so an object value WITHOUT a marker arriving
+   * where the receiver holds an array is a plain object that replaced the
+   * array, not a fragment.
+   */
+  hasArrayMarker(val) {
+    return typeof val.$length === 'number' || Array.isArray(val.$splice);
+  },
+
+  /**
+   * Whether a source container merges into the target container it lands
+   * on (true) or replaces it (false). Shared by the proxy and plain
+   * appliers so both converge identically:
+   *
+   * - a real array merges element-wise into an array, and replaces a
+   *   plain object wholesale (merging would leave an object with index
+   *   keys);
+   * - a plain object over an array merges only as a marked array fragment
+   *   (`$length`/`$splice`; every array node a sender emits carries
+   *   `$length`) — an unmarked object is a plain object that replaced the
+   *   array on the sender, so it replaces here too;
+   * - object over object merges, unless the source is a marked fragment
+   *   that revives into an array: the sender holds an array there, and
+   *   the receiver's object is replaced by it.
+   *
+   * In wholesale context (a real array source, or an assigned value)
+   * every entry is a full value, so only same-kind containers merge.
+   */
+  canMerge(target, source, wholesale = false) {
+    const targetIsArray = Array.isArray(target);
+    if (Array.isArray(source)) return targetIsArray;
+    if (targetIsArray) return !wholesale && this.hasArrayMarker(source);
+    return wholesale || !this.hasArrayMarker(source) ||
+      !Array.isArray(this.reviveArrayDiffs(source));
+  },
+
+  /**
    * True for array diff fragments: a plain object carrying the wire
    * format's numeric `$length` marker, whose other keys are all array
    * indices and/or a `$splice` op list — e.g. { 1: 'b', $length: 2 } or

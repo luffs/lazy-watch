@@ -18,6 +18,8 @@ import registerTraps from './suites/traps.test.js';
 import registerScheduler from './suites/scheduler.test.js';
 import registerPlainTargets from './suites/plain-targets.test.js';
 import registerDeepArrayDiffs from './suites/deep-array-diffs.test.js';
+import registerFuzzRegressions from './suites/fuzz-regressions.test.js';
+import registerFuzz from './suites/fuzz.test.js';
 
 const runner = new TestRunner();
 
@@ -35,6 +37,8 @@ registerTraps(runner);
 registerScheduler(runner);
 registerPlainTargets(runner);
 registerDeepArrayDiffs(runner);
+registerFuzzRegressions(runner);
+registerFuzz(runner);
 
 runExamples();
 
