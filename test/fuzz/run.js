@@ -2,7 +2,7 @@
 //
 //   npm run fuzz                                  # random seed, 200 runs x 40 steps per mode
 //   npm run fuzz -- --seed 42 --runs 500 --steps 60
-//   npm run fuzz -- --seed 42 --mode undo         # one mode only
+//   npm run fuzz -- --seed 42 --mode undo         # one mode only (plain, inverse, undo, bidi)
 //   npm run fuzz -- --seed 42 --mode undo --runs 11 --trace   # batch-by-batch trace on failure
 //
 // Exit code 1 on the first invariant violation; the error message carries

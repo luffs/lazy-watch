@@ -19,7 +19,11 @@
 // - transactions: a throwing callback leaves the state untouched
 // - undo manager (undo mode): undoing every step returns to the initial
 //   state and redoing every step returns to the final one, with mirrors
-//   following along
+//   following along; half the runs coalesce steps, and group()/checkpoint()
+//   ops exercise step merging through composeDiffs
+// - bidirectional sync (bidi mode): two peers exchange diffs through
+//   inboxes with the documented echo guard, either side writing in a
+//   given step; after delivery both hold the same state
 //
 // Everything is deterministic from the seed, so a failure prints a
 // reproduction command. Zero dependencies.
@@ -27,7 +31,7 @@ import { LazyWatch } from '../../src/lazy-watch.js';
 
 const KEYS = ['a', 'b', 'c', 'd', 'e'];
 const MISSING = Symbol('missing');
-export const MODES = ['plain', 'inverse', 'undo'];
+export const MODES = ['plain', 'inverse', 'undo', 'bidi'];
 
 /** mulberry32: small, fast, and deterministic across engines */
 export class Rng {
@@ -301,14 +305,18 @@ function opApply(ctx, method) {
 function opTakeHandle(ctx) {
   const { node, path } = randomContainer(ctx.rng, ctx.sender);
   if (ctx.handles.length >= 6) ctx.handles.shift();
-  ctx.handles.push({ proxy: node, path });
+  ctx.handles.push({ proxy: node, path, root: ctx.sender });
   return `take handle ${path.join('.') || '<root>'}`;
 }
 
 function opHandleWrite(ctx) {
-  if (!ctx.handles.length) return opTakeHandle(ctx);
-  const { proxy, path } = ctx.rng.pick(ctx.handles);
-  const raw = LazyWatch.resolveIfProxy(ctx.sender);
+  // Only handles on the instance writing this step: a write through a
+  // handle on the other bidi peer would be a concurrent edit, which the
+  // library's single-writer scope excludes
+  const mine = ctx.handles.filter(h => h.root === ctx.sender);
+  if (!mine.length) return opTakeHandle(ctx);
+  const { proxy, path, root } = ctx.rng.pick(mine);
+  const raw = LazyWatch.resolveIfProxy(root);
   const attached = valueAt(raw, path) === LazyWatch.resolveIfProxy(proxy);
   const k = keyFor(ctx.rng, proxy);
   const v = genLeaf(ctx.rng);
@@ -357,6 +365,26 @@ function opUndo(ctx) {
   return `undo/redo (${did ? 'applied' : 'nothing to do'})`;
 }
 
+function opGroup(ctx) {
+  // Several batches recorded as one undo step (merged through composeDiffs)
+  if (!ctx.manager) return opSetContainer(ctx);
+  const inner = [];
+  ctx.manager.group(() => {
+    inner.push(opSetLeaf(ctx));
+    LazyWatch.flush(ctx.sender);
+    inner.push(opArray(ctx));
+    LazyWatch.flush(ctx.sender);
+    inner.push(opDelete(ctx));
+  });
+  return `group { ${inner.join(' ; ')} }`;
+}
+
+function opCheckpoint(ctx) {
+  if (!ctx.manager) return opDelete(ctx);
+  ctx.manager.checkpoint();
+  return 'checkpoint';
+}
+
 function opWatch(ctx) {
   // Register a nested listener and keep a shadow fed only by its deliveries.
   // Subscribe at a batch boundary: a listener added mid-batch receives the
@@ -372,14 +400,15 @@ function opWatch(ctx) {
   }
   const box = { v: LazyWatch.snapshot(node) };
   const stop = LazyWatch.on(node, d => { LazyWatch.patch(box, { v: d }); });
-  ctx.shadows.push({ path, box, stop });
+  ctx.shadows.push({ path, box, stop, root: ctx.sender });
   return `watch ${path.join('.')}`;
 }
 
 const OPS = [
   [opSetLeaf, 14], [opSetContainer, 8], [opDelete, 8], [opDeleteRecreate, 3],
   [opArray, 20], [ctx => opApply(ctx, 'patch'), 6], [ctx => opApply(ctx, 'overwrite'), 6],
-  [opTakeHandle, 4], [opHandleWrite, 6], [opTransaction, 3], [opWatch, 5], [opUndo, 3]
+  [opTakeHandle, 4], [opHandleWrite, 6], [opTransaction, 3], [opWatch, 5], [opUndo, 3],
+  [opGroup, 2], [opCheckpoint, 2]
 ];
 const OP_TOTAL = OPS.reduce((n, [, w]) => n + w, 0);
 
@@ -416,6 +445,12 @@ function runOne({ seed, mode, steps, runIndex, trace }) {
 
   const sender = new LazyWatch(deepClone(initial), mode === 'inverse' ? { inverse: true } : {});
   ctx.sender = sender;
+  // bidi mode: a second peer that both receives from and writes to `sender`
+  // through inboxes, with the documented echo guard (flush local changes,
+  // apply the remote diff, flush again while flagged so nothing is sent back)
+  const peer = mode === 'bidi' ? new LazyWatch(deepClone(initial)) : null;
+  const inbox = { toSender: [], toPeer: [] };
+  let applyingRemote = false;
   const wire = new LazyWatch(deepClone(initial));
   const relay = new LazyWatch(deepClone(initial));
   const plain = deepClone(initial);
@@ -428,6 +463,7 @@ function runOne({ seed, mode, steps, runIndex, trace }) {
   let pendingFailure = null;
 
   LazyWatch.on(sender, (diff, inverse) => {
+    if (peer && !applyingRemote) inbox.toPeer.push(roundTrip(diff));
     const post = LazyWatch.snapshot(sender);
     if (inverse !== undefined) {
       const restored = deepClone(post);
@@ -458,8 +494,34 @@ function runOne({ seed, mode, steps, runIndex, trace }) {
     if (trace) traceLog.push(`  wire re-emitted: ${JSON.stringify(diff)}`);
     LazyWatch.patch(relay, roundTrip(diff));
   });
+  if (peer) {
+    LazyWatch.on(peer, diff => {
+      if (!applyingRemote) inbox.toSender.push(roundTrip(diff));
+    });
+  }
 
-  if (mode === 'undo') ctx.manager = LazyWatch.createUndoManager(sender);
+  const deliver = () => {
+    while (inbox.toSender.length || inbox.toPeer.length) {
+      for (const [target, box] of [[peer, inbox.toPeer], [sender, inbox.toSender]]) {
+        for (const message of box.splice(0)) {
+          LazyWatch.flush(target); // local changes go out before the remote diff lands
+          applyingRemote = true;
+          try {
+            LazyWatch.patch(target, message);
+            LazyWatch.flush(target); // emitted while flagged: applied, not echoed
+          } finally {
+            applyingRemote = false;
+          }
+        }
+      }
+    }
+  };
+
+  if (mode === 'undo') {
+    // Half the runs coalesce: a window far longer than a run merges every
+    // batch into the open step until a checkpoint()/undo/redo closes it
+    ctx.manager = LazyWatch.createUndoManager(sender, rng.chance(0.5) ? { coalesce: 60000 } : {});
+  }
 
   const check = where => {
     const expected = canon(LazyWatch.snapshot(sender));
@@ -470,8 +532,11 @@ function runOne({ seed, mode, steps, runIndex, trace }) {
         throw ctx.fail(`${name} diverged ${where}\n  sender: ${expected}\n  ${name}: ${canon(value)}`);
       }
     }
+    if (peer && canon(LazyWatch.snapshot(peer)) !== expected) {
+      throw ctx.fail(`peer diverged ${where}\n  sender: ${expected}\n  peer:   ${canon(LazyWatch.snapshot(peer))}`);
+    }
     for (const shadow of ctx.shadows) {
-      const live = valueAt(raw, shadow.path);
+      const live = valueAt(LazyWatch.resolveIfProxy(shadow.root), shadow.path);
       const seen = Object.hasOwn(shadow.box, 'v') ? shadow.box.v : MISSING;
       if (canon(live) !== canon(seen)) {
         throw ctx.fail(`nested listener at ${shadow.path.join('.')} diverged ${where}\n  live:   ${canon(live)}\n  shadow: ${canon(seen)}`);
@@ -492,6 +557,9 @@ function runOne({ seed, mode, steps, runIndex, trace }) {
   };
 
   for (step = 1; step <= steps; step++) {
+    // bidi: either side writes this step (one writer per batch, as the
+    // library's scope requires); its batch is delivered before the checks
+    ctx.sender = peer && rng.chance(0.5) ? peer : sender;
     const count = 1 + rng.int(3);
     for (let i = 0; i < count; i++) {
       const op = pickOp(rng);
@@ -502,7 +570,8 @@ function runOne({ seed, mode, steps, runIndex, trace }) {
         throw ctx.fail(`operation threw: ${e.stack}`);
       }
     }
-    LazyWatch.flush(sender);
+    LazyWatch.flush(ctx.sender);
+    if (peer) deliver();
     LazyWatch.flush(wire);
     if (pendingFailure) throw pendingFailure;
     check(`after step ${step}`);
@@ -532,6 +601,7 @@ function runOne({ seed, mode, steps, runIndex, trace }) {
   }
 
   LazyWatch.dispose(sender);
+  if (peer) LazyWatch.dispose(peer);
   LazyWatch.dispose(wire);
   LazyWatch.dispose(relay);
   return log.length;

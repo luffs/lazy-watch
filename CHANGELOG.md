@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
+## [Unreleased]
+
+### Changed
+
+- The convergence fuzzer gained two coverage areas: a `bidi` mode in
+  which two peers exchange diffs through inboxes with the documented echo
+  guard (either side writing in a given step, both holding the same state
+  after delivery), and undo-mode runs that coalesce steps and exercise
+  `group()`/`checkpoint()`, driving the undo manager's step merging
+  through `composeDiffs`. Neither found a defect
+
 ## [6.0.0] - 2026-09-01
 
 **Breaking release: wire format and value rules.** Every array node in a
