@@ -4,7 +4,15 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
-## [Unreleased]
+## [6.1.0] - 2026-09-01
+
+Batch metadata lands: `flush`, `patch`, and `overwrite` can tag the batch
+they emit with an object such as `{ origin: 'remote' }` that listeners
+receive as a third argument, which turns the bidirectional sync and manual
+undo recipes into one line per direction with no guard flag. Array
+properties are typed correctly as `ArrayPatch` in the definitions, listener
+dispatch is linear, and the convergence fuzzer gained a bidirectional mode.
+No wire-format change; 6.0.x replicas interoperate.
 
 ### Added
 
