@@ -22,8 +22,9 @@
 //   following along; half the runs coalesce steps, and group()/checkpoint()
 //   ops exercise step merging through composeDiffs
 // - bidirectional sync (bidi mode): two peers exchange diffs through
-//   inboxes with the documented echo guard, either side writing in a
-//   given step; after delivery both hold the same state
+//   inboxes, applying remote diffs tagged { origin: 'remote' } and sending
+//   only untagged batches (the documented recipe), either side writing in
+//   a given step; after delivery both hold the same state
 //
 // Everything is deterministic from the seed, so a failure prints a
 // reproduction command. Zero dependencies.
@@ -446,11 +447,12 @@ function runOne({ seed, mode, steps, runIndex, trace }) {
   const sender = new LazyWatch(deepClone(initial), mode === 'inverse' ? { inverse: true } : {});
   ctx.sender = sender;
   // bidi mode: a second peer that both receives from and writes to `sender`
-  // through inboxes, with the documented echo guard (flush local changes,
-  // apply the remote diff, flush again while flagged so nothing is sent back)
+  // through inboxes, using the documented recipe — remote diffs are applied
+  // with { origin: 'remote' } metadata, and only batches without that
+  // origin are sent, so nothing is echoed back
   const peer = mode === 'bidi' ? new LazyWatch(deepClone(initial)) : null;
   const inbox = { toSender: [], toPeer: [] };
-  let applyingRemote = false;
+  const REMOTE = { origin: 'remote' };
   const wire = new LazyWatch(deepClone(initial));
   const relay = new LazyWatch(deepClone(initial));
   const plain = deepClone(initial);
@@ -462,8 +464,8 @@ function runOne({ seed, mode, steps, runIndex, trace }) {
   // error isolation; it is parked here and rethrown after the flush
   let pendingFailure = null;
 
-  LazyWatch.on(sender, (diff, inverse) => {
-    if (peer && !applyingRemote) inbox.toPeer.push(roundTrip(diff));
+  LazyWatch.on(sender, (diff, inverse, meta) => {
+    if (peer && meta?.origin !== 'remote') inbox.toPeer.push(roundTrip(diff));
     const post = LazyWatch.snapshot(sender);
     if (inverse !== undefined) {
       const restored = deepClone(post);
@@ -495,8 +497,8 @@ function runOne({ seed, mode, steps, runIndex, trace }) {
     LazyWatch.patch(relay, roundTrip(diff));
   });
   if (peer) {
-    LazyWatch.on(peer, diff => {
-      if (!applyingRemote) inbox.toSender.push(roundTrip(diff));
+    LazyWatch.on(peer, (diff, inverse, meta) => {
+      if (meta?.origin !== 'remote') inbox.toSender.push(roundTrip(diff));
     });
   }
 
@@ -504,14 +506,9 @@ function runOne({ seed, mode, steps, runIndex, trace }) {
     while (inbox.toSender.length || inbox.toPeer.length) {
       for (const [target, box] of [[peer, inbox.toPeer], [sender, inbox.toSender]]) {
         for (const message of box.splice(0)) {
-          LazyWatch.flush(target); // local changes go out before the remote diff lands
-          applyingRemote = true;
-          try {
-            LazyWatch.patch(target, message);
-            LazyWatch.flush(target); // emitted while flagged: applied, not echoed
-          } finally {
-            applyingRemote = false;
-          }
+          // Pending local changes go out first (untagged), then the applied
+          // diff emits tagged and is not sent back
+          LazyWatch.patch(target, message, REMOTE);
         }
       }
     }

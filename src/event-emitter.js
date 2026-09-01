@@ -200,7 +200,12 @@ export class EventEmitter {
   /**
    * Emit the current diff to all listeners
    */
-  #emit() {
+  /**
+   * @param {Object} [meta] - Batch metadata handed to every listener as
+   *   the third argument (only synchronous emits carry one: flush, and
+   *   patch/overwrite called with metadata)
+   */
+  #emit(meta) {
     if (!this.#diffTracker.hasPendingChanges()) return;
 
     this.#lastEmitTime = performance.now();
@@ -246,7 +251,7 @@ export class EventEmitter {
           const filteredInverse = inverse === undefined
             ? undefined
             : this.#filterDiffByPath(inverse, entry.path);
-          entry.listener(filteredDiff, filteredInverse);
+          entry.listener(filteredDiff, filteredInverse, meta);
         }
       } catch (e) {
         console.error('Error in LazyWatch listener:', e);
@@ -396,10 +401,10 @@ export class EventEmitter {
    * Bypasses throttle, debounce, and pause state
    * Used internally by silent() to ensure clean state before silent operations
    */
-  forceEmit() {
+  forceEmit(meta) {
     this.#clearPending();
     if (this.#diffTracker.hasPendingChanges()) {
-      this.#emit();
+      this.#emit(meta);
     }
   }
 

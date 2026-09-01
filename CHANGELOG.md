@@ -6,6 +6,23 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
 
 ## [Unreleased]
 
+### Added
+
+- **Batch metadata and origins.** `LazyWatch.flush(watched, meta)` tags
+  the batch it emits, and `patch`/`overwrite` accept the same `meta` as a
+  third argument: on a proxy target, pending changes emit first
+  (untagged), then the applied changes emit synchronously as their own
+  batch carrying the metadata, which every listener receives as a third
+  argument (`undefined` for ordinary batches). By convention the object is
+  `{ origin: ... }`. This replaces the `applyingRemote` flag-and-flush
+  pattern the docs taught for bidirectional sync with one line per
+  direction (`patch(mirror, diff, { origin: 'remote' })` and a listener
+  that skips that origin), and the manual undo recipe loses its guard the
+  same way. The undo manager tags its batches `{ origin: 'undo' }` and
+  `{ origin: 'redo' }`. Metadata must be an object (TypeError otherwise),
+  is ignored on plain targets, and never travels with the diff. The
+  fuzzer's bidirectional mode now runs on this recipe
+
 ### Fixed
 
 - **`Patch<T>` typed array properties as nullable arrays.** For

@@ -2,7 +2,7 @@
 // Run with: npx -p typescript tsc --project test/tsconfig.json
 // This file is never executed; tsc failing (including unused @ts-expect-error) is the test.
 import { LazyWatch, PROXY_TARGET, LAZYWATCH_INSTANCE } from '../src/lazy-watch.js';
-import type { ChangeSet, ChangeListener, Patch, ArrayPatch, SpliceOp, Unsubscribe, UndoManager } from '../src/lazy-watch.js';
+import type { ChangeSet, ChangeListener, Patch, ArrayPatch, SpliceOp, Unsubscribe, UndoManager, BatchMeta } from '../src/lazy-watch.js';
 
 const frag: ArrayPatch<string> = { 1: 'b', $length: 2 };
 const op: SpliceOp<string> = [0, 1, ['x']];
@@ -49,6 +49,19 @@ const loose: ChangeListener = changes => { const c: ChangeSet | null = changes; 
 LazyWatch.on(watched, loose);
 LazyWatch.off(watched, loose);
 LazyWatch.off(watched, () => {});
+
+// Batch metadata: flush and patch/overwrite accept it; listeners receive it third
+LazyWatch.on(watched, (changes, inverse, meta) => {
+  const origin: unknown = meta?.origin;
+  const m: BatchMeta | undefined = meta;
+  void changes, inverse, origin, m;
+});
+LazyWatch.flush(watched, { origin: 'remote' });
+LazyWatch.patch(watched, { age: 1 }, { origin: 'remote', seq: 3 });
+LazyWatch.overwrite(watched, { name: 'x' }, { origin: 'snapshot' });
+LazyWatch.patchObject(watched, { age: 2 }, { origin: 'remote' });
+// @ts-expect-error - metadata is an object
+LazyWatch.flush(watched, 'remote');
 
 // on/once return an unsubscribe function
 const stop: Unsubscribe = LazyWatch.on(watched, () => {});

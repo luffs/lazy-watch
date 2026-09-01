@@ -126,7 +126,7 @@ semantics, edge cases, and examples for each — lives in
 | | |
 |---|---|
 | **Watch & listen** | [`new LazyWatch(obj, options)`](docs/API.md#creating-watched-objects) · [`on`](docs/API.md#listening-for-changes) · [`once`](docs/API.md#one-shot-listeners) · [`off`](docs/API.md#removing-listeners) · [`flush`](docs/API.md#flushing-pending-changes) · [`pause` / `resume` / `isPaused`](docs/API.md#pausing-and-resuming-event-emissions) |
-| **Apply changes** | [`patch`](docs/API.md#patching) · [`overwrite`](docs/API.md#overwriting) · [`composeDiffs`](docs/API.md#composing-diffs) — both accept a LazyWatch proxy (tracked) or a normal object (plain applier) |
+| **Apply changes** | [`patch`](docs/API.md#patching) · [`overwrite`](docs/API.md#overwriting) · [`composeDiffs`](docs/API.md#composing-diffs) — both accept a LazyWatch proxy (tracked) or a normal object (plain applier); a third argument [tags the batch](docs/API.md#batch-metadata-and-origins) (`{ origin: 'remote' }`) so listeners can tell remote from local |
 | **Undo & atomicity** | [`inverse` option](docs/API.md#inverse-diffs-undo) · [`transaction`](docs/API.md#transactions) · [`createUndoManager`](docs/API.md#undo-manager) · [`silent`](docs/API.md#silent-mutations) |
 | **Inspect** | [`snapshot`](docs/API.md#taking-snapshots) · [`getPendingDiff`](docs/API.md#inspecting-pending-changes) · [`isProxy` / `resolveIfProxy`](docs/API.md#identifying-and-unwrapping-proxies) |
 | **Lifecycle** | [`dispose`](docs/API.md#disposing) |

@@ -177,13 +177,19 @@ export class LazyWatch {
    * @param {Object} target - A LazyWatch proxy (root or nested) or a
    *   normal object/array
    * @param {Object} source - The authoritative state to match
+   * @param {Object} [meta] - Batch metadata, by convention `{ origin }`:
+   *   on a proxy target, pending changes emit first and the applied
+   *   changes then emit synchronously as their own batch, handed to
+   *   listeners as the third argument. Lets a sync layer tell remote
+   *   batches from local ones without a guard flag. Ignored on plain
+   *   targets, which emit nothing
    */
-  static overwrite(target, source) {
+  static overwrite(target, source, meta) {
     const instance = LazyWatch.#tryGetInstance(target);
     if (instance) {
       instance.#checkDisposed();
-      instance.#proxyHandler.overwrite(
-        target, source, instance.#proxyHandler.getProxyPath(target));
+      LazyWatch.#applyTracked(instance, () => instance.#proxyHandler.overwrite(
+        target, source, instance.#proxyHandler.getProxyPath(target)), meta);
       return;
     }
     LazyWatch.#assertPlainTarget(target, 'overwrite');
@@ -203,13 +209,23 @@ export class LazyWatch {
    * @param {Object} target - A LazyWatch proxy (root or nested) or a
    *   normal object/array
    * @param {Object} source - The values to merge
+   * @param {Object} [meta] - Batch metadata, by convention `{ origin }`:
+   *   on a proxy target, pending changes emit first and the applied
+   *   changes then emit synchronously as their own batch, handed to
+   *   listeners as the third argument (see {@link LazyWatch.overwrite})
+   * @example
+   * // Bidirectional sync without an echo-guard flag
+   * LazyWatch.on(mirror, (diff, inverse, meta) => {
+   *   if (meta?.origin !== 'remote') ws.send(JSON.stringify(diff));
+   * });
+   * ws.onmessage = e => LazyWatch.patch(mirror, JSON.parse(e.data), { origin: 'remote' });
    */
-  static patch(target, source) {
+  static patch(target, source, meta) {
     const instance = LazyWatch.#tryGetInstance(target);
     if (instance) {
       instance.#checkDisposed();
-      instance.#proxyHandler.patch(
-        target, source, instance.#proxyHandler.getProxyPath(target));
+      LazyWatch.#applyTracked(instance, () => instance.#proxyHandler.patch(
+        target, source, instance.#proxyHandler.getProxyPath(target)), meta);
       return;
     }
     LazyWatch.#assertPlainTarget(target, 'patch');
@@ -222,16 +238,16 @@ export class LazyWatch {
    * Alias of {@link LazyWatch.patch}, kept for backward compatibility.
    * @deprecated Use LazyWatch.patch — it accepts normal objects too
    */
-  static patchObject(target, source) {
-    LazyWatch.patch(target, source);
+  static patchObject(target, source, meta) {
+    LazyWatch.patch(target, source, meta);
   }
 
   /**
    * Alias of {@link LazyWatch.overwrite}, kept for backward compatibility.
    * @deprecated Use LazyWatch.overwrite — it accepts normal objects too
    */
-  static overwriteObject(target, source) {
-    LazyWatch.overwrite(target, source);
+  static overwriteObject(target, source, meta) {
+    LazyWatch.overwrite(target, source, meta);
   }
 
   /**
@@ -453,10 +469,39 @@ export class LazyWatch {
    * watched.count = 1;
    * LazyWatch.flush(watched); // listener fires now, not on the next microtask
    */
-  static flush(watched) {
+  static flush(watched, meta) {
     const instance = LazyWatch.#getInstance(watched);
     instance.#checkDisposed();
+    LazyWatch.#assertMeta(meta);
+    instance.#eventEmitter.forceEmit(meta);
+  }
+
+  /**
+   * Batch metadata is an object (by convention `{ origin }`) or absent;
+   * anything else is almost certainly a misplaced argument
+   */
+  static #assertMeta(meta) {
+    if (meta !== undefined && (meta === null || typeof meta !== 'object')) {
+      throw new TypeError('LazyWatch batch metadata must be an object, e.g. { origin: "remote" }');
+    }
+  }
+
+  /**
+   * Run a tracked apply on a proxy target, emitting the applied changes
+   * as their own batch tagged with `meta` when metadata was given:
+   * pending changes emit first (untagged), so the tagged batch contains
+   * exactly what the call applied. Without metadata the changes join the
+   * normal batch.
+   */
+  static #applyTracked(instance, apply, meta) {
+    LazyWatch.#assertMeta(meta);
+    if (meta === undefined) {
+      apply();
+      return;
+    }
     instance.#eventEmitter.forceEmit();
+    apply();
+    instance.#eventEmitter.forceEmit(meta);
   }
 
   /**
@@ -639,7 +684,7 @@ export class LazyWatch {
         coalesce: options.coalesce,
         compose: (older, newer) => LazyWatch.composeDiffs(older, newer),
         subscribe: listener => instance.#eventEmitter.on(listener, []),
-        flush: () => instance.#eventEmitter.forceEmit(),
+        flush: meta => instance.#eventEmitter.forceEmit(meta),
         patch: diff => instance.#proxyHandler.patch(instance.#proxy, diff),
         hasPending: () => tracker.hasPendingChanges(),
         onDispose: () => {

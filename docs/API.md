@@ -22,7 +22,7 @@ mirroring, undo/redo, form validation), see [EXAMPLES.md](../EXAMPLES.md).
 - [Undo Manager](#undo-manager)
   - [Grouping and coalescing](#grouping-and-coalescing)
 - [Applying Changes](#applying-changes)
-  - [Patching](#patching) · [Overwriting](#overwriting)
+  - [Patching](#patching) · [Overwriting](#overwriting) · [Batch metadata and origins](#batch-metadata-and-origins)
 - [Composing Diffs](#composing-diffs)
 - [Identifying and Unwrapping Proxies](#identifying-and-unwrapping-proxies)
 - [Disposing](#disposing)
@@ -124,6 +124,10 @@ const stop = LazyWatch.on(watched, diff => render(diff));
 // later:
 stop(); // listener removed; calling stop() again is a harmless no-op
 ```
+
+The callback receives the diff, the [inverse diff](#inverse-diffs-undo)
+when inverse recording is on, and the [batch metadata](#batch-metadata-and-origins)
+when the batch was tagged (`undefined` otherwise).
 
 **Options** (all optional):
 - `once` - Remove the listener after its first invocation
@@ -288,6 +292,14 @@ window.addEventListener('beforeunload', () => {
 });
 ```
 
+A second argument tags the batch with [metadata](#batch-metadata-and-origins)
+that listeners receive alongside it:
+
+```js
+LazyWatch.flush(data, { origin: 'autosave' });
+// listeners: (diff, inverse, meta) => meta.origin === 'autosave'
+```
+
 ## Inspecting Pending Changes
 
 ```js
@@ -419,22 +431,16 @@ patch that undoes the batch. Listeners receive it as a second argument
 const doc = new LazyWatch({ text: '', cursor: 0 }, { inverse: true });
 
 const undoStack = [];
-let undoing = false;
 
-LazyWatch.on(doc, (diff, inverse) => {
-  if (!undoing) undoStack.push(inverse);
+LazyWatch.on(doc, (diff, inverse, meta) => {
+  if (meta?.origin !== 'undo') undoStack.push(inverse);
 });
 
 function undo() {
   const inverse = undoStack.pop();
-  if (!inverse) return;
-  undoing = true;
-  try {
-    LazyWatch.patch(doc, inverse);
-    LazyWatch.flush(doc); // emit synchronously, while the guard is set
-  } finally {
-    undoing = false;
-  }
+  // Applied as its own batch tagged { origin: 'undo' }, which the
+  // listener above skips — no guard flag needed
+  if (inverse) LazyWatch.patch(doc, inverse, { origin: 'undo' });
 }
 
 doc.text = 'hello';
@@ -537,7 +543,10 @@ manager.canRedo;  // false
 Undo and redo apply through the normal patch path and emit to the
 instance's other listeners as ordinary batches — **synced mirrors follow
 undo history automatically**, with no special handling on the receiving
-side. New changes clear the redo stack (standard undo-history semantics),
+side — tagged with `{ origin: 'undo' }` / `{ origin: 'redo' }`
+[metadata](#batch-metadata-and-origins), so a listener that must treat
+history replay differently can. New changes clear the redo stack
+(standard undo-history semantics),
 and a successful `LazyWatch.transaction` forms a single undo step.
 
 The manager works on any instance: `{ inverse: true }` is not required.
@@ -684,6 +693,42 @@ socket.on('snapshot', data => {
   LazyWatch.overwrite(appState, data); // appState now matches exactly
 });
 ```
+
+### Batch metadata and origins
+
+```js
+LazyWatch.patch(target, diff, meta);
+LazyWatch.overwrite(target, source, meta);
+LazyWatch.flush(watched, meta);
+```
+
+A third argument (second for `flush`) tags the emitted batch with
+**metadata**: an object, by convention `{ origin: ... }`, handed to every
+listener as the third argument. On a proxy target, `patch`/`overwrite`
+with metadata first emit any changes still batched — untagged, as their
+own batch — then apply the source and emit the applied changes
+synchronously with the metadata attached, so the tagged batch contains
+exactly what the call applied. `flush` tags whatever is pending. Ordinary
+microtask-batched changes carry no metadata (`meta` is `undefined`), and
+metadata is ignored on plain targets, which emit nothing.
+
+This is what a sync layer needs to tell remote batches from local edits —
+the [bidirectional recipe](../EXAMPLES.md#bidirectional-edits) in one
+line per direction, with no guard flag:
+
+```js
+LazyWatch.on(mirror, (diff, inverse, meta) => {
+  if (meta?.origin !== 'remote') ws.send(JSON.stringify(diff));
+});
+
+ws.onmessage = e => LazyWatch.patch(mirror, JSON.parse(e.data), { origin: 'remote' });
+```
+
+Nested listeners receive the same metadata for the batches that touch
+their subtree. The [undo manager](#undo-manager) tags the batches it emits
+with `{ origin: 'undo' }` and `{ origin: 'redo' }`, so history replay is
+distinguishable from an edit. Metadata never travels with the diff — it
+describes the batch on this instance only.
 
 ## Composing Diffs
 

@@ -18,6 +18,18 @@ export type ChangeSet = Record<string, any>;
 export type Unsubscribe = () => void;
 
 /**
+ * Metadata attached to one emitted batch: the object passed to
+ * `LazyWatch.flush`, or as the third argument of `patch`/`overwrite`. By
+ * convention it carries an `origin` telling listeners where the batch
+ * came from ('remote', 'undo', 'redo', ...). Only synchronous emits carry
+ * metadata; ordinary microtask-batched changes deliver `undefined`.
+ */
+export interface BatchMeta {
+    origin?: unknown;
+    [key: string]: unknown;
+}
+
+/**
  * One compact structural array op: `[start, deleteCount, items]`
  */
 export type SpliceOp<E = any> = [start: number, deleteCount: number, items?: E[]];
@@ -80,6 +92,12 @@ export type Patch<T> = T extends readonly (infer E)[] ? ArrayPatch<E> : {
  * for the same batch (path-relative for nested listeners). Applying it with
  * LazyWatch.patch restores the pre-batch state.
  *
+ * The third argument is the batch's metadata when the batch was tagged
+ * (`LazyWatch.flush(watched, meta)`, or `patch`/`overwrite` with a third
+ * argument; the undo manager tags its batches `{ origin: 'undo' | 'redo' }`)
+ * and `undefined` otherwise — a sync layer skips re-sending batches whose
+ * origin is the remote side.
+ *
  * Wire-level shapes — index-keyed array fragments and `$splice` op lists —
  * are delivered inside the diff where an array changed; access them by
  * casting the fragment to `ChangeSet` when you need to inspect them.
@@ -89,7 +107,8 @@ export type Patch<T> = T extends readonly (infer E)[] ? ArrayPatch<E> : {
  */
 export type ChangeListener<T extends object = any> = (
     changes: Patch<T> | null,
-    inverse?: Patch<T> | null
+    inverse?: Patch<T> | null,
+    meta?: BatchMeta
 ) => void;
 
 /**
@@ -251,7 +270,8 @@ export interface UndoManagerOptions {
  *
  * Each emitted batch is one undoable step. undo() and redo() apply through
  * the instance's normal patch path and emit to other listeners as an
- * ordinary batch, so synced mirrors follow undo history automatically
+ * ordinary batch tagged `{ origin: 'undo' }` / `{ origin: 'redo' }`, so
+ * synced mirrors follow undo history automatically
  */
 export interface UndoManager {
     /**
@@ -436,6 +456,10 @@ export interface LazyWatchStatic {
      * were deleted while disconnected
      * @param target - A LazyWatch proxy (root or nested) or a normal object/array
      * @param source - The authoritative state to match
+     * @param meta - Batch metadata, by convention `{ origin }`: on a proxy
+     * target, pending changes emit first and the applied changes then emit
+     * synchronously as their own batch tagged with it (listeners receive
+     * it as the third argument). Ignored on plain targets
      * @throws {TypeError} If source is not an object, or a non-proxy
      * target is not a plain object/array
      * @throws {Error} If a proxy target's instance has been disposed
@@ -450,7 +474,7 @@ export interface LazyWatchStatic {
      * LazyWatch.overwrite(mirror, { a: 10, c: { d: 30 } });
      * // mirror is now { a: 10, c: { d: 30 } } — b and c.e are deleted, untracked
      */
-    overwrite<T extends object>(target: T, source: Patch<T> | ChangeSet): void;
+    overwrite<T extends object>(target: T, source: Patch<T> | ChangeSet, meta?: BatchMeta): void;
 
     /**
      * Patch (merge) new values without deleting missing properties.
@@ -462,6 +486,12 @@ export interface LazyWatchStatic {
      * such as a Vue `reactive` object)
      * @param target - A LazyWatch proxy (root or nested) or a normal object/array
      * @param source - The values to merge (may be a diff received from a listener)
+     * @param meta - Batch metadata, by convention `{ origin }`: on a proxy
+     * target, pending changes emit first and the applied changes then emit
+     * synchronously as their own batch tagged with it — the echo-free way
+     * to apply a remote diff: `patch(mirror, diff, { origin: 'remote' })`
+     * with listeners skipping batches whose `meta?.origin` is 'remote'.
+     * Ignored on plain targets
      * @throws {TypeError} If source is not an object, or a non-proxy
      * target is not a plain object/array
      * @throws {Error} If a proxy target's instance has been disposed
@@ -477,19 +507,19 @@ export interface LazyWatchStatic {
      * LazyWatch.patch(obj, { b: null, c: 30 });
      * // obj is now { a: 1, c: 30 }
      */
-    patch<T extends object>(target: T, source: Patch<T> | ChangeSet): void;
+    patch<T extends object>(target: T, source: Patch<T> | ChangeSet, meta?: BatchMeta): void;
 
     /**
      * Alias of {@link patch}, kept for backward compatibility
      * @deprecated Use `LazyWatch.patch` — it accepts normal objects too
      */
-    patchObject<T extends object>(target: T, source: Patch<T> | ChangeSet): void;
+    patchObject<T extends object>(target: T, source: Patch<T> | ChangeSet, meta?: BatchMeta): void;
 
     /**
      * Alias of {@link overwrite}, kept for backward compatibility
      * @deprecated Use `LazyWatch.overwrite` — it accepts normal objects too
      */
-    overwriteObject<T extends object>(target: T, source: Patch<T> | ChangeSet): void;
+    overwriteObject<T extends object>(target: T, source: Patch<T> | ChangeSet, meta?: BatchMeta): void;
 
     /**
      * Compose two sequential diffs into one equivalent diff: applying the
@@ -558,9 +588,12 @@ export interface LazyWatchStatic {
      * Bypasses microtask batching, throttle, debounce, and pause state.
      * Does nothing if there are no pending changes
      * @param watched - The LazyWatch proxy
+     * @param meta - Batch metadata handed to listeners as the third
+     * argument, by convention `{ origin }`
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
+     * @throws {TypeError} If meta is not an object
      */
-    flush(watched: object): void;
+    flush(watched: object, meta?: BatchMeta): void;
 
     /**
      * Pause event emissions

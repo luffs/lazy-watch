@@ -191,31 +191,24 @@ connect();
 
 Because applying a diff re-emits it, a naive "send every diff to the other
 side" echoes remote changes straight back where they came from — an infinite
-loop between two mirrors. Suppress the echo with a flag, using `flush()` to
-force the emit to happen *synchronously* while the flag is still set (the
-normal microtask batching would fire the listener after the flag is cleared):
+loop between two mirrors. Tag the batches you apply with an
+[origin](docs/API.md#batch-metadata-and-origins) and skip them when sending.
+`patch`/`overwrite` with metadata emit any local changes still batched
+first, then emit the applied diff synchronously with the metadata attached,
+so the two directions never mix:
 
 ```javascript
-let applyingRemote = false;
-
-LazyWatch.on(mirror, diff => {
+LazyWatch.on(mirror, (diff, inverse, meta) => {
   render(diff);
-  if (!applyingRemote) {
+  if (meta?.origin !== 'remote') {
     ws.send(JSON.stringify({ type: 'diff', data: diff }));
   }
 });
 
 ws.onmessage = event => {
   const { type, data } = JSON.parse(event.data);
-  LazyWatch.flush(mirror); // send local changes still batched, before flagging
-  applyingRemote = true;
-  try {
-    if (type === 'snapshot') LazyWatch.overwrite(mirror, data);
-    else LazyWatch.patch(mirror, data);
-    LazyWatch.flush(mirror); // emit the applied diff now, while flagged
-  } finally {
-    applyingRemote = false;
-  }
+  if (type === 'snapshot') LazyWatch.overwrite(mirror, data, { origin: 'remote' });
+  else LazyWatch.patch(mirror, data, { origin: 'remote' });
 };
 ```
 

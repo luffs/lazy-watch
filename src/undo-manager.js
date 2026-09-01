@@ -47,7 +47,8 @@ export class UndoManager {
    * @param {Object} deps
    * @param {Function} deps.subscribe - (listener) => unsubscribe; listener
    *   receives (diff, inverse) per batch
-   * @param {Function} deps.flush - Synchronously emit pending changes
+   * @param {Function} deps.flush - (meta?) => void; synchronously emit
+   *   pending changes, tagged with `meta` when given
    * @param {Function} deps.patch - Apply a diff to the watched state
    * @param {Function} deps.hasPending - True when un-emitted changes exist
    * @param {Function} deps.compose - (older, newer) => single equivalent
@@ -230,7 +231,8 @@ export class UndoManager {
           this.#patch(segment.diff);
         }
       }
-      this.#flush();
+      // Tagged so other listeners can tell history replay from an edit
+      this.#flush({ origin: isUndo ? 'undo' : 'redo' });
     } finally {
       this.#applying = false;
     }
