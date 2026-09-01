@@ -6,8 +6,42 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
 
 ## [Unreleased]
 
+### Breaking
+
+- **`Date` and `RegExp` are no longer accepted in watched state**, and
+  neither are `bigint`, `symbol`, or function values — all rejected with a
+  `TypeError` naming the path at every entry point (constructor,
+  assignment, array methods, `patch`/`overwrite`/`composeDiffs`), like
+  `NaN` and the collection types already were, and for the same reason:
+  JSON cannot carry them faithfully. A `Date` arrived on mirrors as an ISO
+  string, and in a bidirectional link the sender itself drifted to a
+  string on the echo; a `RegExp` arrived as `{}`; `JSON.stringify` threw
+  on `bigint` inside the listener; symbols and functions vanished — each a
+  silent desync the "diffs are plain JSON" contract never allowed for.
+  Store timestamps (`date.getTime()`) or ISO strings, regex source/flags,
+  and numbers instead. `Utils.deepClone`/`deepEqual` still handle Date and
+  RegExp as general-purpose helpers
+
 ### Fixed
 
+- **Frozen containers and exotic properties in the constructor argument
+  produced phantom diffs.** LazyWatch keeps that object by reference, so a
+  frozen/sealed/non-extensible container, a getter, or a non-writable,
+  non-enumerable, or non-configurable property could arrive through it;
+  a later write then threw natively *after* its diff entry was recorded,
+  and the phantom entry rode along with the next batch — the sender
+  unchanged, every mirror desynced. The constructor now validates the
+  whole tree once (`Utils.assertTrackable`, exposed) and rejects these
+  with a `TypeError` naming the path, matching what the `defineProperty`
+  and `preventExtensions` traps already enforce on live state. Values
+  assigned later were always cloned and are unaffected
+- **Array deletions emitted fragments without `$length`.** `delete arr[i]`,
+  `arr[i] = undefined`, and applier deletions on arrays (a `null` in a
+  received fragment, a hole in a wholesale source array) emitted
+  `{ i: null }` with no marker, so a receiver that lacked the field stored
+  a plain object instead of reviving an array. Deletions now stamp
+  `$length` like every other array fragment (inverse diffs too), so all
+  array fragments are self-describing on the wire
 - **Writes through a detached nested proxy desynced mirrors.** A handle to
   an element (`const todo = app.todos[1]`) whose slot was later removed by
   `shift`/`splice`, deleted, replaced by a leaf, or truncated away still

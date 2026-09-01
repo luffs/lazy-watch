@@ -213,7 +213,6 @@ export class DiffTracker {
    */
   getPendingDiff() {
     // Return a deep clone to prevent external modifications
-    // (structured clone, not JSON, so Date leaves survive intact)
     return Utils.deepClone(this.#masterDiff);
   }
 

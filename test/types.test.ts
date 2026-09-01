@@ -168,6 +168,9 @@ const isObj: boolean = LazyWatch.Utils.isObjectOrArray([]);
 void isObj;
 const isPlain: boolean = LazyWatch.Utils.isPlainObject({});
 void isPlain;
+LazyWatch.Utils.assertSupported({ a: 1 });
+LazyWatch.Utils.assertSupportedDiff({ a: null, list: { $length: 0 } });
+LazyWatch.Utils.assertTrackable({ a: 1 }, []);
 
 // Symbols
 const s1: symbol = PROXY_TARGET;

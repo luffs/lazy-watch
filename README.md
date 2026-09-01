@@ -51,7 +51,7 @@ npm install lazy-watch
 ```
 
 The published package is plain ES modules — the same readable source that
-lives in `src/`. No build step, no dependencies, about 7.7 kB min+gzip for
+lives in `src/`. No build step, no dependencies, about 8 kB min+gzip for
 the whole library (checked in CI with `npm run test:size`).
 
 ## Quick Start

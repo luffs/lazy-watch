@@ -109,7 +109,7 @@ export function composeFragments(a, b, applyFragment, path = []) {
  */
 function composeValue(av, bv, applyFragment, path) {
   if (bv === null) return null;
-  if (!Utils.isObjectOrArray(bv)) return Utils.deepClone(bv); // leaf: primitive, Date, RegExp
+  if (!Utils.isObjectOrArray(bv)) return bv; // leaf: a JSON-safe primitive
   if (Array.isArray(bv)) return Utils.deepClone(bv); // wholesale array replaces anything
 
   // bv is a plain-object fragment (object diff, array fragment, or a full

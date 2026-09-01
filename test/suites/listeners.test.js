@@ -482,14 +482,14 @@ export default function register(runner) {
   });
 
   runner.test('snapshot should return an independent deep clone', async () => {
-    const watched = new LazyWatch({ user: { name: 'Alice', tags: ['a'] }, when: new Date(0) });
+    const watched = new LazyWatch({ user: { name: 'Alice', tags: ['a'] }, when: 0 });
     let calls = 0;
     LazyWatch.on(watched, () => { calls++; });
 
     const snap = LazyWatch.snapshot(watched);
-    assertEquals(snap, { user: { name: 'Alice', tags: ['a'] }, when: new Date(0) });
-    assertTrue(snap.when instanceof Date, 'Date leaves should keep their type');
+    assertEquals(snap, { user: { name: 'Alice', tags: ['a'] }, when: 0 });
     assertTrue(!LazyWatch.isProxy(snap), 'snapshot should be a plain object, not a proxy');
+    assertTrue(!LazyWatch.isProxy(snap.user), 'nested containers should be plain too');
 
     // Mutating the snapshot must not touch the watched object or emit
     snap.user.name = 'Bob';

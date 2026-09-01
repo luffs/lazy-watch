@@ -466,4 +466,60 @@ export default function register(runner) {
       'inverse should restore the pre-sort order');
     LazyWatch.dispose(src);
   });
+
+  // --- Deletions on arrays carry $length ---
+  // `delete arr[i]` and `arr[i] = undefined` used to emit { i: null } with
+  // no $length, so a receiver lacking the field stored a plain object.
+  runner.test('deleting an array index should emit a self-describing fragment with $length', async () => {
+    const src = new LazyWatch({ arr: [1, 2, 3] });
+    const diffs = [];
+    LazyWatch.on(src, d => diffs.push(d));
+
+    delete src.arr[1];
+    await wait(5);
+    src.arr[0] = undefined;
+    await wait(5);
+    assertEquals(diffs, [{ arr: { 1: null, $length: 3 } }, { arr: { 0: null, $length: 3 } }]);
+
+    // A receiver that never saw the field revives an array, not an object
+    const fresh = new LazyWatch({});
+    LazyWatch.patch(fresh, JSON.parse(JSON.stringify(diffs[0])));
+    assertTrue(Array.isArray(fresh.arr), 'fragment should revive as an array');
+    assertEquals(fresh.arr.length, 3);
+    LazyWatch.dispose(src);
+    LazyWatch.dispose(fresh);
+  });
+
+  runner.test('applier deletions on arrays should re-emit with $length (relay chains)', async () => {
+    const patched = new LazyWatch({ arr: [1, 2, 3] });
+    const overwritten = new LazyWatch({ arr: [1, 2, 3] });
+    const diffs = [];
+    LazyWatch.on(patched, d => diffs.push(d));
+    LazyWatch.on(overwritten, d => diffs.push(d));
+
+    LazyWatch.patch(patched, { arr: { 1: null } }); // a fragment without the marker
+    await wait(5);
+    LazyWatch.overwrite(overwritten, { arr: [1, , 3] }); // sparse source: the hole clears slot 1
+    await wait(5);
+    assertEquals(diffs, [{ arr: { 1: null, $length: 3 } }, { arr: { 1: null, $length: 3 } }]);
+    assertEquals(JSON.parse(JSON.stringify(LazyWatch.snapshot(patched))), { arr: [1, null, 3] });
+    assertEquals(JSON.parse(JSON.stringify(LazyWatch.snapshot(overwritten))), { arr: [1, null, 3] });
+    LazyWatch.dispose(patched);
+    LazyWatch.dispose(overwritten);
+  });
+
+  runner.test('the inverse of an index deletion should restore the element', async () => {
+    const src = new LazyWatch({ arr: [1, 2, 3] }, { inverse: true });
+    let inverse;
+    LazyWatch.on(src, (d, inv) => { inverse = inv; });
+
+    delete src.arr[1];
+    await wait(5);
+    assertEquals(inverse, { arr: { 1: 2, $length: 3 } });
+
+    LazyWatch.patch(src, inverse);
+    await wait(5);
+    assertEquals(LazyWatch.snapshot(src), { arr: [1, 2, 3] });
+    LazyWatch.dispose(src);
+  });
 }

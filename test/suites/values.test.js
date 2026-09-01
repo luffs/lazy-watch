@@ -1,5 +1,6 @@
-// values.test.js - Supported-value rules: collection/class-instance rejection, Date/RegExp leaves,
-// prototype pollution and wire safety, and symbol-keyed local-only metadata
+// values.test.js - Supported-value rules: collection/class-instance rejection, non-JSON leaf
+// rejection (Date, RegExp, bigint, symbol, function), prototype pollution and wire safety,
+// and symbol-keyed local-only metadata
 import { LazyWatch } from '../../src/lazy-watch.js';
 import { assertEquals, assertTrue, assertThrows, assertConverged, wait } from '../helpers.js';
 
@@ -47,30 +48,65 @@ export default function register(runner) {
     }
   });
 
-  runner.test('Date and RegExp should work as leaf values', () => {
-    const watched = new LazyWatch({
-      when: new Date('2026-01-01'),
-      pattern: /ab+c/
-    });
+  // --- Values JSON cannot carry faithfully ---
+  // Date arrives as a string (and the sender drifts to a string on echo),
+  // RegExp as {}, functions and symbols vanish, and JSON.stringify throws
+  // on bigint — every one of them a silent mirror desync or a crash inside
+  // the listener. Rejected like NaN, at every entry point.
+  const NON_JSON_VALUES = [
+    ['Date', new Date('2026-01-01')],
+    ['RegExp', /ab+c/],
+    ['bigint', 10n],
+    ['symbol', Symbol('s')],
+    ['function', () => 1]
+  ];
 
-    assertTrue(watched.when instanceof Date, 'value should still be a Date');
-    assertEquals(watched.when.getFullYear(), 2026, 'Date methods should work through the proxy');
-    assertTrue(watched.pattern.test('abbc'), 'RegExp.test should work through the proxy');
-
+  runner.test('Date, RegExp, bigint, symbol, and function values should be rejected at every entry point', () => {
+    const watched = new LazyWatch({ a: 1, list: ['x'] });
+    let emits = 0;
+    LazyWatch.on(watched, () => emits++);
+    for (const [name, value] of NON_JSON_VALUES) {
+      assertThrows(() => new LazyWatch({ v: value }), `constructor should reject ${name}`);
+      assertThrows(() => new LazyWatch({ deep: { list: [value] } }), `constructor should reject nested ${name}`);
+      assertThrows(() => { watched.v = value; }, `assignment should reject ${name}`);
+      assertThrows(() => { watched.v = { deep: value }; }, `nested assignment should reject ${name}`);
+      assertThrows(() => watched.list.push(value), `push should reject ${name}`);
+      assertThrows(() => watched.list.unshift(value), `unshift should reject ${name}`);
+      assertThrows(() => LazyWatch.patch(watched, { v: value }), `patch should reject ${name}`);
+      assertThrows(() => LazyWatch.overwrite(watched, { a: 1, v: value }), `overwrite should reject ${name}`);
+      assertThrows(() => LazyWatch.patch({}, { v: value }), `plain patch should reject ${name}`);
+      assertThrows(() => LazyWatch.composeDiffs({ v: value }, {}), `composeDiffs should reject ${name}`);
+    }
+    assertEquals(LazyWatch.snapshot(watched), { a: 1, list: ['x'] }, 'state must be untouched');
+    assertEquals(LazyWatch.getPendingDiff(watched), {}, 'nothing may be recorded');
+    assertEquals(emits, 0);
     LazyWatch.dispose(watched);
   });
 
-  runner.test('replacing a leaf value should emit a diff', async () => {
-    const watched = new LazyWatch({ when: new Date(0) });
+  runner.test('non-JSON value rejections should name the type and path', () => {
+    for (const [name, value] of NON_JSON_VALUES) {
+      try {
+        new LazyWatch({ deep: { v: value } });
+        throw new Error('should have thrown');
+      } catch (e) {
+        assertTrue(e instanceof TypeError, `${name}: should be a TypeError`);
+        assertTrue(e.message.includes(name), `${name}: message should name the type: ${e.message}`);
+        assertTrue(e.message.includes('deep.v'), `${name}: message should name the path: ${e.message}`);
+      }
+    }
+  });
+
+  runner.test('JSON-safe leaf replacements should still emit and keep their type', async () => {
+    const watched = new LazyWatch({ when: 0, flag: false, label: '' });
     let changes = null;
     LazyWatch.on(watched, diff => { changes = diff; });
 
-    watched.when = new Date('2026-01-01');
+    watched.when = Date.UTC(2026, 0, 1); // the wire-safe form of a Date
+    watched.flag = true;
+    watched.label = 'x';
     await wait(10);
 
-    assertTrue(changes !== null, 'replacing a Date should emit');
-    assertTrue(changes.when instanceof Date, 'diff should contain the Date');
-    assertEquals(changes.when.getFullYear(), 2026);
+    assertEquals(changes, { when: Date.UTC(2026, 0, 1), flag: true, label: 'x' });
     LazyWatch.dispose(watched);
   });
 
@@ -378,15 +414,6 @@ export default function register(runner) {
 
     assertTrue(!('4' in diff.items), 'stale index beyond new length should be dropped');
     assertEquals(diff.items.$length, 2);
-    LazyWatch.dispose(watched);
-  });
-
-  runner.test('getPendingDiff should preserve Date values', () => {
-    const watched = new LazyWatch({ when: new Date(0) });
-    watched.when = new Date('2026-01-01');
-    const pending = LazyWatch.getPendingDiff(watched);
-    assertTrue(pending.when instanceof Date, 'pending diff should keep Date instances');
-    assertEquals(pending.when.getFullYear(), 2026);
     LazyWatch.dispose(watched);
   });
 

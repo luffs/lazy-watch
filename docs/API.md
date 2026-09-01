@@ -201,7 +201,7 @@ app.settings.lang = 'fr';   // Only settings listener fires
 
 **Subtree deletion and replacement:** when the subtree a nested listener is
 registered on is deleted — or replaced wholesale by a leaf value (string,
-number, boolean, `Date`, ...) — the listener is called with `null` for a
+number, boolean) — the listener is called with `null` for a
 deletion (matching the diff convention where `null` means delete) or with the
 new leaf value for a replacement. This also applies when an *ancestor* of the
 subtree is deleted or replaced by a leaf: the listener receives `null`.
@@ -917,9 +917,10 @@ Detection keys on the fragment's numeric `$length` marker, and revival only
 applies where the target has no existing container — an existing plain
 object is always merged as an object (target shape wins; the fragment's
 `$length` and `$splice` markers are dropped there rather than landing as
-data). Array diffs emitted by this version always include `$length`, so
-fragments are self-describing on the wire — a pure truncation
-(`{ $length: 1 }`) revives correctly too.
+data). Array diffs emitted by this version always include `$length` — index
+writes, structural ops, and deletions alike — so fragments are
+self-describing on the wire; a pure truncation (`{ $length: 1 }`) revives
+correctly too.
 
 Because `$length` is a [reserved name](#supported-values) that can never
 appear in watched state, plain data is never mistaken for a fragment: an
@@ -942,14 +943,28 @@ everywhere (e.g. `task.assignees ??= []`) before mutating them.
 
 ## Supported Values
 
-Watched state must be JSON-shaped data: plain objects, arrays, and primitives,
-plus `Date` and `RegExp` as **leaf values** — they are returned as-is (methods
-work normally) and tracked only on wholesale replacement:
+Watched state must be JSON-shaped data: plain objects, arrays, strings,
+finite numbers, and booleans. Everything JSON cannot carry faithfully is
+**rejected with a `TypeError`** at every entry point — the constructor,
+property assignment, array methods, and `patch`/`overwrite`/`composeDiffs`
+— naming the offending path, because a value that changes shape on the
+wire is a silent mirror desync waiting to happen:
+
+| Value | What JSON does to it | Store instead |
+|---|---|---|
+| `Date` | becomes an ISO string, and the sender itself drifts to a string when the diff echoes back | `date.getTime()` or an ISO string |
+| `RegExp` | becomes `{}` | its `source` and `flags` strings |
+| `bigint` | `JSON.stringify` throws inside your listener | a string or a number |
+| `symbol`, function | dropped | plain data, or a [symbol key](#supported-values) for local-only values |
+| `NaN`, `±Infinity` | become `null`, which receivers read as a deletion | a finite sentinel |
 
 ```js
-const state = new LazyWatch({ when: new Date() });
-state.when.setHours(0);      // works, but NOT tracked (in-place mutation)
-state.when = new Date();     // tracked — emits { when: Date }
+const state = new LazyWatch({ when: Date.now() }); // fine — a number
+
+state.when = new Date();
+// TypeError: LazyWatch cannot track Date at "when": JSON serializes it as a
+// string, so mirrors hold a string where the sender holds a Date and the
+// types drift. Store a timestamp (date.getTime()) or an ISO string instead.
 ```
 
 Collections that mutate through internal slots — `Map`, `Set`, `WeakMap`,
@@ -1028,6 +1043,14 @@ A few more wire-safety rules, all enforced with a `TypeError` at write time:
   `Object.setPrototypeOf` to a new prototype throws, and so do
   `Object.freeze`/`seal`/`preventExtensions` — frozen state could not be
   tracked, so LazyWatch refuses up front instead of half-freezing
+- **The constructor argument must be fully trackable** — LazyWatch keeps
+  it by reference (every value entering later is cloned), so a frozen,
+  sealed, or non-extensible container anywhere in it, or a property that
+  is an accessor or non-enumerable/non-writable/non-configurable, is
+  rejected up front with a `TypeError` naming the path. A write to such a
+  property would fail natively *after* its diff entry was recorded,
+  shipping mirrors a phantom change. Watch an extensible copy (e.g.
+  `structuredClone(frozen)`) instead
 
 **Symbol-keyed properties are local-only metadata.** JSON cannot carry symbol
 keys, so instead of half-tracking them, LazyWatch treats them as a deliberate

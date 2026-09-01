@@ -8,10 +8,13 @@
 import { execSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
 
-// Measured 6.5 kB when this check was added (7.7 kB now); the headroom allows
+// Measured 6.5 kB when this check was added; 8.1 kB after the JSON-safety
+// rejections (Date/RegExp/bigint/symbol/function) and constructor
+// trackability checks, whose explanatory error messages are the cost — the
+// budget was raised from 8 kB then. The headroom allows
 // normal growth while still catching an accidentally bundled dependency
 // or a runaway feature.
-const GZIP_BUDGET_BYTES = 8 * 1024;
+const GZIP_BUDGET_BYTES = 9 * 1024;
 
 const minified = execSync(
   'npx -y esbuild src/lazy-watch.js --bundle --minify --format=esm --log-level=warning',

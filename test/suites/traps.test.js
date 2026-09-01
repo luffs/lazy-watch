@@ -81,6 +81,64 @@ export default function register(runner) {
     LazyWatch.dispose(src);
   });
 
+  // --- Constructor-time trackability ---
+  // The constructor argument is kept by reference (later values are
+  // cloned), so a frozen container or an exotic property could only
+  // arrive through it. A write to one used to throw natively AFTER the
+  // diff entry was recorded, so the phantom entry rode along with the
+  // next batch and desynced mirrors.
+  runner.test('the constructor should reject frozen, sealed, and non-extensible objects', () => {
+    assertThrows(() => new LazyWatch(Object.freeze({ a: 1 })));
+    assertThrows(() => new LazyWatch({ a: Object.freeze({ x: 1 }) }));
+    assertThrows(() => new LazyWatch({ a: Object.seal({ x: 1 }) }));
+    assertThrows(() => new LazyWatch({ list: [Object.preventExtensions({ x: 1 })] }));
+    assertThrows(() => new LazyWatch({ list: Object.freeze([1, 2]) }));
+  });
+
+  runner.test('the constructor should reject accessors and non-default property attributes', () => {
+    assertThrows(() => new LazyWatch({ get x() { return 1; } }));
+    assertThrows(() => new LazyWatch({ a: { set x(v) {} } }));
+    const readOnly = Object.defineProperty({}, 'x', { value: 1, writable: false, enumerable: true, configurable: true });
+    assertThrows(() => new LazyWatch({ a: readOnly }));
+    const hidden = Object.defineProperty({}, 'x', { value: 1, writable: true, enumerable: false, configurable: true });
+    assertThrows(() => new LazyWatch({ a: hidden }));
+    const locked = Object.defineProperty({}, 'x', { value: 1, writable: true, enumerable: true, configurable: false });
+    assertThrows(() => new LazyWatch({ a: locked }));
+  });
+
+  runner.test('trackability rejections should be TypeErrors naming the path', () => {
+    try {
+      new LazyWatch({ deep: { cfg: Object.freeze({ x: 1 }) } });
+      throw new Error('should have thrown');
+    } catch (e) {
+      assertEquals(e instanceof TypeError, true);
+      assertEquals(e.message.includes('"deep.cfg"'), true, `should name the path: ${e.message}`);
+    }
+    try {
+      new LazyWatch({ deep: { get x() { return 1; } } });
+      throw new Error('should have thrown');
+    } catch (e) {
+      assertEquals(e instanceof TypeError, true);
+      assertEquals(e.message.includes('"x"') && e.message.includes('"deep"'), true,
+        `should name the property and path: ${e.message}`);
+    }
+  });
+
+  runner.test('a frozen object assigned later is cloned, so it stays trackable (regression guard)', async () => {
+    const src = new LazyWatch({});
+    const mirror = new LazyWatch({});
+    LazyWatch.on(src, d => LazyWatch.patch(mirror, d));
+
+    src.a = Object.freeze({ x: 1 }); // the clone landing in state is extensible
+    await wait(5);
+    src.a.x = 2;
+    await wait(5);
+    assertEquals(LazyWatch.snapshot(src), { a: { x: 2 } });
+    assertConverged(src, mirror);
+    LazyWatch.dispose(src);
+    LazyWatch.dispose(mirror);
+  });
+
   // --- Detached proxies ---
   // A nested proxy addresses a slot; the raw object behind it stays at that
   // slot for life (assigned values are cloned, containers merge in place).

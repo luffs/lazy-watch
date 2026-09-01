@@ -39,6 +39,10 @@ export class ProxyHandler {
       throw new TypeError('LazyWatch requires a plain object or array (Map, Set, Date, etc. cannot be deep-watched)');
     }
     Utils.assertSupported(original);
+    // The constructor argument is kept by reference (everything entering
+    // later is cloned), so frozen containers and exotic properties can
+    // only arrive here — reject them before a write can fail mid-record
+    Utils.assertTrackable(original);
     this.#original = original;
     this.#diffTracker = diffTracker;
     this.#eventEmitter = eventEmitter;
@@ -174,18 +178,32 @@ export class ProxyHandler {
         this.#assertAttached(target, path);
 
         if (prop in target) {
-          if (this.#inverseActive()) {
-            this.#diffTracker.recordInverse(path, prop, target[prop]);
-          }
-          this.#recordLoss(path, prop, target[prop]);
-          const diff = this.#diff(path);
-          diff[prop] = null;
+          this.#recordDeletion(target, prop, path);
           delete target[prop];
           this.#scheduleEmit();
         }
         return true;
       }
     });
+  }
+
+  /**
+   * Record the deletion of `prop` at `path` (inverse capture, container
+   * loss, and the null marker) ahead of the delete itself. On arrays the
+   * fragment is stamped with `$length` like every other array fragment,
+   * so a deletion stays self-describing on the wire — a receiver that
+   * lacks the field revives it as an array instead of storing an object.
+   */
+  #recordDeletion(target, prop, path) {
+    const isArray = Array.isArray(target);
+    if (this.#inverseActive()) {
+      this.#diffTracker.recordInverse(path, prop, target[prop]);
+      if (isArray) this.#diffTracker.recordInverse(path, '$length', target.length);
+    }
+    this.#recordLoss(path, prop, target[prop]);
+    const diff = this.#diff(path);
+    diff[prop] = null;
+    if (isArray) diff.$length = target.length;
   }
 
   /**
@@ -268,11 +286,14 @@ export class ProxyHandler {
     // Resolve if value is a proxy
     value = this.resolveIfProxy(value);
 
-    // Reject Map/Set/typed arrays, non-finite numbers, and reserved
-    // names anywhere in the assigned value. Guarded so plain primitive
-    // writes skip the validation call and its path allocation entirely.
-    if ((value !== null && typeof value === 'object') ||
-      (typeof value === 'number' && !Number.isFinite(value))) {
+    // Reject Map/Set/typed arrays, Date/RegExp, bigint/symbol/function,
+    // non-finite numbers, and reserved names anywhere in the assigned
+    // value. Guarded so plain JSON-safe primitive writes skip the
+    // validation call and its path allocation entirely.
+    const kind = typeof value;
+    if ((kind === 'object' && value !== null) || kind === 'function' ||
+      kind === 'bigint' || kind === 'symbol' ||
+      (kind === 'number' && !Number.isFinite(value))) {
       Utils.assertSupported(value, [...path, prop]);
     }
 
@@ -281,12 +302,7 @@ export class ProxyHandler {
     // convention. (Array length falls through to the native error.)
     if (value === undefined && !(Array.isArray(target) && prop === 'length')) {
       if (prop in target) {
-        if (this.#inverseActive()) {
-          this.#diffTracker.recordInverse(path, prop, target[prop]);
-        }
-        this.#recordLoss(path, prop, target[prop]);
-        const diff = this.#diff(path);
-        diff[prop] = null;
+        this.#recordDeletion(target, prop, path);
         delete target[prop];
         this.#scheduleEmit();
       }
@@ -740,11 +756,8 @@ export class ProxyHandler {
       if (rawSource[prop] === null || rawSource[prop] === undefined) {
         // Record the deletion so relaying mirrors propagate it downstream
         if (prop in rawTarget) {
-          if (this.#inverseActive()) {
-            this.#diffTracker.recordInverse(path, prop, rawTarget[prop]);
-          }
-          this.#recordLoss(path, prop, rawTarget[prop]);
-          getDiff()[prop] = null;
+          getDiff();
+          this.#recordDeletion(rawTarget, prop, path);
           delete rawTarget[prop];
           hasChanges = true;
         }
@@ -820,13 +833,9 @@ export class ProxyHandler {
     if (Array.isArray(rawTarget) && Array.isArray(rawSource)) {
       for (let i = 0; i < rawSource.length; i++) {
         if (!(i in rawSource) && i in rawTarget) {
-          const prop = String(i);
-          if (this.#inverseActive()) {
-            this.#diffTracker.recordInverse(path, prop, rawTarget[prop]);
-          }
-          this.#recordLoss(path, prop, rawTarget[prop]);
-          getDiff()[prop] = null;
-          delete rawTarget[prop];
+          getDiff();
+          this.#recordDeletion(rawTarget, String(i), path);
+          delete rawTarget[i];
           hasChanges = true;
         }
       }

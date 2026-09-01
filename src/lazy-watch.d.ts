@@ -19,8 +19,9 @@ export type Unsubscribe = () => void;
 
 /**
  * A partial update for T. Values may be `null` to delete the property.
- * Date and RegExp are leaf values (replaced wholesale, never merged), so
- * they appear as themselves rather than being mapped over.
+ * Date and RegExp are rejected from watched state at runtime (JSON cannot
+ * carry them); they are mapped to themselves here only so a type that
+ * still declares them does not explode into their method keys.
  */
 export type Patch<T> = {
     [K in keyof T]?: (T[K] extends Date | RegExp ? T[K]
@@ -37,8 +38,8 @@ export type Patch<T> = {
  * nested proxies receive path-relative diffs — and when their subtree (or an
  * ancestor of it) is deleted they receive `null` (hence the nullable
  * parameter; narrow before use); when it is replaced wholesale by a leaf
- * value (string, number, boolean, Date, ...) they receive that value
- * directly (cast when handling this case). A listener under an array slot
+ * value (string, number, boolean) they receive that value directly (cast
+ * when handling this case). A listener under an array slot
  * that a structural op (`splice`/`unshift`/`shift`) or truncation displaced
  * receives `null` when the slot is gone and otherwise the full value now at
  * its path.
@@ -66,8 +67,8 @@ export type ChangeListener<T extends object = any> = (
 export interface UtilsInterface {
     /**
      * Check if a value is a plain object or array that can be deep-watched.
-     * Returns false for Date and RegExp (leaf values — replaced wholesale,
-     * never proxied or merged) and for the rejected collection types
+     * Returns false for Date, RegExp, and the rejected collection types,
+     * none of which may enter watched state
      */
     isObjectOrArray(val: any): boolean;
 
@@ -87,9 +88,10 @@ export interface UtilsInterface {
 
     /**
      * Deep-check a value entering watched state; throws a TypeError naming
-     * the offending path if it contains a rejected collection type or a
+     * the offending path if it contains a rejected collection type, a
      * reserved property name (including the wire format's `$splice` and
-     * `$length`). Date and RegExp pass as leaf values. Cycle-safe
+     * `$length`), or a value JSON cannot carry faithfully (non-finite
+     * number, bigint, symbol, function, Date, RegExp). Cycle-safe
      */
     assertSupported(value: any, path?: Array<string | number>): void;
 
@@ -100,6 +102,17 @@ export interface UtilsInterface {
      * state, so they are still held to the state rules
      */
     assertSupportedDiff(value: any, path?: Array<string | number>): void;
+
+    /**
+     * Deep-check an object about to be watched by reference (the
+     * constructor argument): throws a TypeError naming the path if any
+     * container is frozen, sealed, or non-extensible, or any property is
+     * an accessor or non-enumerable/non-writable/non-configurable — a
+     * write to those would fail natively after its diff entry was
+     * recorded. Values entering later are cloned and need no such check.
+     * Cycle-safe
+     */
+    assertTrackable(value: any, path?: Array<string | number>): void;
 
     /**
      * True for property names the diff wire format reserves for itself

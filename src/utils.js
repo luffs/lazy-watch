@@ -38,9 +38,10 @@ export const Utils = {
    * Check if value is an object or array that can be deep-watched.
    * Objects with internal slots (Date, RegExp, and the rejected collection
    * types) can't sit behind a Proxy — their methods throw "called on
-   * incompatible receiver" — so they are never proxied or merged. Date and
-   * RegExp are allowed as leaf values (replaced wholesale); the collection
-   * types are rejected entirely, see `assertSupported`.
+   * incompatible receiver" — so they are never proxied or merged. All of
+   * them are rejected from watched state (see `assertSupported`); Date and
+   * RegExp are still recognized here so the general-purpose clone and
+   * equality helpers treat them as leaves.
    */
   isObjectOrArray(val) {
     if (!val || typeof val !== 'object') return false;
@@ -85,8 +86,10 @@ export const Utils = {
   /**
    * Deep-check a value entering watched state; throws a TypeError naming the
    * offending path if it contains a rejected type, a class instance, a
-   * non-finite number, or a reserved property name. Date and RegExp pass as
-   * leaf values and are not walked into. Cycle-safe.
+   * reserved property name, or a value JSON cannot carry faithfully: a
+   * non-finite number, a bigint, a symbol, a function, a Date (serialized
+   * as a string, so mirrors hold a string where the sender holds a Date
+   * and the types drift), or a RegExp (serialized as `{}`). Cycle-safe.
    *
    * `isDiff` relaxes the reserved-diff-key rule, which exists only because
    * state has to survive the round trip through the wire format — inside a
@@ -101,12 +104,32 @@ export const Utils = {
    * mid-walk, which is fine — every caller passes a fresh array.
    */
   assertSupported(value, path = [], seen = new WeakSet(), isDiff = false) {
-    if (typeof value === 'number' && !Number.isFinite(value)) {
+    const kind = typeof value;
+    if (kind === 'number' && !Number.isFinite(value)) {
       throw new TypeError(
         `LazyWatch cannot track non-finite number ${value}${pathLabel(path)}: JSON serializes it as null, which receivers interpret as a deletion.`
       );
     }
-    if (!value || typeof value !== 'object') return;
+    if (kind === 'bigint' || kind === 'symbol' || kind === 'function') {
+      const effect = kind === 'bigint' ? 'JSON.stringify throws on it' : 'JSON drops it';
+      const hint = kind === 'bigint'
+        ? 'Store it as a string or a number instead.'
+        : 'Store plain data instead, or keep it under a symbol key for local-only state.';
+      throw new TypeError(
+        `LazyWatch cannot track a ${kind} value${pathLabel(path)}: ${effect}, so it could never reach a mirror. ${hint}`
+      );
+    }
+    if (!value || kind !== 'object') return;
+    if (value instanceof Date) {
+      throw new TypeError(
+        `LazyWatch cannot track Date${pathLabel(path)}: JSON serializes it as a string, so mirrors hold a string where the sender holds a Date and the types drift. Store a timestamp (date.getTime()) or an ISO string instead.`
+      );
+    }
+    if (value instanceof RegExp) {
+      throw new TypeError(
+        `LazyWatch cannot track RegExp${pathLabel(path)}: JSON serializes it as {}, so mirrors silently desync. Store its source and flags as strings instead.`
+      );
+    }
     const rejected = this.rejectedTypeName(value);
     if (rejected) {
       throw new TypeError(
@@ -168,6 +191,46 @@ export const Utils = {
    */
   assertSupportedDiff(value, path = []) {
     this.assertSupported(value, path, new WeakSet(), true);
+  },
+
+  /**
+   * Deep-check the object handed to the constructor, which LazyWatch keeps
+   * by reference (every value entering later is cloned on the way in, so
+   * only this object can carry these traits). A frozen, sealed, or
+   * non-extensible container, or a property that is an accessor or not
+   * enumerable/writable/configurable, would make a later tracked write
+   * fail natively AFTER its diff entry was recorded — the phantom entry
+   * then rides along with the next batch and desyncs every mirror. Same
+   * rules the defineProperty and preventExtensions traps enforce on live
+   * state. Walks plain objects and arrays only; run after
+   * `assertSupported`. Cycle-safe.
+   */
+  assertTrackable(value, path = [], seen = new WeakSet()) {
+    if (!this.isObjectOrArray(value) || seen.has(value)) return;
+    seen.add(value);
+    if (!Object.isExtensible(value)) {
+      throw new TypeError(
+        `LazyWatch cannot watch a frozen, sealed, or non-extensible object${pathLabel(path)}: writes to it could not be tracked. Watch an extensible copy instead (e.g. structuredClone).`
+      );
+    }
+    const isArray = Array.isArray(value);
+    for (const key of Object.getOwnPropertyNames(value)) {
+      if (isArray && key === 'length') continue;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if ('get' in descriptor || 'set' in descriptor) {
+        throw new TypeError(
+          `LazyWatch cannot watch the accessor property "${key}"${pathLabel(path)}: getters and setters bypass change tracking and do not survive cloning or sync. Use a plain value instead.`
+        );
+      }
+      if (!descriptor.enumerable || !descriptor.writable || !descriptor.configurable) {
+        throw new TypeError(
+          `LazyWatch cannot watch the non-enumerable, non-writable, or non-configurable property "${key}"${pathLabel(path)}: such properties do not survive cloning and sync. Define it as a plain property instead.`
+        );
+      }
+      path.push(key);
+      this.assertTrackable(descriptor.value, path, seen);
+      path.pop();
+    }
   },
 
   /**

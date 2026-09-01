@@ -247,12 +247,11 @@ export default function register(runner) {
     LazyWatch.dispose(watched);
   });
 
-  runner.test('should handle Date objects', () => {
-    const date = new Date('2025-01-01');
-    const data = { created: date };
-    const watched = new LazyWatch(data);
+  runner.test('should reject Date objects in favor of timestamps', () => {
+    assertThrows(() => new LazyWatch({ created: new Date('2025-01-01') }));
 
-    assertEquals(watched.created.getTime(), date.getTime());
+    const watched = new LazyWatch({ created: Date.UTC(2025, 0, 1) });
+    assertEquals(new Date(watched.created).getUTCFullYear(), 2025);
     LazyWatch.dispose(watched);
   });
 
