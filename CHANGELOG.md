@@ -4,7 +4,19 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
-## [Unreleased]
+## [6.0.0] - 2026-09-01
+
+**Breaking release: wire format and value rules.** Every array node in a
+diff now carries `$length` — ancestors of a deeper change included — which
+is what lets receivers tell an array fragment from a plain object that
+replaced an array, so kind changes converge in both directions. `Date`,
+`RegExp`, `bigint`, `symbol`, and function values are rejected from
+watched state like `NaN` and the collection types already were. All
+replicas must upgrade together: a 5.x fragment without the marker arriving
+where this version holds an array is applied as a replacement, and diffs
+persisted by 5.x (send buffers, stored undo histories) cannot be applied —
+resync with `snapshot` + `overwrite`. Most of the fixes below were found by
+the new convergence fuzzer, which now runs as part of `npm test`.
 
 ### Breaking
 
