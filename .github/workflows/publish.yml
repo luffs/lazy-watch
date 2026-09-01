@@ -33,6 +33,12 @@ jobs:
       - name: Type-check TypeScript definitions
         run: npm run test:types
 
+      - name: Enforce coverage thresholds
+        run: npm run test:coverage
+
+      - name: Check bundle-size budget
+        run: npm run test:size
+
       - name: Update npm
         run: npm install -g npm@latest
 

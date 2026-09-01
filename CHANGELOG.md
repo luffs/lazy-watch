@@ -6,6 +6,25 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
 
 ## [Unreleased]
 
+### Fixed
+
+- **`Patch<T>` typed array properties as nullable arrays.** For
+  `tags: string[]` a diff's `tags` was `(string | null | undefined)[]`,
+  so index fragments (`{ 1: 'b', $length: 2 }`) and element fragments
+  (`{ 0: { done: true } }`) failed to compile, while `diff.tags.length`
+  compiled and was `undefined` at runtime (fragments carry `$length`).
+  Array properties are now `ArrayPatch<E>`: a real array or an
+  index-keyed fragment with `$length`/`$splice` markers; narrow with
+  `Array.isArray`. A watched root array patches as `ArrayPatch` of its
+  element type. `ArrayPatch`, `PatchValue`, and `SpliceOp` are exported
+- Listener dispatch was quadratic in the listener count (a membership scan
+  per listener per emit); registrations now carry a removal flag instead
+- An `AbortSignal` passed to `on` kept the instance reachable for as long
+  as the signal lived, even after the listener was removed or the instance
+  disposed: the abort handler is now detached when the registration ends
+- The publish workflow now runs the coverage thresholds and the
+  bundle-size budget check before publishing, like the test workflow
+
 ### Changed
 
 - The convergence fuzzer gained two coverage areas: a `bidi` mode in

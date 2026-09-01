@@ -18,15 +18,45 @@ export type ChangeSet = Record<string, any>;
 export type Unsubscribe = () => void;
 
 /**
- * A partial update for T. Values may be `null` to delete the property.
- * Date and RegExp are rejected from watched state at runtime (JSON cannot
- * carry them); they are mapped to themselves here only so a type that
- * still declares them does not explode into their method keys.
+ * One compact structural array op: `[start, deleteCount, items]`
  */
-export type Patch<T> = {
-    [K in keyof T]?: (T[K] extends Date | RegExp ? T[K]
-        : T[K] extends object ? Patch<T[K]>
-        : T[K]) | null;
+export type SpliceOp<E = any> = [start: number, deleteCount: number, items?: E[]];
+
+/**
+ * How an array of E appears in a diff: either a real array (a wholesale
+ * value — its elements are full values too) or an index-keyed fragment
+ * carrying the wire format's markers: the array's `$length`, optionally a
+ * `$splice` op list, and per-index patches (`null` deletes the slot).
+ * A fragment has no `length`; narrow with `Array.isArray` before treating
+ * a diff value as an array.
+ */
+export type ArrayPatch<E> = E[] | ({
+    [index: number]: PatchValue<E> | null;
+} & {
+    $length?: number;
+    $splice?: SpliceOp<E>[];
+});
+
+/**
+ * How a value of type V appears in a diff: arrays as `ArrayPatch`, plain
+ * objects as `Patch`, leaves as themselves. Date and RegExp are rejected
+ * from watched state at runtime (JSON cannot carry them); they are mapped
+ * to themselves here only so a type that still declares them does not
+ * explode into their method keys.
+ */
+export type PatchValue<V> = V extends Date | RegExp ? V
+    : V extends readonly (infer E)[] ? ArrayPatch<E>
+    : V extends object ? Patch<V>
+    : V;
+
+/**
+ * A partial update for T. Values may be `null` to delete the property;
+ * array properties appear as `ArrayPatch` (a real array or an index
+ * fragment). A watched root that is itself an array patches as
+ * `ArrayPatch` of its element type.
+ */
+export type Patch<T> = T extends readonly (infer E)[] ? ArrayPatch<E> : {
+    [K in keyof T]?: PatchValue<T[K]> | null;
 };
 
 /**

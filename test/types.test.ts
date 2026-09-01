@@ -2,7 +2,11 @@
 // Run with: npx -p typescript tsc --project test/tsconfig.json
 // This file is never executed; tsc failing (including unused @ts-expect-error) is the test.
 import { LazyWatch, PROXY_TARGET, LAZYWATCH_INSTANCE } from '../src/lazy-watch.js';
-import type { ChangeSet, ChangeListener, Patch, Unsubscribe, UndoManager } from '../src/lazy-watch.js';
+import type { ChangeSet, ChangeListener, Patch, ArrayPatch, SpliceOp, Unsubscribe, UndoManager } from '../src/lazy-watch.js';
+
+const frag: ArrayPatch<string> = { 1: 'b', $length: 2 };
+const op: SpliceOp<string> = [0, 1, ['x']];
+void frag, op;
 
 interface User {
   name: string;
@@ -69,7 +73,36 @@ LazyWatch.on(watched, 'not a function');
 // Patches allow partial updates, null deletions, and diff fragments
 LazyWatch.patch(watched, { age: 32 });
 LazyWatch.patch(watched, { age: null });
-LazyWatch.patch(watched, { tags: { 1: 'b', $length: 2 } } as ChangeSet);
+// Array properties patch as real arrays or index fragments, no cast needed
+LazyWatch.patch(watched, { tags: { 1: 'b', $length: 2 } });
+LazyWatch.patch(watched, { tags: ['a', 'b'] });
+LazyWatch.patch(watched, { tags: { $splice: [[0, 0, ['a']]], $length: 3 } });
+LazyWatch.patch(watched, { tags: { 0: null, $length: 2 } });
+// @ts-expect-error - fragment elements are typed after the element type
+LazyWatch.patch(watched, { tags: { 0: 42, $length: 1 } } satisfies Patch<User>);
+interface Board { items: { id: number; done: boolean }[] }
+const board = new LazyWatch<Board>({ items: [] });
+LazyWatch.patch(board, { items: { 0: { done: true } } }); // element fragment
+LazyWatch.on(board, changes => {
+  const items = changes?.items;
+  // @ts-expect-error - a fragment carries $length, not length; narrow first
+  const bad: number | undefined = items?.length;
+  void bad;
+  if (Array.isArray(items)) {
+    const first: { id: number; done: boolean } | undefined = items[0];
+    void first;
+  } else if (items) {
+    const len: number | undefined = items.$length;
+    const done: boolean | null | undefined = items[0]?.done;
+    void len, done;
+  }
+});
+// A watched root array patches as an ArrayPatch of its element type
+const rootArray = new LazyWatch<number[]>([1, 2]);
+LazyWatch.patch(rootArray, { 0: 3, $length: 2 });
+LazyWatch.on(rootArray, changes => { const l: number | undefined = changes && !Array.isArray(changes) ? changes.$length : undefined; void l; });
+LazyWatch.dispose(rootArray);
+LazyWatch.dispose(board);
 LazyWatch.overwrite(watched, { name: 'Bob' });
 
 const plain = { a: 1, b: 2, c: { d: 3 } };
@@ -113,7 +146,7 @@ manager.canUndo = true;
 // @ts-expect-error - limit must be a number
 LazyWatch.createUndoManager(watched, { limit: 'many' });
 
-// Grouping, coalescing, and persistence
+// Grouping and coalescing
 const um = LazyWatch.createUndoManager(watched, { limit: 10, coalesce: 300 });
 const groupResult: number = um.group(() => 7);
 void groupResult;

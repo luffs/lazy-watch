@@ -63,17 +63,29 @@ export class EventEmitter {
     // Match addEventListener semantics: an already-aborted signal never adds
     if (signal && signal.aborted) return () => {};
 
-    const entry = { listener, path, once };
+    const entry = { listener, path, once, removed: false, detach: null };
     if (signal) {
       // Remove only this registration: the same function may also be
-      // registered on other paths (or on this one without the signal)
-      signal.addEventListener('abort', () => this.#remove(entry), { once: true });
+      // registered on other paths (or on this one without the signal).
+      // The abort handler is detached again when the registration ends
+      // any other way, so a long-lived signal doesn't keep this emitter
+      // (and the instance behind it) reachable
+      const onAbort = () => this.#remove(entry);
+      signal.addEventListener('abort', onAbort, { once: true });
+      entry.detach = () => signal.removeEventListener('abort', onAbort);
     }
     this.#listeners.push(entry);
     return () => this.#remove(entry);
   }
 
+  /**
+   * End a registration: drop it from the list, detach its abort handler,
+   * and flag it so an emit already iterating over a snapshot skips it
+   */
   #remove(entry) {
+    if (entry.removed) return;
+    entry.removed = true;
+    if (entry.detach) entry.detach();
     const index = this.#listeners.indexOf(entry);
     if (index !== -1) {
       this.#listeners.splice(index, 1);
@@ -87,11 +99,9 @@ export class EventEmitter {
    *   when omitted, the first registration of the function is removed
    */
   off(listener, path) {
-    const index = this.#listeners.findIndex(l =>
+    const entry = this.#listeners.find(l =>
       l.listener === listener && (path === undefined || this.#samePath(l.path, path)));
-    if (index !== -1) {
-      this.#listeners.splice(index, 1);
-    }
+    if (entry) this.#remove(entry);
   }
 
   #samePath(a, b) {
@@ -209,7 +219,9 @@ export class EventEmitter {
     // fire, and one added during the emit waits for the next batch.
     const entries = [...this.#listeners];
     entries.forEach(entry => {
-      if (!this.#listeners.includes(entry)) return;
+      // The flag (set by #remove) is O(1); a membership scan per listener
+      // made dispatch quadratic in the listener count
+      if (entry.removed) return;
       try {
         // Filter the diff based on the listener's path
         const filteredDiff = this.#filterDiffByPath(diff, entry.path);
@@ -241,7 +253,9 @@ export class EventEmitter {
       }
     });
     if (removeFired) {
-      this.#listeners = this.#listeners.filter(entry => !entry.fired);
+      for (const entry of this.#listeners) {
+        if (entry.fired) this.#remove(entry);
+      }
     }
   }
 
@@ -394,6 +408,10 @@ export class EventEmitter {
    */
   dispose() {
     this.#clearPending();
-    this.#listeners = [];
+    // Flag and detach every registration (an emit in progress skips them;
+    // abort handlers stop referencing this emitter)
+    for (const entry of this.#listeners.splice(0)) {
+      this.#remove(entry);
+    }
   }
 }
