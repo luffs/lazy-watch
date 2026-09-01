@@ -80,4 +80,126 @@ export default function register(runner) {
     assertEquals(emits, 0);
     LazyWatch.dispose(src);
   });
+
+  // --- Detached proxies ---
+  // A nested proxy addresses a slot; the raw object behind it stays at that
+  // slot for life (assigned values are cloned, containers merge in place).
+  // Once the slot is destroyed the object is unreachable from the tree, and
+  // a write through the stale handle used to mutate it anyway while
+  // recording a diff at the dead path: the sender's state stayed unchanged
+  // while every mirror grew a phantom entry.
+  runner.test('a write through a handle detached by shift() should throw and keep mirrors converged', async () => {
+    const src = new LazyWatch({ todos: [{ id: 1 }, { id: 2 }] });
+    const mirror = new LazyWatch({ todos: [{ id: 1 }, { id: 2 }] });
+    LazyWatch.on(src, d => LazyWatch.patch(mirror, JSON.parse(JSON.stringify(d))));
+
+    const held = src.todos[1];
+    src.todos.shift();
+    await wait(5);
+
+    assertThrows(() => { held.done = true; });
+    await wait(5);
+    assertEquals(LazyWatch.snapshot(src), { todos: [{ id: 2 }] }, 'the detached write must not land');
+    assertConverged(src, mirror, 'no phantom element may reach the mirror');
+    LazyWatch.dispose(src);
+    LazyWatch.dispose(mirror);
+  });
+
+  runner.test('delete, patch, overwrite, and array methods through a detached handle should throw', async () => {
+    const src = new LazyWatch({ user: { name: 'x', tags: ['a'] } });
+    let emits = 0;
+    LazyWatch.on(src, () => emits++);
+
+    const user = src.user;
+    const tags = src.user.tags;
+    delete src.user;
+    await wait(5);
+    assertEquals(emits, 1);
+
+    let error = null;
+    try { user.name = 'y'; } catch (e) { error = e; }
+    assertEquals(error instanceof Error && error.message.includes('"user"'), true,
+      `should name the stale path, got: ${error && error.message}`);
+    assertThrows(() => { delete user.name; });
+    assertThrows(() => LazyWatch.patch(user, { name: 'y' }));
+    assertThrows(() => LazyWatch.overwrite(user, { name: 'y' }));
+    assertThrows(() => tags.push('b'));
+    assertThrows(() => tags.splice(0, 1));
+    assertThrows(() => tags.unshift('b'));
+    assertThrows(() => tags.sort());
+    assertThrows(() => tags.reverse());
+    assertThrows(() => Object.defineProperty(user, 'name', { value: 'y' }));
+
+    await wait(5);
+    assertEquals(emits, 1, 'rejected writes must record nothing');
+    assertEquals(user.name, 'x', 'reads still return the stale contents');
+    assertEquals(user.tags, ['a']);
+    LazyWatch.dispose(src);
+  });
+
+  runner.test('handles for leaf-replaced and truncated containers should be detached', async () => {
+    const src = new LazyWatch({ cfg: { on: true }, list: [{ n: 1 }, { n: 2 }] });
+    const cfg = src.cfg;
+    const second = src.list[1];
+
+    src.cfg = 'off';
+    src.list.length = 1;
+    await wait(5);
+
+    assertThrows(() => { cfg.on = false; });
+    assertThrows(() => { second.n = 3; });
+    // The surviving element's handle is unaffected
+    src.list[0].n = 10;
+    await wait(5);
+    assertEquals(LazyWatch.snapshot(src), { cfg: 'off', list: [{ n: 10 }] });
+    LazyWatch.dispose(src);
+  });
+
+  runner.test('a handle should stay detached after a new object is assigned at its path', async () => {
+    const src = new LazyWatch({ a: { x: 1 } });
+    const diffs = [];
+    LazyWatch.on(src, d => diffs.push(d));
+
+    const old = src.a;
+    delete src.a;
+    src.a = { x: 2 }; // a clone lands at the path; the old object stays detached
+    await wait(5);
+
+    assertThrows(() => { old.x = 3; });
+    src.a.x = 4; // the live handle works
+    await wait(5);
+    assertEquals(LazyWatch.snapshot(src), { a: { x: 4 } });
+    assertEquals(diffs, [{ a: { x: 2 } }, { a: { x: 4 } }]);
+    LazyWatch.dispose(src);
+  });
+
+  runner.test('symbol-keyed writes through a detached handle should stay allowed (local-only)', async () => {
+    const src = new LazyWatch({ a: { x: 1 } });
+    const old = src.a;
+    delete src.a;
+    await wait(5);
+
+    const META = Symbol('meta');
+    old[META] = 'cache'; // never recorded, never synced — no reason to refuse
+    assertEquals(old[META], 'cache');
+    LazyWatch.dispose(src);
+  });
+
+  runner.test('a handle displaced by unshift() should keep addressing its slot (documented design)', async () => {
+    const src = new LazyWatch({ todos: [{ id: 1 }, { id: 2 }] });
+    const mirror = new LazyWatch({ todos: [{ id: 1 }, { id: 2 }] });
+    LazyWatch.on(src, d => LazyWatch.patch(mirror, JSON.parse(JSON.stringify(d))));
+
+    const slot1 = src.todos[1]; // currently id 2
+    src.todos.unshift({ id: 0 });
+    await wait(5);
+    slot1.done = true; // slot 1 now holds id 1
+    await wait(5);
+
+    assertEquals(LazyWatch.snapshot(src),
+      { todos: [{ id: 0 }, { id: 1, done: true }, { id: 2 }] });
+    assertConverged(src, mirror);
+    LazyWatch.dispose(src);
+    LazyWatch.dispose(mirror);
+  });
 }

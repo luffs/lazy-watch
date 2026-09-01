@@ -35,7 +35,7 @@ CI (`.github/workflows/test.yml`) runs tests on Node 22/24/26 and Bun (invoked a
 ```bash
 npm run test:size
 ```
-Bundles/minifies via `npx esbuild`, gzips, and fails if the gzipped size exceeds the budget in `scripts/size.js` (8 kB; ~7.0 kB actual as of the deep-array-diff work). When the printed size drifts from the "~7 kB min+gzip" claim, update README.md along with the budget.
+Bundles/minifies via `npx esbuild`, gzips, and fails if the gzipped size exceeds the budget in `scripts/size.js` (8 kB; ~7.7 kB actual as of the detached-proxy work). When the printed size drifts from the "~8 kB min+gzip" claim, update README.md along with the budget.
 
 ## Documentation Layout
 
@@ -77,6 +77,7 @@ The codebase follows a modular architecture with clear separation of concerns:
    - Handles `overwrite()` (replace + delete) vs `patch()` (merge only) semantics; both accept a base `path` so external calls entering at a nested proxy record the diff at the subtree's path (`LazyWatch.patch`/`overwrite` pass `getProxyPath(watched)`), and source validation is gated by an explicit `internal` flag rather than path emptiness
    - Uses symbol markers (PROXY_TARGET, LAZYWATCH_INSTANCE) for internal access
    - Traps beyond get/set/deleteProperty: `defineProperty` routes descriptors equivalent to a plain assignment (data value; resulting property enumerable/writable/configurable, absent attributes inheriting the live property's) through the shared `#applySet` write path and rejects accessors and non-default attributes; `setPrototypeOf` (to a new prototype) and `preventExtensions` (freeze/seal) throw — all three previously mutated the target silently or half-froze it
+   - Every tracked write (`#applySet`, `deleteProperty`, structural/reorder array ops, and external `overwrite`/`patch` entry) first runs `#assertAttached(target, path)`: the raw object behind a proxy is either still at the proxy's path or detached from the tree entirely (assigned values are cloned, containers merge in place), so a mismatch means a stale handle and the write throws instead of mutating an unreachable object while recording a diff at a dead path. Reads and symbol-keyed writes are exempt. `valueAt(path)` exposes the same own-property walk to the emitter
 
 3. **DiffTracker** (`src/diff-tracker.js`) - Accumulates changes into nested diff objects
    - Maintains a master diff structure that mirrors the watched object's shape
@@ -95,6 +96,7 @@ The codebase follows a modular architecture with clear separation of concerns:
    - `on()` returns an idempotent unsubscribe function scoped to that exact registration (a no-op function when the signal is already aborted); `off()` and abort removal are path-scoped, so the same callback on two proxies are distinct registrations
    - Listener options: `{ once }` (removed after first invocation; nested-path listeners only consume on batches touching their subtree) and `{ signal }` (AbortSignal removal, addEventListener semantics)
    - Nested-path listeners receive path-relative diffs; when their subtree (or an ancestor) is deleted they are called with `null`, and when it is replaced wholesale by a leaf value they are called with that value. `#filterDiffByPath` uses `undefined` as the "batch didn't touch this path" sentinel (safe because diffs never store `undefined`)
+   - A listener under an array index that a `$splice` op can have shifted (`#spliceTouches`) or that `$length` truncated away is treated as touched: it gets `null` when the path no longer exists, otherwise the live value at its path (cloned) via the injected state resolver (`setStateResolver`, wired to `ProxyHandler.valueAt` by the LazyWatch constructor). Listener entries carry a `gone` flag so a slot already reported gone is not re-notified by later `$length` growth below it
    - `LazyWatch.flush(watched)` exposes `forceEmit()`: synchronous emit bypassing batching, throttle, debounce, and pause
 
 5. **UndoManager** (`src/undo-manager.js`) - Undo/redo stacks built on inverse diffs

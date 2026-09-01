@@ -63,6 +63,9 @@ export class LazyWatch {
     this.#diffTracker.inverseEnabled = !!options.inverse;
     this.#eventEmitter = new EventEmitter(this.#diffTracker, options);
     this.#proxyHandler = new ProxyHandler(original, this.#diffTracker, this.#eventEmitter);
+    // Nested listeners under an array slot displaced by a structural op
+    // receive the live value at their path (see EventEmitter)
+    this.#eventEmitter.setStateResolver(path => this.#proxyHandler.valueAt(path));
     this.#proxy = this.#proxyHandler.createRootProxy(this);
 
     // Store the instance reference so we can access it from the proxy

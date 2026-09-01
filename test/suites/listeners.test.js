@@ -592,4 +592,133 @@ export default function register(runner) {
       'the returned diff must not change when state changes later');
     LazyWatch.dispose(watched);
   });
+
+  // --- Listeners under array slots ---
+  // Compact $splice ops and $length truncation change what an index holds
+  // without naming it in the diff; element listeners used to miss them
+  // entirely (never called for unshift/shift, nor for `length = n`).
+  runner.test('element listeners should be notified when a structural op shifts their slot', async () => {
+    const watched = new LazyWatch({ todos: [{ id: 1 }, { id: 2 }, { id: 3 }] });
+    const log = [];
+    LazyWatch.on(watched.todos[0], d => log.push(['0', d]));
+    LazyWatch.on(watched.todos[1], d => log.push(['1', d]));
+    LazyWatch.on(watched.todos[2], d => log.push(['2', d]));
+
+    watched.todos.unshift({ id: 0 });
+    await wait(10);
+    // Every slot now holds a different element: the full live value arrives
+    assertEquals(log.sort(), [['0', { id: 0 }], ['1', { id: 1 }], ['2', { id: 2 }]]);
+
+    log.length = 0;
+    watched.todos.shift();
+    await wait(10);
+    assertEquals(log.sort(), [['0', { id: 1 }], ['1', { id: 2 }], ['2', { id: 3 }]]);
+    LazyWatch.dispose(watched);
+  });
+
+  runner.test('an in-place splice replacement should notify only the replaced slot', async () => {
+    const watched = new LazyWatch({ todos: [{ id: 1 }, { id: 2 }, { id: 3 }] });
+    const log = [];
+    LazyWatch.on(watched.todos[0], d => log.push(['0', d]));
+    LazyWatch.on(watched.todos[1], d => log.push(['1', d]));
+    LazyWatch.on(watched.todos[2], d => log.push(['2', d]));
+
+    watched.todos.splice(1, 1, { id: 9 });
+    await wait(10);
+    assertEquals(log, [['1', { id: 9 }]], 'slots outside the replaced range are untouched');
+    LazyWatch.dispose(watched);
+  });
+
+  runner.test('element listeners should receive null when truncation removes their slot, once', async () => {
+    const watched = new LazyWatch({ todos: [{ id: 1 }, { id: 2 }, { id: 3 }] });
+    const log = [];
+    LazyWatch.on(watched.todos[1], d => log.push(['1', d]));
+    LazyWatch.on(watched.todos[2], d => log.push(['2', d]));
+
+    watched.todos.length = 1;
+    await wait(10);
+    assertEquals(log.sort(), [['1', null], ['2', null]]);
+
+    // Growth below a slot already reported gone restates $length but must
+    // not re-notify; the slot's listener resumes when something lands there
+    log.length = 0;
+    watched.todos.push({ id: 4 });
+    await wait(10);
+    assertEquals(log, [['1', { id: 4 }]], 'index 2 is still gone and stays silent');
+
+    log.length = 0;
+    watched.todos.push({ id: 5 });
+    await wait(10);
+    assertEquals(log, [['2', { id: 5 }]]);
+    LazyWatch.dispose(watched);
+  });
+
+  runner.test('a shifted slot listener should not be re-notified by growth while its slot exists', async () => {
+    const watched = new LazyWatch({ todos: [{ id: 1 }, { id: 2 }] });
+    const log = [];
+    LazyWatch.on(watched.todos[0], d => log.push(d));
+
+    watched.todos.push({ id: 3 }); // $length grows; slot 0 untouched
+    await wait(10);
+    assertEquals(log, [], 'growth above the slot is not a change to it');
+    LazyWatch.dispose(watched);
+  });
+
+  runner.test('listeners deeper under a shifted slot should receive the live value or null', async () => {
+    const watched = new LazyWatch({
+      todos: [{ id: 1, tags: ['a'] }, { id: 2, tags: ['b'] }, { id: 3, tags: ['c'] }]
+    });
+    const log = [];
+    LazyWatch.on(watched.todos[1].tags, d => log.push(['1.tags', d]));
+    LazyWatch.on(watched.todos[2].tags, d => log.push(['2.tags', d]));
+
+    watched.todos.splice(0, 2); // [id 3] remains
+    await wait(10);
+    assertEquals(log.sort(), [['1.tags', null], ['2.tags', null]]);
+
+    log.length = 0;
+    watched.todos.unshift({ id: 0, tags: ['z'] }); // slot 1 holds id 3 again
+    await wait(10);
+    assertEquals(log, [['1.tags', ['c']]]);
+    LazyWatch.dispose(watched);
+  });
+
+  runner.test('an op followed by a nested write on the shifted slot should deliver the full live value', async () => {
+    const watched = new LazyWatch({ todos: [{ id: 1 }, { id: 2 }] });
+    let received = 'never-called';
+    LazyWatch.on(watched.todos[1], d => { received = d; });
+
+    watched.todos.unshift({ id: 0 });
+    watched.todos[1].done = true;
+    await wait(10);
+    assertEquals(received, { id: 1, done: true }, 'the shift must not be masked by the index write');
+    LazyWatch.dispose(watched);
+  });
+
+  runner.test('relayed $splice ops should notify element listeners on the mirror too', async () => {
+    const src = new LazyWatch({ todos: [{ id: 1 }, { id: 2 }] });
+    const mirror = new LazyWatch({ todos: [{ id: 1 }, { id: 2 }] });
+    LazyWatch.on(src, d => LazyWatch.patch(mirror, JSON.parse(JSON.stringify(d))));
+    let received = 'never-called';
+    LazyWatch.on(mirror.todos[1], d => { received = d; });
+
+    src.todos.unshift({ id: 0 });
+    await wait(10);
+    assertEquals(received, { id: 1 });
+    LazyWatch.dispose(src);
+    LazyWatch.dispose(mirror);
+  });
+
+  runner.test('element listeners should get per-index diffs when inverse recording disables compact ops', async () => {
+    const watched = new LazyWatch({ todos: [{ id: 1 }, { id: 2 }] }, { inverse: true });
+    let received = 'never-called';
+    let inverse = 'never-called';
+    LazyWatch.on(watched.todos[1], (d, inv) => { received = d; inverse = inv; });
+
+    watched.todos.unshift({ id: 0 });
+    await wait(10);
+    assertEquals(received, { id: 1 });
+    assertEquals(inverse, { id: 2 });
+    LazyWatch.dispose(watched);
+  });
 }

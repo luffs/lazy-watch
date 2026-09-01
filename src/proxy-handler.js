@@ -18,6 +18,9 @@ const STRUCTURAL_ARRAY_METHODS = new Set(['splice', 'unshift', 'shift']);
 // has yet to read), but these three permute in both directions.
 const REORDER_ARRAY_METHODS = new Set(['sort', 'reverse', 'copyWithin']);
 
+// Sentinel for "this path no longer resolves in the watched tree"
+const MISSING = Symbol('LazyWatch.Missing');
+
 export class ProxyHandler {
   #original;
   // Raw target object -> its proxy. Ensures each object in the tree gets
@@ -91,7 +94,7 @@ export class ProxyHandler {
         // elements via slot-merge aliasing (see REORDER_ARRAY_METHODS)
         if (Array.isArray(target) && REORDER_ARRAY_METHODS.has(prop) &&
           value === Array.prototype[prop]) {
-          return (...args) => this.#reorderArrayOp(target, prop, args, receiver);
+          return (...args) => this.#reorderArrayOp(target, prop, args, path, receiver);
         }
 
         if (Utils.isObjectOrArray(value)) {
@@ -168,6 +171,7 @@ export class ProxyHandler {
           delete target[prop];
           return true;
         }
+        this.#assertAttached(target, path);
 
         if (prop in target) {
           if (this.#inverseActive()) {
@@ -185,6 +189,50 @@ export class ProxyHandler {
   }
 
   /**
+   * The raw value at `path` in the watched tree, or MISSING when the path
+   * no longer resolves. Segments are own-property lookups only, so hostile
+   * or stale paths can never walk into a prototype.
+   */
+  #valueAt(path) {
+    let current = this.#original;
+    for (let i = 0; i < path.length; i++) {
+      if (!Utils.isObjectOrArray(current) || !Object.hasOwn(current, path[i])) {
+        return MISSING;
+      }
+      current = current[path[i]];
+    }
+    return current;
+  }
+
+  /**
+   * Whether `path` still resolves in the watched tree, and to what — for
+   * the emitter, which delivers the live value to nested listeners whose
+   * array slot was displaced by a structural op.
+   * @returns {{ found: boolean, value?: * }}
+   */
+  valueAt(path) {
+    const value = this.#valueAt(path);
+    return value === MISSING ? { found: false } : { found: true, value };
+  }
+
+  /**
+   * A proxy's raw object stays at its slot for its whole life (assigned
+   * values are cloned, containers merge in place), so the object behind a
+   * cached proxy is either still at the proxy's path or detached from the
+   * tree entirely — deleted, replaced by a leaf, truncated away, or
+   * removed by a structural array op. A tracked write through a detached
+   * proxy would mutate an object no replica can see while recording a
+   * diff at a path that no longer holds it, so it fails loudly instead.
+   */
+  #assertAttached(target, path) {
+    if (this.#valueAt(path) !== target) {
+      throw new Error(
+        `LazyWatch proxy is detached: the object it wraps is no longer at "${path.join('.')}" in the watched tree (it was deleted, replaced, truncated away, or removed by a structural array op). Re-read it from the root proxy.`
+      );
+    }
+  }
+
+  /**
    * The `set` trap body, shared with the defineProperty trap: validates the
    * value, records the change (or deletion, for undefined) in the diff, and
    * applies it to the target.
@@ -198,6 +246,8 @@ export class ProxyHandler {
       target[prop] = this.resolveIfProxy(value);
       return true;
     }
+
+    this.#assertAttached(target, path);
 
     // Assigning these would mutate prototypes, not data
     if (Utils.isUnsafeKey(prop)) {
@@ -288,7 +338,8 @@ export class ProxyHandler {
    * Note that a sort comparator sees raw elements, not proxies — reads
    * behave identically, and comparators must not mutate.
    */
-  #reorderArrayOp(target, method, args, receiver) {
+  #reorderArrayOp(target, method, args, path, receiver) {
+    this.#assertAttached(target, path);
     const copy = target.slice();
     Array.prototype[method].apply(copy, args);
 
@@ -411,6 +462,7 @@ export class ProxyHandler {
    * paths valid — raw splicing would move elements and stale them.
    */
   #structuralArrayOp(target, method, args, path, receiver) {
+    this.#assertAttached(target, path);
     const native = Array.prototype[method];
     const len = target.length;
 
@@ -637,6 +689,12 @@ export class ProxyHandler {
     // Get the target object (resolve proxy if needed)
     const rawTarget = this.resolveIfProxy(target);
     const rawSource = this.resolveIfProxy(source);
+
+    // An external call entering through a detached nested proxy would
+    // record its diff at a path that no longer holds the object
+    if (!internal) {
+      this.#assertAttached(rawTarget, path);
+    }
     // Inside a real-array source every entry is a full value, never a
     // fragment; the whole subtree below it applies with wholesale semantics
     wholesale = wholesale || Array.isArray(rawSource);

@@ -26,6 +26,7 @@ mirroring, undo/redo, form validation), see [EXAMPLES.md](../EXAMPLES.md).
 - [Composing Diffs](#composing-diffs)
 - [Identifying and Unwrapping Proxies](#identifying-and-unwrapping-proxies)
 - [Disposing](#disposing)
+- [Detached Proxies](#detached-proxies)
 - [Array Diffs and Shape Drift](#array-diffs-and-shape-drift)
 - [Supported Values](#supported-values)
 
@@ -218,6 +219,27 @@ LazyWatch.on(app.user, changes => {
 Note that listeners are bound to a *path*, not an object identity: if a new
 object is later assigned at the same path, the listener resumes receiving its
 diffs.
+
+**Array slots.** Structural array ops (`splice`, `unshift`, `shift`) and
+truncation change what an index holds without naming it in the diff, so a
+listener registered on an element — or anything below it — is treated as
+touched whenever an op or truncation can have moved its slot. It receives
+`null` when the slot no longer exists, and otherwise the full value now at
+its path: a wholesale replacement from its point of view, since the diff
+alone cannot say what moved in. A slot reported gone is not re-notified by
+later growth below it; the listener resumes when something lands at its
+path again.
+
+```js
+const app = new LazyWatch({ todos: [{ id: 1 }, { id: 2 }] });
+
+LazyWatch.on(app.todos[1], changes => {
+  // { id: 1 }  — after `app.todos.unshift({ id: 0 })`: the element now at index 1
+  // null       — after `app.todos.length = 1`: the slot is gone
+});
+```
+
+(Handles work the same way: see [Detached Proxies](#detached-proxies).)
 
 ## Removing Listeners
 
@@ -765,6 +787,44 @@ LazyWatch.on(data, () => {}); // throws: instance has been disposed
 Dispose instances you no longer need when their listeners capture other
 long-lived objects; the internal caches themselves are weak and don't
 block garbage collection.
+
+## Detached Proxies
+
+A nested proxy addresses a *slot* in the watched tree, not an object. The
+raw object behind it stays at that slot for its whole life — assigned
+values are cloned, containers merge in place — so a handle such as
+`const todo = app.todos[1]` keeps editing index 1 no matter which element
+lands there:
+
+```js
+const app = new LazyWatch({ todos: [{ id: 1 }, { id: 2 }] });
+
+const todo = app.todos[1];    // addresses slot 1 (currently id 2)
+app.todos.unshift({ id: 0 }); // slot 1 now holds id 1
+todo.done = true;             // marks id 1 — re-find elements after structural ops
+```
+
+When the slot itself is destroyed — the property deleted, replaced by a
+leaf value, truncated away, or removed by `splice`/`shift` — the handle
+becomes **detached**: its object is no longer anywhere in the tree. Reads
+still return the object's stale contents, but any tracked write through
+it — assignment, `delete`, array methods, `LazyWatch.patch`/`overwrite`
+entering at it — throws an `Error` naming the path:
+
+```js
+const todo = app.todos[1];
+app.todos.shift();  // the last slot is removed
+todo.done = true;
+// Error: LazyWatch proxy is detached: the object it wraps is no longer at
+// "todos.1" in the watched tree (...). Re-read it from the root proxy.
+```
+
+Such a write would otherwise mutate an object no replica can see while
+recording a diff at a path that no longer holds it — the sender's state
+unchanged, every mirror growing a phantom entry. A handle stays detached
+even after a new object is assigned at the same path (the new value is a
+clone); read it from the root again. Symbol-keyed writes remain allowed,
+being local-only metadata.
 
 ## Array Diffs and Shape Drift
 

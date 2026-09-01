@@ -38,7 +38,10 @@ export type Patch<T> = {
  * ancestor of it) is deleted they receive `null` (hence the nullable
  * parameter; narrow before use); when it is replaced wholesale by a leaf
  * value (string, number, boolean, Date, ...) they receive that value
- * directly (cast when handling this case).
+ * directly (cast when handling this case). A listener under an array slot
+ * that a structural op (`splice`/`unshift`/`shift`) or truncation displaced
+ * receives `null` when the slot is gone and otherwise the full value now at
+ * its path.
  *
  * When the instance was created with `{ inverse: true }` (or has an undo
  * manager attached), listeners receive a second argument: the inverse diff

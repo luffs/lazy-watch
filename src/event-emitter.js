@@ -1,6 +1,8 @@
 // event-emitter.js - Handles event emission with batching
 import {Utils} from "./utils.js";
 
+const INDEX_RE = /^\d+$/;
+
 export class EventEmitter {
   #listeners = [];
   #diffTracker;
@@ -17,6 +19,10 @@ export class EventEmitter {
   #scheduledGeneration = null;
   #lastEmitTime = 0;
   #paused = false;
+  // (path) => { found, value }: the live watched state, for nested
+  // listeners whose array slot a structural op displaced (see
+  // #filterDiffByPath). Injected by LazyWatch after the handler exists.
+  #resolveState = null;
 
   constructor(diffTracker, options = {}) {
     if (!diffTracker) {
@@ -29,6 +35,13 @@ export class EventEmitter {
     this.#throttle = options.throttle || 0;
     this.#debounce = options.debounce || 0;
     this.#schedule = options.schedule || null;
+  }
+
+  /**
+   * Provide access to the live watched state: (path) => { found, value }
+   */
+  setStateResolver(resolve) {
+    this.#resolveState = resolve;
   }
 
   /**
@@ -199,6 +212,11 @@ export class EventEmitter {
       try {
         // Filter the diff based on the listener's path
         const filteredDiff = this.#filterDiffByPath(diff, entry.path);
+        // A subtree already reported gone stays gone until a later batch
+        // lands something at its path again: array growth below a slot
+        // that was truncated away restates `$length`, which must not
+        // re-notify the slot's listener
+        if (filteredDiff === null && entry.gone) return;
         // undefined means the batch didn't touch this listener's subtree;
         // an empty object means a diff node was created but nothing was
         // recorded in it. null and leaf values are meaningful: the subtree
@@ -206,6 +224,7 @@ export class EventEmitter {
         const hasChanges = filteredDiff !== undefined &&
           !(Utils.isObjectOrArray(filteredDiff) && Object.keys(filteredDiff).length === 0);
         if (hasChanges) {
+          entry.gone = filteredDiff === null;
           // Mark before invoking so a throwing once-listener is still removed
           if (entry.once) {
             entry.fired = true;
@@ -234,6 +253,13 @@ export class EventEmitter {
    *   itself when the subtree was replaced wholesale; `undefined` when the
    *   batch didn't touch this path at all. (Diffs never store `undefined` —
    *   it is normalized to `null` at write time — so it is a safe sentinel.)
+   *
+   * Array fragments can change what a slot holds without naming its index:
+   * a `$splice` op shifts elements, and `$length` truncates them. A
+   * listener under such a slot is treated as touched — it receives `null`
+   * when the slot was truncated away, and otherwise the live value now at
+   * its path (a full value, like a wholesale replacement), since the diff
+   * alone cannot say what moved into the slot.
    */
   #filterDiffByPath(diff, path) {
     if (path.length === 0) {
@@ -243,11 +269,23 @@ export class EventEmitter {
 
     // Navigate to the relevant part of the diff
     let current = diff;
-    for (const segment of path) {
+    for (let i = 0; i < path.length; i++) {
+      const segment = path[i];
       // An ancestor was deleted (null in the diff) or replaced by a leaf
       // value — either way this listener's subtree no longer exists
       if (current === null || !Utils.isObjectOrArray(current)) {
         return null;
+      }
+      // Fragments are plain objects; a real array in a diff is a full
+      // value whose elements are addressed by index like any other key
+      if (!Array.isArray(current) && INDEX_RE.test(segment)) {
+        const index = Number(segment);
+        if (Array.isArray(current.$splice) && this.#spliceTouches(current.$splice, index)) {
+          return this.#liveValue(path);
+        }
+        if (typeof current.$length === 'number' && index >= current.$length) {
+          return null;
+        }
       }
       if (!(segment in current)) {
         // No changes at this path
@@ -257,6 +295,36 @@ export class EventEmitter {
     }
 
     return current;
+  }
+
+  /**
+   * Whether a `$splice` op list can have changed what sits at `index`. An
+   * op shifts every index from its start onward unless it deletes exactly
+   * as many elements as it inserts, in which case only the replaced range
+   * moves. Ops are checked independently of each other's shifts, so this
+   * errs toward "touched" — the listener then receives the live value,
+   * which is correct either way.
+   */
+  #spliceTouches(ops, index) {
+    for (const op of ops) {
+      const start = op[0];
+      const deleteCount = op[1];
+      const inserted = Array.isArray(op[2]) ? op[2].length : 0;
+      if (index >= start && (deleteCount !== inserted || index < start + inserted)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * The value now at `path` in the watched state, as an independent clone
+   * (diffs never alias live state); `null` when the path no longer exists
+   */
+  #liveValue(path) {
+    const result = this.#resolveState ? this.#resolveState(path) : { found: false };
+    if (!result.found || result.value === undefined) return null;
+    return Utils.isObjectOrArray(result.value) ? Utils.deepClone(result.value) : result.value;
   }
 
   /**

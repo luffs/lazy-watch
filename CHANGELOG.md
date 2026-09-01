@@ -4,6 +4,31 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+
+- **Writes through a detached nested proxy desynced mirrors.** A handle to
+  an element (`const todo = app.todos[1]`) whose slot was later removed by
+  `shift`/`splice`, deleted, replaced by a leaf, or truncated away still
+  accepted writes: they mutated an object no longer in the tree while
+  recording a diff at the stale path, so the sender's state stayed
+  unchanged and every mirror grew a phantom entry. Tracked writes through
+  a detached proxy — assignment, `delete`, array methods, and
+  `patch`/`overwrite` entering at it — now throw an `Error` naming the
+  path; reads and symbol-keyed writes still work. Handles whose slot
+  survives keep addressing that slot (a handle displaced by `unshift`
+  edits whatever moved in), now documented under
+  [Detached Proxies](docs/API.md#detached-proxies)
+- **Nested listeners on array elements missed structural changes.** A
+  `$splice` op or a `length` truncation changes what a slot holds without
+  naming its index, so a listener on `app.todos[1]` (or anything below it)
+  was never notified by `unshift`/`shift`/`splice` or `todos.length = 1`,
+  although the docs promised `null` on deletion. Such listeners are now
+  treated as touched: they receive `null` when the slot no longer exists,
+  and otherwise the full value now at their path. A slot reported gone is
+  not re-notified by later growth below it
+
 ## [5.0.0] - 2026-07-24
 
 **Breaking wire-format change.** Array fragments now carry their length
