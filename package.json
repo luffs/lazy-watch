@@ -13,7 +13,10 @@
   },
   "files": [
     "src",
+    "docs",
     "README.md",
+    "EXAMPLES.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "sideEffects": false,

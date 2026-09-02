@@ -6,17 +6,37 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
 
 ## [Unreleased]
 
+### Changed
+
+- The npm tarball now ships `docs/` (the API reference), `EXAMPLES.md`,
+  and `CHANGELOG.md` alongside the source, so a version bump can be
+  understood from `node_modules` without a trip to GitHub. The bundle is
+  unaffected (`files` only)
+
 ### Fixed
 
+- `Utils.hasArrayMarker` threw a TypeError on `null` and other non-object
+  input. It is a public helper for inspecting diff values, and `null` is
+  the wire format's own deletion marker, so it now returns false for null,
+  leaves, and real arrays instead of throwing
+- The benchmark runner counted its own loop as work: ops/sec came from a
+  wall-clock span around a loop that awaited every call, so a synchronous
+  benchmark paid a microtask tick per iteration and the fastest plain-object
+  baselines measured little but that overhead. Ops/sec now derives from the
+  summed per-iteration timings, and only functions returning a promise are
+  awaited
 - The benchmark regression guard's read and write ratios compared proxy
   construction against a plain literal: both benchmarks created and
   disposed an instance on every iteration, so the plain baseline was
   little more than the runner's loop overhead and the ratio swung from 7x
   locally to 118x on a shared CI runner for identical code (the 6.2.0
   release's CI benchmark job failed on it). The benchmarks now read and
-  write an instance created once, ten accesses per iteration, so the ratio
-  measures the trap cost against a plain access; limits are re-based on
-  the new ratios (read 50x, write 250x). No library code changed
+  write an instance created once, a thousand rounds per iteration with the
+  write side flushing each batch, so the ratio measures the trap cost
+  against a plain access. With honest baselines the ratios are large
+  (~100x for a proxied read, ~500x for a proxied write), and all three
+  limits are re-based ~10x above them (see `benchmark/regression-guard.js`).
+  No library code changed
 
 ## [6.2.0] - 2026-09-02
 

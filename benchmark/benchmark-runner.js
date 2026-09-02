@@ -1,7 +1,15 @@
 // benchmark-runner.js - Utility for running benchmarks with statistics
 
 /**
- * Run a benchmark function multiple times and collect statistics
+ * Run a benchmark function multiple times and collect statistics.
+ *
+ * Each iteration is timed on its own with process.hrtime.bigint(), and
+ * ops/sec is derived from the sum of those timings, so the loop's own
+ * bookkeeping never counts as work. A synchronous benchmark function runs
+ * without an await: awaiting a non-promise value costs a microtask tick
+ * per iteration, which used to dominate the fast plain-object baselines
+ * and made the ratio guards compare library work against loop overhead.
+ * Functions that return a promise are awaited as before.
  * @param {string} name - Name of the benchmark
  * @param {Function} fn - Benchmark function to run
  * @param {Object} options - Configuration options
@@ -12,25 +20,29 @@
 export async function runBenchmark(name, fn, options = {}) {
   const iterations = options.iterations || 1000;
   const warmup = options.warmup || 100;
+  const isPromise = value => value !== null && typeof value === 'object' && typeof value.then === 'function';
 
   // Warmup phase
   for (let i = 0; i < warmup; i++) {
-    await fn();
+    const result = fn();
+    if (isPromise(result)) await result;
   }
 
   // Collect samples
   const samples = [];
-  const startTime = Date.now();
+  let elapsedNs = 0n;
 
   for (let i = 0; i < iterations; i++) {
     const iterStart = process.hrtime.bigint();
-    await fn();
+    const result = fn();
+    if (isPromise(result)) await result;
     const iterEnd = process.hrtime.bigint();
-    samples.push(Number(iterEnd - iterStart) / 1000000); // Convert to milliseconds
+    const ns = iterEnd - iterStart;
+    elapsedNs += ns;
+    samples.push(Number(ns) / 1000000); // Convert to milliseconds
   }
 
-  const endTime = Date.now();
-  const totalTime = endTime - startTime;
+  const totalTime = Number(elapsedNs) / 1000000; // Measured work only, in ms
 
   // Calculate statistics
   samples.sort((a, b) => a - b);

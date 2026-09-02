@@ -139,7 +139,8 @@ The suite uses a custom benchmark runner (`benchmark-runner.js`) that:
 
 - Performs warmup iterations to stabilize JIT compilation
 - Collects multiple samples for statistical analysis
-- Uses high-resolution timers (process.hrtime.bigint) for accurate measurements
+- Uses high-resolution timers (process.hrtime.bigint) for accurate measurements; ops/sec is derived from the summed per-iteration timings, so loop bookkeeping never counts as work
+- Runs synchronous benchmark functions without an await (awaiting a plain value costs a microtask tick per iteration, which would dominate the fastest baselines); functions returning a promise are awaited
 - Calculates mean, median, standard deviation, and percentiles
 
 ### Memory Measurements

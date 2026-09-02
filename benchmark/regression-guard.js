@@ -21,17 +21,23 @@
 // here in the same commit and say why.
 
 // [benchmark, baseline it may not fall too far behind, max slowdown]
-// Ratios when added: creation ~6x, read ~7x, write ~14x. The read and
-// write benchmarks originally constructed and disposed an instance per
-// iteration, so their ratios compared proxy construction (allocation, GC)
-// against little more than the runner's loop overhead — 7x locally, 118x
-// on a shared CI runner for the same code. They now access an instance
-// created once, ten rounds per iteration: read ~5x, write ~20-30x (a write
-// records a diff and emits a batch between iterations)
+//
+// The ratios are large because the plain baselines are honest: a JIT
+// compiles a property read on a stable object down to a cycle or two,
+// while a Proxy trap costs tens of nanoseconds, so ~100x is the true
+// price of a proxied read and ~500x that of a proxied write (each write
+// records a diff entry and the batch emits once per iteration). They
+// used to look like 7x and 14x only because the runner awaited every
+// iteration and the baselines measured that microtask tick rather than
+// the access — and that made them unstable: the same code measured 7x
+// here and 118x on a shared CI runner. Ratios when re-based (runner
+// summing hrtime samples, instances created once, a thousand rounds per
+// iteration): creation ~20-35x, read ~100-150x, write ~500-800x (the mean
+// carries GC pauses from 3000 recorded writes per sample); limits ~10x above
 const RATIO_GUARDS = [
-  ['LazyWatch creation', 'Plain object creation', 60],
-  ['LazyWatch property read', 'Plain object property read', 50],
-  ['LazyWatch property write', 'Plain object property write', 250],
+  ['LazyWatch creation', 'Plain object creation', 300],
+  ['LazyWatch property read', 'Plain object property read', 1500],
+  ['LazyWatch property write', 'Plain object property write', 8000],
 ];
 
 // [benchmark, min ops/sec] — 250k-830k ops/sec locally when added

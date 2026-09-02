@@ -26,13 +26,15 @@ export async function runCoreBenchmarks() {
   const plainWrite = { a: 1, b: 2, c: 3 };
   const watchedWrite = new LazyWatch({ a: 1, b: 2, c: 3 });
   // Writes cycle through values so every iteration records a real change
-  // (an identical value is a no-op write) and the batch emits between
-  // iterations like it would in an application. Each iteration performs
-  // ROUNDS accesses so the measured work stands clear of the runner's
-  // per-iteration overhead (an await and two clock reads, ~0.25 us), which
-  // would otherwise dilute the ratio and hide a slow trap
+  // (an identical value is a no-op write), and the LazyWatch side flushes
+  // once per iteration so the batch's emit is part of the measured write,
+  // as it would be in an application. Each iteration performs ROUNDS
+  // rounds of three accesses, enough that even the plain side takes
+  // microseconds and stands clear of the two clock reads that bracket a
+  // sample (~0.1 us) — otherwise the baseline measures the timer, and the
+  // ratio measures noise
   let tick = 0;
-  const ROUNDS = 10;
+  const ROUNDS = 1000;
 
   const benchmarks = [
     {
@@ -57,7 +59,7 @@ export async function runCoreBenchmarks() {
         for (let i = 0; i < ROUNDS; i++) sum += plainRead.a + plainRead.b + plainRead.c;
         return sum;
       },
-      options: { iterations: 100000, warmup: 10000 }
+      options: { iterations: 2000, warmup: 200 }
     },
     {
       name: 'LazyWatch property read',
@@ -66,7 +68,7 @@ export async function runCoreBenchmarks() {
         for (let i = 0; i < ROUNDS; i++) sum += watchedRead.a + watchedRead.b + watchedRead.c;
         return sum;
       },
-      options: { iterations: 100000, warmup: 10000 }
+      options: { iterations: 2000, warmup: 200 }
     },
     {
       name: 'Plain object property write',
@@ -78,7 +80,7 @@ export async function runCoreBenchmarks() {
           plainWrite.c = tick + 2;
         }
       },
-      options: { iterations: 100000, warmup: 10000 }
+      options: { iterations: 2000, warmup: 200 }
     },
     {
       name: 'LazyWatch property write',
@@ -89,8 +91,9 @@ export async function runCoreBenchmarks() {
           watchedWrite.b = tick + 1;
           watchedWrite.c = tick + 2;
         }
+        LazyWatch.flush(watchedWrite);
       },
-      options: { iterations: 100000, warmup: 10000 }
+      options: { iterations: 2000, warmup: 200 }
     },
     {
       name: 'Nested object access',

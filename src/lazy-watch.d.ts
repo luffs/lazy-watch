@@ -169,7 +169,8 @@ export interface UtilsInterface {
      * markers (a numeric `$length` or a `$splice` op list) and so describes
      * an array. Every array node a sender emits carries `$length`; an
      * object without a marker arriving where the receiver holds an array
-     * is a plain object that replaced it
+     * is a plain object that replaced it. Accepts any diff value: false
+     * for null, leaves, and real arrays
      */
     hasArrayMarker(value: any): boolean;
 

@@ -239,10 +239,12 @@ export const Utils = {
    * an array (a fragment to merge into one). Every array node a sender
    * emits carries `$length`, so an object value WITHOUT a marker arriving
    * where the receiver holds an array is a plain object that replaced the
-   * array, not a fragment.
+   * array, not a fragment. Accepts any diff value: false for `null` (the
+   * wire format's deletion marker), leaves, and real arrays.
    */
   hasArrayMarker(val) {
-    return typeof val.$length === 'number' || Array.isArray(val.$splice);
+    return val !== null && typeof val === 'object' &&
+      (typeof val.$length === 'number' || Array.isArray(val.$splice));
   },
 
   /**

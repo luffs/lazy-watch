@@ -317,9 +317,8 @@ export class UndoManager {
  * absence, undefined for a path the batch did not touch)
  */
 function kindOf(node) {
-  if (Array.isArray(node)) return 'array';
-  if (!Utils.isPlainObject(node)) return 'leaf';
-  return Utils.hasArrayMarker(node) ? 'array' : 'object';
+  if (Array.isArray(node) || Utils.hasArrayMarker(node)) return 'array';
+  return Utils.isPlainObject(node) ? 'object' : 'leaf';
 }
 
 /**
