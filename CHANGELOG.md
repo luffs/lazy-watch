@@ -4,7 +4,13 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
-## [Unreleased]
+## [6.2.0] - 2026-09-02
+
+The undo manager learns to live beside remote edits: a `record` option
+keeps batches that are not the user's own out of history, and where such
+a batch reshapes the state, the steps it would break are dropped instead
+of truncating or overwriting what it put there. No wire-format change;
+6.0.x and 6.1.x replicas interoperate.
 
 ### Added
 
