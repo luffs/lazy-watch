@@ -4,7 +4,13 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
-## [Unreleased]
+## [6.2.1] - 2026-09-02
+
+The emitter schedules one dispatch per batch instead of one per write,
+which removes most of the write path's garbage and cost; `Utils.hasArrayMarker`
+no longer throws on `null`; the tarball ships the docs; and the benchmark
+suite measures library work rather than its own loop, with ratio guards on
+medians. No API or wire-format change.
 
 ### Changed
 
