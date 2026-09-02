@@ -14,6 +14,26 @@ function wait(ms) {
 export async function runCoreBenchmarks() {
   console.log('\n=== Core Performance Benchmarks ===\n');
 
+  // The read and write benchmarks operate on instances created once, so
+  // that their ratio against the plain-object baseline measures the trap
+  // cost of an access, not proxy construction against a literal. (The
+  // creation benchmark covers construction and disposal.) Constructing per
+  // iteration made the read ratio swing from ~7x locally to ~120x on a
+  // shared CI runner, because the plain side was little more than loop
+  // overhead while the LazyWatch side carried allocation and GC.
+  const plainRead = { a: 1, b: 2, c: 3 };
+  const watchedRead = new LazyWatch({ a: 1, b: 2, c: 3 });
+  const plainWrite = { a: 1, b: 2, c: 3 };
+  const watchedWrite = new LazyWatch({ a: 1, b: 2, c: 3 });
+  // Writes cycle through values so every iteration records a real change
+  // (an identical value is a no-op write) and the batch emits between
+  // iterations like it would in an application. Each iteration performs
+  // ROUNDS accesses so the measured work stands clear of the runner's
+  // per-iteration overhead (an await and two clock reads, ~0.25 us), which
+  // would otherwise dilute the ratio and hide a slow trap
+  let tick = 0;
+  const ROUNDS = 10;
+
   const benchmarks = [
     {
       name: 'Plain object creation',
@@ -33,40 +53,44 @@ export async function runCoreBenchmarks() {
     {
       name: 'Plain object property read',
       fn: () => {
-        const obj = { a: 1, b: 2, c: 3 };
-        const val = obj.a + obj.b + obj.c;
+        let sum = 0;
+        for (let i = 0; i < ROUNDS; i++) sum += plainRead.a + plainRead.b + plainRead.c;
+        return sum;
       },
       options: { iterations: 100000, warmup: 10000 }
     },
     {
       name: 'LazyWatch property read',
       fn: () => {
-        const watched = new LazyWatch({ a: 1, b: 2, c: 3 });
-        const val = watched.a + watched.b + watched.c;
-        LazyWatch.dispose(watched);
+        let sum = 0;
+        for (let i = 0; i < ROUNDS; i++) sum += watchedRead.a + watchedRead.b + watchedRead.c;
+        return sum;
       },
-      options: { iterations: 10000, warmup: 1000 }
+      options: { iterations: 100000, warmup: 10000 }
     },
     {
       name: 'Plain object property write',
       fn: () => {
-        const obj = { a: 1, b: 2, c: 3 };
-        obj.a = 10;
-        obj.b = 20;
-        obj.c = 30;
+        for (let i = 0; i < ROUNDS; i++) {
+          tick++;
+          plainWrite.a = tick;
+          plainWrite.b = tick + 1;
+          plainWrite.c = tick + 2;
+        }
       },
       options: { iterations: 100000, warmup: 10000 }
     },
     {
       name: 'LazyWatch property write',
       fn: () => {
-        const watched = new LazyWatch({ a: 1, b: 2, c: 3 });
-        watched.a = 10;
-        watched.b = 20;
-        watched.c = 30;
-        LazyWatch.dispose(watched);
+        for (let i = 0; i < ROUNDS; i++) {
+          tick++;
+          watchedWrite.a = tick;
+          watchedWrite.b = tick + 1;
+          watchedWrite.c = tick + 2;
+        }
       },
-      options: { iterations: 10000, warmup: 1000 }
+      options: { iterations: 100000, warmup: 10000 }
     },
     {
       name: 'Nested object access',
@@ -178,6 +202,8 @@ export async function runCoreBenchmarks() {
   ];
 
   const results = await runBenchmarkSuite(benchmarks);
+  LazyWatch.dispose(watchedRead);
+  LazyWatch.dispose(watchedWrite);
   displayResults(results);
 
   // Compare some key results

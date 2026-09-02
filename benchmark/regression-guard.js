@@ -21,11 +21,17 @@
 // here in the same commit and say why.
 
 // [benchmark, baseline it may not fall too far behind, max slowdown]
-// Ratios when added: creation ~6x, read ~7x, write ~14x
+// Ratios when added: creation ~6x, read ~7x, write ~14x. The read and
+// write benchmarks originally constructed and disposed an instance per
+// iteration, so their ratios compared proxy construction (allocation, GC)
+// against little more than the runner's loop overhead — 7x locally, 118x
+// on a shared CI runner for the same code. They now access an instance
+// created once, ten rounds per iteration: read ~5x, write ~20-30x (a write
+// records a diff and emits a batch between iterations)
 const RATIO_GUARDS = [
   ['LazyWatch creation', 'Plain object creation', 60],
-  ['LazyWatch property read', 'Plain object property read', 70],
-  ['LazyWatch property write', 'Plain object property write', 140],
+  ['LazyWatch property read', 'Plain object property read', 50],
+  ['LazyWatch property write', 'Plain object property write', 250],
 ];
 
 // [benchmark, min ops/sec] — 250k-830k ops/sec locally when added

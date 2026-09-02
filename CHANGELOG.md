@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+
+- The benchmark regression guard's read and write ratios compared proxy
+  construction against a plain literal: both benchmarks created and
+  disposed an instance on every iteration, so the plain baseline was
+  little more than the runner's loop overhead and the ratio swung from 7x
+  locally to 118x on a shared CI runner for identical code (the 6.2.0
+  release's CI benchmark job failed on it). The benchmarks now read and
+  write an instance created once, ten accesses per iteration, so the ratio
+  measures the trap cost against a plain access; limits are re-based on
+  the new ratios (read 50x, write 250x). No library code changed
+
 ## [6.2.0] - 2026-09-02
 
 The undo manager learns to live beside remote edits: a `record` option
