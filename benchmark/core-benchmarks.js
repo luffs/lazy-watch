@@ -22,9 +22,11 @@ export async function runCoreBenchmarks() {
   // shared CI runner, because the plain side was little more than loop
   // overhead while the LazyWatch side carried allocation and GC.
   //
-  // Every ratio-guarded benchmark batches its work (see ROUNDS and
-  // CREATE_ROUNDS) and declares workPerIteration, so the table reports
-  // per-access (or per-instance) throughput rather than per-batch
+  // Every ratio-guarded benchmark batches its work (READS, WRITES, and
+  // CREATES per iteration) and declares workPerIteration and a work
+  // description, so the table reports per-access (or per-instance)
+  // throughput and says what one iteration did
+  const KEYS = ['a', 'b', 'c'];
   const plainRead = { a: 1, b: 2, c: 3 };
   const watchedRead = new LazyWatch({ a: 1, b: 2, c: 3 });
   const plainWrite = { a: 1, b: 2, c: 3 };
@@ -32,87 +34,86 @@ export async function runCoreBenchmarks() {
   // Writes cycle through values so every iteration records a real change
   // (an identical value is a no-op write), and the LazyWatch side flushes
   // once per iteration so the batch's emit is part of the measured write,
-  // as it would be in an application. Each iteration performs ROUNDS
-  // rounds of three accesses, enough that even the plain side takes
-  // microseconds and stands clear of the two clock reads that bracket a
-  // sample (~0.1 us) — otherwise the baseline measures the timer, and the
-  // ratio measures noise
+  // as it would be in an application (one emit per 1000 writes is ~1 us,
+  // under 1% of the figure). Accesses rotate through the three keys so the
+  // JIT cannot hoist the plain load out of the loop — with a literal key
+  // it did, and the "baseline" was ~0.25 ns per read. The rotation makes
+  // the store keyed rather than named, which costs a proxied write ~2.5x
+  // over `watched.a = v` (the same code with literal keys measured ~55 ns
+  // per write against ~140 ns here); the plain side pays the same shape,
+  // so the ratio is fair, but per-op throughput here is a lower bound for
+  // named-key application code. Each iteration performs enough accesses
+  // that even the plain side takes microseconds and stands clear of the
+  // two clock reads that bracket a sample (~0.1 us) — otherwise the
+  // baseline measures the timer, and the ratio measures noise
   let tick = 0;
-  const ROUNDS = 1000;
+  const READS = 1000;
+  const WRITES = 1000;
   // Creation is batched too: a single object literal takes a few
   // nanoseconds, below the ~80 ns a timed sample costs, so one per
   // iteration would measure the timer. The created objects are kept
   // reachable through `last` so the JIT cannot elide the plain literal
-  const CREATE_ROUNDS = 100;
+  const CREATES = 100;
   let last = null;
 
   const benchmarks = [
     {
       name: 'Plain object creation',
       fn: () => {
-        for (let i = 0; i < CREATE_ROUNDS; i++) {
+        for (let i = 0; i < CREATES; i++) {
           last = { a: 1, b: 2, c: 3, d: { e: 4 } };
         }
         return last;
       },
-      options: { iterations: 2000, warmup: 200, workPerIteration: CREATE_ROUNDS }
+      options: { iterations: 2000, warmup: 200, workPerIteration: CREATES, work: `${CREATES} creates` }
     },
     {
       name: 'LazyWatch creation',
       fn: () => {
-        for (let i = 0; i < CREATE_ROUNDS; i++) {
+        for (let i = 0; i < CREATES; i++) {
           last = new LazyWatch({ a: 1, b: 2, c: 3, d: { e: 4 } });
           LazyWatch.dispose(last);
         }
         return last;
       },
-      options: { iterations: 2000, warmup: 200, workPerIteration: CREATE_ROUNDS }
+      options: { iterations: 2000, warmup: 200, workPerIteration: CREATES, work: `${CREATES} creates + disposes` }
     },
     {
       name: 'Plain object property read',
       fn: () => {
         let sum = 0;
-        for (let i = 0; i < ROUNDS; i++) sum += plainRead.a + plainRead.b + plainRead.c;
+        for (let i = 0; i < READS; i++) sum += plainRead[KEYS[i % 3]];
         return sum;
       },
-      options: { iterations: 2000, warmup: 200, workPerIteration: ROUNDS * 3 }
+      options: { iterations: 2000, warmup: 200, workPerIteration: READS, work: `${READS} reads` }
     },
     {
       name: 'LazyWatch property read',
       fn: () => {
         let sum = 0;
-        for (let i = 0; i < ROUNDS; i++) sum += watchedRead.a + watchedRead.b + watchedRead.c;
+        for (let i = 0; i < READS; i++) sum += watchedRead[KEYS[i % 3]];
         return sum;
       },
-      options: { iterations: 2000, warmup: 200, workPerIteration: ROUNDS * 3 }
+      options: { iterations: 2000, warmup: 200, workPerIteration: READS, work: `${READS} reads` }
     },
     {
       name: 'Plain object property write',
       fn: () => {
-        for (let i = 0; i < ROUNDS; i++) {
-          tick++;
-          plainWrite.a = tick;
-          plainWrite.b = tick + 1;
-          plainWrite.c = tick + 2;
-        }
+        for (let i = 0; i < WRITES; i++) plainWrite[KEYS[i % 3]] = ++tick;
       },
-      options: { iterations: 2000, warmup: 200, workPerIteration: ROUNDS * 3 }
+      options: { iterations: 2000, warmup: 200, workPerIteration: WRITES, work: `${WRITES} writes` }
     },
     {
       name: 'LazyWatch property write',
       fn: () => {
-        for (let i = 0; i < ROUNDS; i++) {
-          tick++;
-          watchedWrite.a = tick;
-          watchedWrite.b = tick + 1;
-          watchedWrite.c = tick + 2;
-        }
+        for (let i = 0; i < WRITES; i++) watchedWrite[KEYS[i % 3]] = ++tick;
         LazyWatch.flush(watchedWrite);
       },
-      options: { iterations: 2000, warmup: 200, workPerIteration: ROUNDS * 3 }
+      options: { iterations: 2000, warmup: 200, workPerIteration: WRITES, work: `${WRITES} writes, then flush` }
     },
     {
       name: 'Nested object access',
+      work: 'create, 1 nested read, dispose',
       fn: () => {
         const watched = new LazyWatch({ a: { b: { c: { d: 1 } } } });
         const val = watched.a.b.c.d;
@@ -122,6 +123,7 @@ export async function runCoreBenchmarks() {
     },
     {
       name: 'Nested object write',
+      work: 'create, 1 nested write, dispose',
       fn: () => {
         const watched = new LazyWatch({ a: { b: { c: { d: 1 } } } });
         watched.a.b.c.d = 100;
@@ -131,6 +133,7 @@ export async function runCoreBenchmarks() {
     },
     {
       name: 'Array push operation',
+      work: 'create, push 5 items, dispose',
       fn: () => {
         const watched = new LazyWatch({ items: [] });
         watched.items.push(1, 2, 3, 4, 5);
@@ -140,6 +143,7 @@ export async function runCoreBenchmarks() {
     },
     {
       name: 'Array modification',
+      work: 'create, 3 index writes, dispose',
       fn: () => {
         const watched = new LazyWatch({ items: [1, 2, 3, 4, 5] });
         watched.items[0] = 10;
@@ -151,6 +155,7 @@ export async function runCoreBenchmarks() {
     },
     {
       name: 'Property deletion',
+      work: 'create, 1 delete, dispose',
       fn: () => {
         const watched = new LazyWatch({ a: 1, b: 2, c: 3, d: 4, e: 5 });
         delete watched.c;
@@ -160,6 +165,7 @@ export async function runCoreBenchmarks() {
     },
     {
       name: 'Batched changes (10 props)',
+      work: 'create, 10 writes, dispose',
       fn: () => {
         const watched = new LazyWatch({
           a: 1, b: 2, c: 3, d: 4, e: 5,
@@ -181,6 +187,7 @@ export async function runCoreBenchmarks() {
     },
     {
       name: 'Add listener',
+      work: 'create, on(), dispose',
       fn: () => {
         const watched = new LazyWatch({ count: 0 });
         const listener = () => {};
@@ -191,6 +198,7 @@ export async function runCoreBenchmarks() {
     },
     {
       name: 'Add and remove listener',
+      work: 'create, on(), off(), dispose',
       fn: () => {
         const watched = new LazyWatch({ count: 0 });
         const listener = () => {};
@@ -202,6 +210,7 @@ export async function runCoreBenchmarks() {
     },
     {
       name: 'Patch operation',
+      work: 'create, patch 2 keys, dispose',
       fn: () => {
         const watched = new LazyWatch({ a: 1, b: 2, c: 3 });
         LazyWatch.patch(watched, { a: 10, d: 4 });
@@ -211,6 +220,7 @@ export async function runCoreBenchmarks() {
     },
     {
       name: 'Overwrite operation',
+      work: 'create, overwrite 2 keys, dispose',
       fn: () => {
         const watched = new LazyWatch({ a: 1, b: 2, c: 3 });
         LazyWatch.overwrite(watched, { a: 10, d: 4 });
@@ -225,7 +235,7 @@ export async function runCoreBenchmarks() {
   LazyWatch.dispose(watchedWrite);
   displayResults(results);
 
-  // Compare some key results
+  // Compare the ratio-guarded pairs (median, like the guard)
   console.log('\n=== Comparisons ===');
   compare(results[0], results[1]); // Plain vs LazyWatch creation
   compare(results[2], results[3]); // Plain vs LazyWatch read

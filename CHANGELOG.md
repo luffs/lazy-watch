@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
+## [Unreleased]
+
+### Changed
+
+- The benchmark table says what it measures: a "Work / iteration" column
+  (`1000 writes, then flush`, `100 creates + disposes`, ...), throughput
+  as grouped integers per op, and per-iteration timings in microseconds
+  instead of four-decimal milliseconds. The read and write benchmarks do
+  exactly 1000 accesses per iteration, rotating over three keys, and the
+  comparison lines print the median multiple the guard uses instead of a
+  "99.3% slower" percentage. Rotating the keys also keeps the JIT from
+  hoisting the plain load out of the loop, so the baselines measure real
+  accesses; the median ratios settle at ~6x for reads and ~30x for writes
+  (creation stays ~150-190x), and the guard limits are re-based ~10x above
+  them. No library code changed
+
 ## [6.2.1] - 2026-09-02
 
 The emitter schedules one dispatch per batch instead of one per write,

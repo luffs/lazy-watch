@@ -19,14 +19,17 @@
  *   performs (default: 1). Ops/sec is scaled by it, so a function that
  *   batches many accesses to stand clear of the timer still reports
  *   per-access throughput
- * @returns {Object} Benchmark results: formatted `stats` (ms, 4 decimals)
- *   for display, unrounded `raw` timings (ms) for the regression guard, and
- *   `opsPerSecond`
+ * @param {string} options.work - What one iteration does, for the table's
+ *   "Work / iteration" column (default: '1 op'), e.g. '1000 writes, then flush'
+ * @returns {Object} Benchmark results: formatted `stats` (ms, 4 decimals),
+ *   unrounded `raw` timings (ms) for the regression guard and the table,
+ *   `work`, and `opsPerSecond` (per op, not per iteration)
  */
 export async function runBenchmark(name, fn, options = {}) {
   const iterations = options.iterations || 1000;
   const warmup = options.warmup || 100;
   const workPerIteration = options.workPerIteration || 1;
+  const work = options.work || '1 op';
   const isPromise = value => value !== null && typeof value === 'object' && typeof value.then === 'function';
 
   // Warmup phase
@@ -66,6 +69,7 @@ export async function runBenchmark(name, fn, options = {}) {
 
   return {
     name,
+    work,
     iterations,
     totalTime,
     stats: {
@@ -98,7 +102,9 @@ export async function runBenchmarkSuite(benchmarks) {
 
   for (const benchmark of benchmarks) {
     console.log(`Running: ${benchmark.name}...`);
-    const result = await runBenchmark(benchmark.name, benchmark.fn, benchmark.options);
+    // A work description may sit on the benchmark itself or in its options
+    const options = benchmark.work ? { ...benchmark.options, work: benchmark.work } : benchmark.options;
+    const result = await runBenchmark(benchmark.name, benchmark.fn, options);
     results.push(result);
   }
 
@@ -106,57 +112,67 @@ export async function runBenchmarkSuite(benchmarks) {
 }
 
 /**
- * Display benchmark results in a formatted table
+ * Display benchmark results in a formatted table: what one iteration
+ * does, throughput per op as a grouped integer, and per-iteration timings
+ * in microseconds (every batched iteration lands between a microsecond
+ * and a millisecond, the range that ms columns hide)
  * @param {Array<Object>} results - Array of benchmark results
  */
 export function displayResults(results) {
   console.log('\n=== Benchmark Results ===\n');
 
-  // Calculate column widths
+  const ops = r => Math.round(parseFloat(r.opsPerSecond)).toLocaleString('en-US');
+  const us = ms => (ms * 1000).toFixed(1);
+
   const nameWidth = Math.max(20, ...results.map(r => r.name.length + 2));
+  const workWidth = Math.max(18, ...results.map(r => (r.work || '').length + 2));
+  const opsWidth = Math.max(18, ...results.map(r => ops(r).length + 2));
   const numWidth = 12;
 
-  // Header
   const header =
     'Name'.padEnd(nameWidth) +
-    'Ops/sec'.padStart(numWidth) +
-    'Mean (ms)'.padStart(numWidth) +
-    'Median (ms)'.padStart(numWidth) +
-    'P95 (ms)'.padStart(numWidth) +
-    'P99 (ms)'.padStart(numWidth);
+    'Work / iteration'.padEnd(workWidth) +
+    'Ops/sec (per op)'.padStart(opsWidth) +
+    'Median (µs)'.padStart(numWidth) +
+    'Mean (µs)'.padStart(numWidth) +
+    'P95 (µs)'.padStart(numWidth) +
+    'P99 (µs)'.padStart(numWidth);
 
   console.log(header);
   console.log('='.repeat(header.length));
 
-  // Results
   for (const result of results) {
-    const row =
+    const raw = result.raw || {
+      mean: parseFloat(result.stats.mean), median: parseFloat(result.stats.median),
+      p95: parseFloat(result.stats.p95), p99: parseFloat(result.stats.p99)
+    };
+    console.log(
       result.name.padEnd(nameWidth) +
-      result.opsPerSecond.padStart(numWidth) +
-      result.stats.mean.padStart(numWidth) +
-      result.stats.median.padStart(numWidth) +
-      result.stats.p95.padStart(numWidth) +
-      result.stats.p99.padStart(numWidth);
-
-    console.log(row);
+      (result.work || '1 op').padEnd(workWidth) +
+      ops(result).padStart(opsWidth) +
+      us(raw.median).padStart(numWidth) +
+      us(raw.mean).padStart(numWidth) +
+      us(raw.p95).padStart(numWidth) +
+      us(raw.p99).padStart(numWidth)
+    );
   }
 
   console.log('\n');
 }
 
 /**
- * Compare two benchmark results
+ * Compare two benchmark results by median per-iteration time, the same
+ * figure the regression guard uses. (A "99.3% slower" line says nothing
+ * once the gap is above 10x; the multiple does.)
  * @param {Object} baseline - Baseline benchmark result
  * @param {Object} comparison - Comparison benchmark result
  */
 export function compare(baseline, comparison) {
-  const baselineOps = parseFloat(baseline.opsPerSecond);
-  const comparisonOps = parseFloat(comparison.opsPerSecond);
-
-  const diff = ((comparisonOps - baselineOps) / baselineOps * 100).toFixed(2);
-  const faster = comparisonOps > baselineOps;
-
-  console.log(`\n${comparison.name} is ${Math.abs(diff)}% ${faster ? 'faster' : 'slower'} than ${baseline.name}`);
+  const median = r => (r.raw ? r.raw.median : parseFloat(r.stats.median));
+  const ratio = median(comparison) / median(baseline);
+  const [a, b, word] = ratio >= 1 ? [ratio, 1, 'slower'] : [1 / ratio, 1, 'faster'];
+  void b;
+  console.log(`\n${comparison.name}: median ${a.toFixed(1)}x ${word} than ${baseline.name}`);
 }
 
 /**

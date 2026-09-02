@@ -25,22 +25,23 @@
 
 // [benchmark, baseline it may not fall too far behind, max median slowdown]
 //
-// The ratios are large because the plain baselines are honest: a JIT
-// compiles a property read on a stable object down to a cycle or two,
-// while a Proxy trap costs tens of nanoseconds, so ~100x is the true
-// price of a proxied read or write (a write also records a diff entry,
-// and the batch emits once per iteration). They used to look like 7x and 14x only because the runner
-// awaited every iteration and the baselines measured that microtask tick
-// rather than the access — and that made them unstable: the same code
-// measured 7x here and 118x on a shared CI runner. Median ratios when
-// re-based (runner summing hrtime samples, instances created once, work
-// batched per iteration): creation ~150-180x, read ~125-150x, write
-// ~130-150x (it was ~250-275x while the emitter queued a microtask per
-// write); limits ~10x above
+// What the baselines measure decides the ratios, so the history matters:
+// - Originally the runner awaited every iteration and the baselines
+//   measured that microtask tick rather than the access; ratios looked
+//   like 7x and 14x and were unstable (7x here, 118x on a CI runner).
+// - With the runner fixed and named accesses (`obj.a`) in a loop, the JIT
+//   hoisted the plain load out of the loop (~0.25 ns per "read"), and the
+//   ratios came out at ~150x for read and write alike.
+// - The accesses now rotate over three keys (`obj[KEYS[i % 3]]`), which
+//   keeps a real load or store per access on both sides. Medians: creation
+//   ~150-190x (a literal is a few ns, a proxy ~900 ns), read ~6x
+//   (~4 ns vs ~26 ns), write ~30x (~5 ns vs ~140 ns: a keyed proxy store
+//   is ~2.5x slower than a named one, plus diff recording; one flush per
+//   1000 writes is under 1% of it). Limits ~10x above
 const RATIO_GUARDS = [
   ['LazyWatch creation', 'Plain object creation', 1500],
-  ['LazyWatch property read', 'Plain object property read', 1500],
-  ['LazyWatch property write', 'Plain object property write', 1500],
+  ['LazyWatch property read', 'Plain object property read', 60],
+  ['LazyWatch property write', 'Plain object property write', 300],
 ];
 
 // [benchmark, min ops/sec] — 250k-830k ops/sec locally when added

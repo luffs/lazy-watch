@@ -110,11 +110,11 @@ npm run benchmark -- --leak
 
 Each benchmark displays the following statistics:
 
-- **Ops/sec**: Operations per second (higher is better). Benchmarks that batch work per iteration declare `workPerIteration`, so this is per access (or per created instance), not per batch
-- **Mean**: Average execution time in milliseconds
-- **Median**: 50th percentile execution time
-- **P95**: 95th percentile execution time (95% of operations complete within this time)
-- **P99**: 99th percentile execution time (99% of operations complete within this time)
+- **Work / iteration**: What one timed iteration does (e.g. `1000 writes, then flush`); the timing columns are per iteration, the throughput column per op
+- **Ops/sec (per op)**: Operations per second (higher is better). Benchmarks that batch work per iteration declare `workPerIteration`, so this is per access (or per created instance), not per iteration
+- **Median (µs)**: 50th percentile time of one iteration
+- **Mean (µs)**: Average time of one iteration
+- **P95 / P99 (µs)**: 95th / 99th percentile time of one iteration
 
 ### Memory Metrics
 
