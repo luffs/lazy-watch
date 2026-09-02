@@ -11,6 +11,7 @@ This document provides comprehensive real-world examples demonstrating how to us
 - [Silent Initialization](#example-5-silent-initialization)
 - [Conditional Change Broadcasting](#example-6-conditional-change-broadcasting)
 - [Framework Adapters (Vue, Svelte, React)](#example-7-framework-adapters)
+- [Lists as Keyed Maps](#example-8-lists-as-keyed-maps)
 - [Advanced Topics](#advanced-topics)
 - [TypeScript](#typescript)
 
@@ -641,6 +642,93 @@ All the patterns compose with the rest of the library: the same instance can
 simultaneously drive a UI adapter, a [WebSocket mirror](#example-3-websocket-mirroring-with-reconnect-resync),
 and an [undo manager](docs/API.md#undo-manager) — undo/redo and remote patches
 flow through the adapters as ordinary batches.
+
+---
+
+## Example 8: Lists as Keyed Maps
+
+Diffs address array elements by position. That is the right identity for a
+list one writer owns, and the wrong one as soon as a second writer can
+insert or remove: an edit to "slot 0" lands on whatever sits at slot 0 when
+it arrives. Inverse diffs have the same problem — undoing `tasks[0].done`
+after a teammate inserted at the front reverts the wrong task — and every
+array node in a diff carries its `$length`, so a step recorded against a
+shorter list would truncate a longer one (the
+[undo manager's `record` option](docs/API.md#undo-beside-remote-edits)
+drops such steps rather than apply them).
+
+For a list of records, the fix needs no library feature: store the records
+in an object keyed by id, and keep the order in a separate array of ids.
+
+```javascript
+const app = new LazyWatch({
+  tasks: {
+    a: { id: 'a', title: 'Write docs', done: false },
+    b: { id: 'b', title: 'Ship', done: false }
+  },
+  order: ['a', 'b']
+});
+LazyWatch.on(app, diff => console.log(diff));
+
+app.tasks.a.done = true;
+// { tasks: { a: { done: true } } }             — addressed by id, wherever it is displayed
+
+app.tasks.c = { id: 'c', title: 'Celebrate', done: false };
+app.order.push('c');
+// { tasks: { c: { id: 'c', title: 'Celebrate', done: false } }, order: { 2: 'c', $length: 3 } }
+
+delete app.tasks.b;
+app.order.splice(app.order.indexOf('b'), 1);
+// { tasks: { b: null }, order: { $splice: [[1, 1, []]], $length: 2 } }
+
+app.order = ['c', 'a'];
+// { order: { 0: 'c', 1: 'a', $length: 2 } }    — a reorder touches only the ids that moved
+```
+
+Rendering walks the order and looks each record up:
+
+```javascript
+const visible = app.order.map(id => app.tasks[id]).filter(Boolean);
+```
+
+The `filter` is cheap insurance for a replica whose order mentions an id it
+no longer holds; the mirror image — a record no order entry points to — can
+be appended at render time (`Object.keys(app.tasks).filter(id => !app.order.includes(id))`)
+if the app must never hide a record.
+
+### What this buys
+
+- **Edits and deletions commute across writers.** Two people editing
+  different tasks touch different keys; a teammate's insert never changes
+  what your edit applies to.
+- **Undo reverts the record you changed.** With an undo manager attached,
+  undoing `tasks.a.done = true` after a teammate added a task restores
+  task `a`, and the record map has no length to truncate. The only
+  positional state left is `order`, and a stale step there can at worst
+  reorder or drop an *id*, never a record — which the render fallback above
+  covers.
+- **The `record` filter has less to invalidate.** Adding or removing a key
+  on a plain object is not a shape change, so history survives a
+  teammate's insert; only steps touching `order` are dropped when its
+  length changes.
+- **Reorders are cheap.** Assigning a new id array is diffed element-wise,
+  so a drag of one item emits the slots that moved, not the whole list.
+
+### Trade-offs
+
+- Ids must be unique and stable for the life of the record (a `uid()` at
+  creation, never an index).
+- The wire carries each id twice, once as the key and once inside the
+  record; for short ids that is a few bytes per record.
+- Framework templates iterate `order` instead of the collection, so
+  `v-for`/`.map` go through the lookup above; sorting is a write to
+  `order`, not to the records.
+
+Positional arrays remain the right choice for lists with a single writer,
+for arrays of primitives, and for values that genuinely are sequences
+(coordinates, samples). Concurrent edits to the *same* field are still
+last-writer-wins, as everywhere in LazyWatch — this pattern gives records
+identity, not conflict resolution.
 
 ---
 

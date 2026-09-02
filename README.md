@@ -145,7 +145,7 @@ Two reference sections are worth reading before shipping sync:
 
 - **[API reference](docs/API.md)** — every method, the diff wire format, and
   the supported-value rules
-- **[Examples & recipes](EXAMPLES.md)** — state management, WebSocket
+- **[Examples & recipes](EXAMPLES.md)** — state management, lists as keyed maps, WebSocket
   mirroring with reconnect resync, framework adapters (Vue, Svelte,
   React), undo/redo, form validation, and more
 - **[Changelog](CHANGELOG.md)** — release history

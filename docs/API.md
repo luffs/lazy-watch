@@ -1062,7 +1062,11 @@ versions — fragments stored verbatim as objects — carries the old
 `length`-marked form; repair it with a 4.x release before upgrading.)
 
 For best results, keep replicas structurally aligned: initialize new fields
-everywhere (e.g. `task.assignees ??= []`) before mutating them.
+everywhere (e.g. `task.assignees ??= []`) before mutating them. And when a
+list of records can be edited from more than one side, consider storing it
+as an object keyed by id with a separate order array — see
+[Lists as Keyed Maps](../EXAMPLES.md#example-8-lists-as-keyed-maps) — so
+diffs address records by identity rather than position.
 
 ## Supported Values
 

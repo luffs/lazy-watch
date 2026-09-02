@@ -6,6 +6,14 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
 
 ## [Unreleased]
 
+### Added
+
+- `EXAMPLES.md` gains a recipe, *Lists as Keyed Maps*: store a list of
+  records as an object keyed by id with a separate order array, so diffs
+  and undo address records by identity rather than position and a
+  teammate's insert never redirects an edit. No library change; the
+  pattern falls out of the existing object format
+
 ### Changed
 
 - The benchmark table says what it measures: a "Work / iteration" column
