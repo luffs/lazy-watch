@@ -21,6 +21,10 @@ export async function runCoreBenchmarks() {
   // iteration made the read ratio swing from ~7x locally to ~120x on a
   // shared CI runner, because the plain side was little more than loop
   // overhead while the LazyWatch side carried allocation and GC.
+  //
+  // Every ratio-guarded benchmark batches its work (see ROUNDS and
+  // CREATE_ROUNDS) and declares workPerIteration, so the table reports
+  // per-access (or per-instance) throughput rather than per-batch
   const plainRead = { a: 1, b: 2, c: 3 };
   const watchedRead = new LazyWatch({ a: 1, b: 2, c: 3 });
   const plainWrite = { a: 1, b: 2, c: 3 };
@@ -35,22 +39,34 @@ export async function runCoreBenchmarks() {
   // ratio measures noise
   let tick = 0;
   const ROUNDS = 1000;
+  // Creation is batched too: a single object literal takes a few
+  // nanoseconds, below the ~80 ns a timed sample costs, so one per
+  // iteration would measure the timer. The created objects are kept
+  // reachable through `last` so the JIT cannot elide the plain literal
+  const CREATE_ROUNDS = 100;
+  let last = null;
 
   const benchmarks = [
     {
       name: 'Plain object creation',
       fn: () => {
-        const obj = { a: 1, b: 2, c: 3, d: { e: 4 } };
+        for (let i = 0; i < CREATE_ROUNDS; i++) {
+          last = { a: 1, b: 2, c: 3, d: { e: 4 } };
+        }
+        return last;
       },
-      options: { iterations: 10000, warmup: 1000 }
+      options: { iterations: 2000, warmup: 200, workPerIteration: CREATE_ROUNDS }
     },
     {
       name: 'LazyWatch creation',
       fn: () => {
-        const watched = new LazyWatch({ a: 1, b: 2, c: 3, d: { e: 4 } });
-        LazyWatch.dispose(watched);
+        for (let i = 0; i < CREATE_ROUNDS; i++) {
+          last = new LazyWatch({ a: 1, b: 2, c: 3, d: { e: 4 } });
+          LazyWatch.dispose(last);
+        }
+        return last;
       },
-      options: { iterations: 10000, warmup: 1000 }
+      options: { iterations: 2000, warmup: 200, workPerIteration: CREATE_ROUNDS }
     },
     {
       name: 'Plain object property read',
@@ -59,7 +75,7 @@ export async function runCoreBenchmarks() {
         for (let i = 0; i < ROUNDS; i++) sum += plainRead.a + plainRead.b + plainRead.c;
         return sum;
       },
-      options: { iterations: 2000, warmup: 200 }
+      options: { iterations: 2000, warmup: 200, workPerIteration: ROUNDS * 3 }
     },
     {
       name: 'LazyWatch property read',
@@ -68,7 +84,7 @@ export async function runCoreBenchmarks() {
         for (let i = 0; i < ROUNDS; i++) sum += watchedRead.a + watchedRead.b + watchedRead.c;
         return sum;
       },
-      options: { iterations: 2000, warmup: 200 }
+      options: { iterations: 2000, warmup: 200, workPerIteration: ROUNDS * 3 }
     },
     {
       name: 'Plain object property write',
@@ -80,7 +96,7 @@ export async function runCoreBenchmarks() {
           plainWrite.c = tick + 2;
         }
       },
-      options: { iterations: 2000, warmup: 200 }
+      options: { iterations: 2000, warmup: 200, workPerIteration: ROUNDS * 3 }
     },
     {
       name: 'LazyWatch property write',
@@ -93,7 +109,7 @@ export async function runCoreBenchmarks() {
         }
         LazyWatch.flush(watchedWrite);
       },
-      options: { iterations: 2000, warmup: 200 }
+      options: { iterations: 2000, warmup: 200, workPerIteration: ROUNDS * 3 }
     },
     {
       name: 'Nested object access',

@@ -15,11 +15,18 @@
  * @param {Object} options - Configuration options
  * @param {number} options.iterations - Number of iterations to run (default: 1000)
  * @param {number} options.warmup - Number of warmup iterations (default: 100)
- * @returns {Object} Benchmark results with statistics
+ * @param {number} options.workPerIteration - Operations one call of fn
+ *   performs (default: 1). Ops/sec is scaled by it, so a function that
+ *   batches many accesses to stand clear of the timer still reports
+ *   per-access throughput
+ * @returns {Object} Benchmark results: formatted `stats` (ms, 4 decimals)
+ *   for display, unrounded `raw` timings (ms) for the regression guard, and
+ *   `opsPerSecond`
  */
 export async function runBenchmark(name, fn, options = {}) {
   const iterations = options.iterations || 1000;
   const warmup = options.warmup || 100;
+  const workPerIteration = options.workPerIteration || 1;
   const isPromise = value => value !== null && typeof value === 'object' && typeof value.then === 'function';
 
   // Warmup phase
@@ -70,7 +77,10 @@ export async function runBenchmark(name, fn, options = {}) {
       p95: p95.toFixed(4),
       p99: p99.toFixed(4)
     },
-    opsPerSecond: (iterations / (totalTime / 1000)).toFixed(2)
+    // Unrounded, for the regression guard: the formatted stats lose
+    // sub-microsecond baselines to 4-decimal rounding
+    raw: { mean, median, p95, p99 },
+    opsPerSecond: (iterations * workPerIteration / (totalTime / 1000)).toFixed(2)
   };
 }
 

@@ -109,45 +109,49 @@ export class EventEmitter {
   }
 
   /**
-   * Schedule a diff emission
+   * Schedule a diff emission.
+   *
+   * One live dispatch per batch: the first change schedules it — a
+   * microtask, a custom-scheduler slot, or a throttle timer — and later
+   * changes in the same batch ride along until it fires. Re-scheduling per
+   * change used to queue a fresh microtask (a closure plus the host's
+   * async-resource wrapper) or tear down and re-arm the throttle timer for
+   * every write: ~300 bytes of garbage per write, most of the write path's
+   * cost, and a microtask queue that grew with the burst. Dispatches
+   * outlived by flush/pause/dispose fire as no-ops via the generation
+   * check. Only a debounce timer is re-armed per change — that is what
+   * debouncing means.
    */
   scheduleEmit() {
-    // Skip scheduling if paused
     if (this.#paused) return;
 
-    // Custom scheduler without timers: one live slot per batch — the first
-    // change schedules it, later changes ride along until the slot fires.
-    // (No #clearPending here: re-scheduling per change would queue a slot
-    // per change, and the slot boundary — e.g. the frame — is fixed anyway.)
-    if (this.#schedule && !this.#debounce && !this.#throttle) {
-      this.#scheduleCustom();
+    if (this.#debounce > 0) {
+      // Each new change resets the timer
+      this.#clearPending();
+      this.#timeoutId = setTimeout(() => this.#timerDue(), this.#debounce);
       return;
     }
 
-    // Clear any existing pending emits
-    this.#clearPending();
-
-    if (this.#debounce > 0) {
-      // Debouncing: delay emission until debounce period passes with no new changes
-      // Each new change resets the timer
-      this.#timeoutId = setTimeout(() => this.#emitDue(), this.#debounce);
-    } else if (this.#throttle > 0) {
-      // Throttling: ensure emissions happen at most once per throttle period
-      const now = performance.now();
-      const timeSinceLastEmit = now - this.#lastEmitTime;
-
-      if (timeSinceLastEmit >= this.#throttle) {
-        // Enough time has passed, emit immediately (on next tick)
-        this.#scheduleImmediate();
-      } else {
-        // Not enough time has passed, schedule for later
-        const delay = this.#throttle - timeSinceLastEmit;
-        this.#timeoutId = setTimeout(() => this.#emitDue(), delay);
+    if (this.#throttle > 0) {
+      // A pending timer already covers this batch
+      if (this.#timeoutId !== null) return;
+      const timeSinceLastEmit = performance.now() - this.#lastEmitTime;
+      if (timeSinceLastEmit < this.#throttle) {
+        this.#timeoutId = setTimeout(() => this.#timerDue(), this.#throttle - timeSinceLastEmit);
+        return;
       }
-    } else {
-      // No throttling or debouncing, emit immediately (on next tick)
-      this.#scheduleImmediate();
+      // The window has passed: emit now-ish, like an unthrottled change
     }
+
+    this.#scheduleImmediate();
+  }
+
+  /**
+   * A throttle or debounce timer fired: release the slot, then dispatch
+   */
+  #timerDue() {
+    this.#timeoutId = null;
+    this.#emitDue();
   }
 
   /**
@@ -348,11 +352,19 @@ export class EventEmitter {
   }
 
   /**
-   * Schedule a microtask for emission, cancelling any previous one
+   * Schedule a microtask for emission, keeping at most one live per
+   * generation (the same slot discipline as #scheduleCustom). A microtask
+   * whose generation was bumped by flush/pause/dispose fires as a no-op.
    */
   #scheduleMicrotask() {
-    const generation = ++this.#microtaskGeneration;
+    if (this.#scheduledGeneration === this.#microtaskGeneration) return;
+    const generation = this.#microtaskGeneration;
+    this.#scheduledGeneration = generation;
     queueMicrotask(() => {
+      // Clear only our own marker: a newer microtask may already be live
+      if (this.#scheduledGeneration === generation) {
+        this.#scheduledGeneration = null;
+      }
       if (this.#microtaskGeneration === generation) {
         this.#emit();
       }
@@ -360,11 +372,13 @@ export class EventEmitter {
   }
 
   /**
-   * Clear any pending emits
+   * Clear any pending emits: invalidate a live microtask or slot and
+   * cancel a timer
    */
   #clearPending() {
     this.#microtaskGeneration++;
     clearTimeout(this.#timeoutId);
+    this.#timeoutId = null;
   }
 
   /**

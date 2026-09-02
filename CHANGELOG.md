@@ -15,6 +15,21 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
 
 ### Fixed
 
+- **The emitter scheduled a dispatch per write instead of per batch.**
+  Every change on an unthrottled instance cancelled the pending microtask
+  and queued a new one (a closure plus the host's async-resource wrapper),
+  and every change on a throttled instance tore down and re-armed the
+  throttle timer — about 300 bytes of garbage per write, most of the write
+  path's cost, and a microtask queue that grew with the burst (a 3,000-write
+  burst queued 3,000 microtasks). Profiling the write benchmark showed 58%
+  of its time in garbage collection with the diff recorder itself under
+  10%. The first change in a batch now schedules the one microtask, slot,
+  or timer and later changes ride along, the discipline the custom
+  scheduler already used; a debounce timer is still re-armed per change,
+  as debouncing requires. Proxied writes went from ~3 M/s to ~17 M/s in
+  the benchmark, the batch p99 from 20 ms to 0.3 ms, and garbage per write
+  from ~312 to ~51 bytes. No behavioral change: batches, throttle windows,
+  flush, pause, and dispose all emit exactly as before
 - `Utils.hasArrayMarker` threw a TypeError on `null` and other non-object
   input. It is a public helper for inspecting diff values, and `null` is
   the wire format's own deletion marker, so it now returns false for null,
@@ -33,10 +48,14 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
   release's CI benchmark job failed on it). The benchmarks now read and
   write an instance created once, a thousand rounds per iteration with the
   write side flushing each batch, so the ratio measures the trap cost
-  against a plain access. With honest baselines the ratios are large
-  (~100x for a proxied read, ~500x for a proxied write), and all three
-  limits are re-based ~10x above them (see `benchmark/regression-guard.js`).
-  No library code changed
+  against a plain access. Creation is batched the same way. With honest
+  baselines the ratios are large (~100-150x for a proxied read or write),
+  and all three limits are re-based ~10x above
+  them (see `benchmark/regression-guard.js`). The ratio guards now
+  compare median per-iteration times rather than throughput, so GC pauses
+  landing in a few samples cannot trip them, and batched benchmarks
+  declare `workPerIteration` so the table still reports per-access
+  throughput. No library code changed
 
 ## [6.2.0] - 2026-09-02
 

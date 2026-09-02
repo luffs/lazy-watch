@@ -110,7 +110,7 @@ npm run benchmark -- --leak
 
 Each benchmark displays the following statistics:
 
-- **Ops/sec**: Operations per second (higher is better)
+- **Ops/sec**: Operations per second (higher is better). Benchmarks that batch work per iteration declare `workPerIteration`, so this is per access (or per created instance), not per batch
 - **Mean**: Average execution time in milliseconds
 - **Median**: 50th percentile execution time
 - **P95**: 95th percentile execution time (95% of operations complete within this time)
