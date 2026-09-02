@@ -212,6 +212,20 @@ ws.onmessage = event => {
 };
 ```
 
+Local undo fits in with one more line: an
+[undo manager](docs/API.md#undo-beside-remote-edits) whose `record` filter
+declines the same origin, so remote batches never become undo steps — and
+where a remote batch reshapes an array or replaces a container, the manager
+drops the steps that would have truncated or overwritten it:
+
+```javascript
+const manager = LazyWatch.createUndoManager(mirror, {
+  record: meta => meta?.origin !== 'remote'
+});
+// undo/redo batches carry { origin: 'undo' | 'redo' }, not 'remote', so the
+// listener above sends them to the other side like any edit
+```
+
 Note that concurrent edits to the same property resolve last-writer-wins by
 arrival order — this pattern gives you reliable state transport, not conflict
 resolution.

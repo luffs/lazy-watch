@@ -1,4 +1,5 @@
 // undo-manager.js - Undo/redo stacks built on inverse diffs
+import { Utils } from './utils.js';
 
 /**
  * UndoManager - records emitted batches as undoable steps
@@ -20,8 +21,18 @@
  * representation — applying segments sequentially is always valid, so
  * merging never loses correctness, only compactness.
  *
+ * A `record` predicate can exclude batches that are not the user's own
+ * edits (a sync layer's remote diffs, tagged through batch metadata). Such
+ * a batch is not a step, but it still changes the state the recorded steps
+ * describe: where it changed the shape of the tree — an array's length, a
+ * container created, deleted, or changed in kind — every step touching that
+ * path is dropped (see #invalidate), so history never truncates or replaces
+ * what the foreign batch put there. Field-level foreign writes leave
+ * history alone: last-writer-wins, as documented for inverse diffs.
+ *
  * Dependencies are injected as closures so the class stays decoupled from
- * LazyWatch internals.
+ * LazyWatch internals; only the pure wire-format helpers in utils.js are
+ * imported.
  */
 export class UndoManager {
   #undoStack = [];
@@ -29,6 +40,7 @@ export class UndoManager {
   #limit;
   #coalesce;
   #compose;
+  #shouldRecord;
   #applying = false;
   #grouping = false;
   #disposed = false;
@@ -54,6 +66,9 @@ export class UndoManager {
    * @param {Function} deps.compose - (older, newer) => single equivalent
    *   diff; throws when the pair has no single-diff representation
    * @param {Function} [deps.onDispose] - Called once when disposed
+   * @param {Function} [deps.record] - (meta, diff) => boolean; a batch for
+   *   which it returns false is not recorded as a step but invalidates the
+   *   steps it conflicts with (see #invalidate). Default: record every batch
    * @param {number} [deps.limit=Infinity] - Maximum undo depth; the oldest
    *   step is dropped when exceeded
    * @param {number} [deps.coalesce=0] - Milliseconds: batches arriving
@@ -61,7 +76,10 @@ export class UndoManager {
    *   (0 disables). The window slides with activity
    */
   constructor({ subscribe, flush, patch, hasPending, compose, onDispose,
-                limit = Infinity, coalesce = 0 }) {
+                record = null, limit = Infinity, coalesce = 0 }) {
+    if (record !== null && typeof record !== 'function') {
+      throw new TypeError('UndoManager record must be a function (meta, diff) => boolean');
+    }
     if (limit !== Infinity && (!Number.isInteger(limit) || limit < 1)) {
       throw new TypeError('UndoManager limit must be a positive integer or Infinity');
     }
@@ -75,17 +93,24 @@ export class UndoManager {
     this.#patch = patch;
     this.#hasPending = hasPending;
     this.#onDispose = onDispose;
-    this.#unsubscribe = subscribe((diff, inverse) => this.#record(diff, inverse));
+    this.#shouldRecord = record;
+    this.#unsubscribe = subscribe((diff, inverse, meta) => this.#onBatch(diff, inverse, meta));
   }
 
   /**
-   * Record an emitted batch. Batches produced by undo()/redo() themselves
-   * are guarded out; any other batch is a new change and therefore
-   * invalidates the redo stack. Inside group() — or within the coalesce
-   * window — the batch merges into the open step instead of starting one.
+   * Handle an emitted batch. Batches produced by undo()/redo() themselves
+   * are guarded out; a batch the `record` predicate declines is not a
+   * step but may invalidate existing ones; any other batch is a new change
+   * and therefore invalidates the redo stack. Inside group() — or within
+   * the coalesce window — the batch merges into the open step instead of
+   * starting one.
    */
-  #record(diff, inverse) {
+  #onBatch(diff, inverse, meta) {
     if (this.#applying) return;
+    if (this.#shouldRecord !== null && !this.#shouldRecord(meta, diff)) {
+      this.#invalidate(diff, inverse);
+      return;
+    }
     const now = Date.now();
     const mergeable = this.#openStep !== null &&
       (this.#grouping ||
@@ -118,6 +143,29 @@ export class UndoManager {
     } catch (e) {
       step.push({ diff, inverse });
     }
+  }
+
+  /**
+   * Reconcile history with a batch that was not recorded. Its forward diff
+   * and inverse describe the same paths after and before the batch, so
+   * comparing them finds where the shape of the tree changed; every step
+   * with a node at such a path, or a complete value over it, is dropped
+   * from both stacks. A recorded step's array nodes carry the length they
+   * saw, so applying one across a foreign length change would truncate or
+   * regrow the array around the foreign elements; its object fragments
+   * would merge into a container that has since changed kind or been
+   * recreated. The surviving steps never touch the changed paths, so they
+   * remain sequentially consistent with each other.
+   */
+  #invalidate(diff, inverse) {
+    const changed = [];
+    collectShapeChanges(diff, inverse, [], changed);
+    if (changed.length === 0) return;
+    const conflicts = step => step.some(segment =>
+      changed.some(path => touches(segment.diff, path) || touches(segment.inverse, path)));
+    this.#undoStack = this.#undoStack.filter(step => !conflicts(step));
+    this.#redoStack = this.#redoStack.filter(step => !conflicts(step));
+    if (this.#openStep !== null && !this.#undoStack.includes(this.#openStep)) this.#openStep = null;
   }
 
   /**
@@ -260,4 +308,55 @@ export class UndoManager {
     this.clear();
     if (this.#onDispose) this.#onDispose();
   }
+}
+
+/**
+ * The kind a diff node describes: 'array' for a real array or a marked
+ * fragment, 'object' for an unmarked plain object (a fragment or a full
+ * value), 'leaf' for everything else (primitives, null for a deletion or
+ * absence, undefined for a path the batch did not touch)
+ */
+function kindOf(node) {
+  if (Array.isArray(node)) return 'array';
+  if (!Utils.isPlainObject(node)) return 'leaf';
+  return Utils.hasArrayMarker(node) ? 'array' : 'object';
+}
+
+/**
+ * Collect the paths at which a batch changed the shape of the tree, by
+ * walking its forward diff (`after`) and inverse (`before`) together: a
+ * kind change between them (a container created, deleted, or swapped for
+ * the other kind), a real array on either side (wholesale values appear
+ * only where no array was), or a fragment whose `$length` differs. Nothing
+ * below a changed path matters; same-kind containers recurse
+ */
+function collectShapeChanges(after, before, path, out) {
+  const kind = kindOf(after);
+  if (kind !== kindOf(before) || Array.isArray(after) || Array.isArray(before)) {
+    out.push(path);
+    return;
+  }
+  if (kind === 'leaf') return;
+  if (kind === 'array' && (after.$length !== before.$length || '$splice' in after)) {
+    out.push(path);
+    return;
+  }
+  for (const key of new Set([...Object.keys(after), ...Object.keys(before)])) {
+    if (Utils.isReservedDiffKey(key)) continue;
+    collectShapeChanges(after[key], before[key], [...path, key], out);
+  }
+}
+
+/**
+ * Does a step's diff (or inverse) touch `path`: a node at the path itself,
+ * or a complete value — a leaf, a deletion, a real array — at an ancestor,
+ * which applying would write over the whole subtree
+ */
+function touches(node, path) {
+  for (const key of path) {
+    if (node === undefined) return false;
+    if (kindOf(node) === 'leaf' || Array.isArray(node)) return true;
+    node = node[key];
+  }
+  return node !== undefined;
 }

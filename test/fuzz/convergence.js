@@ -24,7 +24,10 @@
 // - bidirectional sync (bidi mode): two peers exchange diffs through
 //   inboxes, applying remote diffs tagged { origin: 'remote' } and sending
 //   only untagged batches (the documented recipe), either side writing in
-//   a given step; after delivery both hold the same state
+//   a given step; after delivery both hold the same state. The sender also
+//   carries an undo manager whose `record` filter declines the remote
+//   batches, so undo/redo ops run beside a concurrent writer: they must
+//   never throw, and both peers still converge after every one
 //
 // Everything is deterministic from the seed, so a failure prints a
 // reproduction command. Zero dependencies.
@@ -360,15 +363,21 @@ function opTransaction(ctx) {
   return label;
 }
 
+// History ops act on the instance carrying the manager. In bidi mode that
+// is a write to `sender`, so they run only in steps where `sender` is the
+// designated writer: an undo beside a peer write in the same step would be
+// the concurrent edit the library's scope excludes
+const managesWriter = ctx => ctx.manager && ctx.sender === ctx.managed;
+
 function opUndo(ctx) {
-  if (!ctx.manager) return opSetLeaf(ctx);
+  if (!managesWriter(ctx)) return opSetLeaf(ctx);
   const did = ctx.rng.chance(0.5) ? ctx.manager.undo() : ctx.manager.redo();
   return `undo/redo (${did ? 'applied' : 'nothing to do'})`;
 }
 
 function opGroup(ctx) {
   // Several batches recorded as one undo step (merged through composeDiffs)
-  if (!ctx.manager) return opSetContainer(ctx);
+  if (!managesWriter(ctx)) return opSetContainer(ctx);
   const inner = [];
   ctx.manager.group(() => {
     inner.push(opSetLeaf(ctx));
@@ -381,7 +390,7 @@ function opGroup(ctx) {
 }
 
 function opCheckpoint(ctx) {
-  if (!ctx.manager) return opDelete(ctx);
+  if (!managesWriter(ctx)) return opDelete(ctx);
   ctx.manager.checkpoint();
   return 'checkpoint';
 }
@@ -514,10 +523,15 @@ function runOne({ seed, mode, steps, runIndex, trace }) {
     }
   };
 
-  if (mode === 'undo') {
+  if (mode === 'undo' || mode === 'bidi') {
     // Half the runs coalesce: a window far longer than a run merges every
-    // batch into the open step until a checkpoint()/undo/redo closes it
-    ctx.manager = LazyWatch.createUndoManager(sender, rng.chance(0.5) ? { coalesce: 60000 } : {});
+    // batch into the open step until a checkpoint()/undo/redo closes it.
+    // bidi: the peer's batches arrive tagged and must not become steps;
+    // the manager drops the steps they invalidate instead
+    const options = rng.chance(0.5) ? { coalesce: 60000 } : {};
+    if (peer) options.record = meta => meta?.origin !== 'remote';
+    ctx.manager = LazyWatch.createUndoManager(sender, options);
+    ctx.managed = sender;
   }
 
   const check = where => {
@@ -581,17 +595,21 @@ function runOne({ seed, mode, steps, runIndex, trace }) {
     let undone = 0;
     if (trace) traceLog.push(`relay before undo-all: ${JSON.stringify(LazyWatch.snapshot(relay))}`);
     while (ctx.manager.undo()) undone++;
+    if (peer) deliver();
     LazyWatch.flush(wire);
     if (trace) traceLog.push(`relay after undo-all: ${JSON.stringify(LazyWatch.snapshot(relay))}`);
-    if (canon(LazyWatch.snapshot(sender)) !== canon(initial)) {
+    // Beside a concurrent writer neither the initial nor the final state is
+    // reachable by history alone (the peer's edits stay); convergence is
+    if (!peer && canon(LazyWatch.snapshot(sender)) !== canon(initial)) {
       throw ctx.fail(`undoing all ${undone} steps did not return to the initial state\n  expected: ${canon(initial)}\n  actual:   ${canon(LazyWatch.snapshot(sender))}`);
     }
     check('after undoing everything');
     // Redo exactly what was undone: a step the run itself had undone last
     // sits on the redo stack too, and must stay undone
     for (let i = 0; i < undone; i++) ctx.manager.redo();
+    if (peer) deliver();
     LazyWatch.flush(wire);
-    if (canon(LazyWatch.snapshot(sender)) !== final) {
+    if (!peer && canon(LazyWatch.snapshot(sender)) !== final) {
       throw ctx.fail(`redoing all steps did not return to the final state\n  expected: ${final}\n  actual:   ${canon(LazyWatch.snapshot(sender))}`);
     }
     check('after redoing everything');

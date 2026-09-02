@@ -637,7 +637,10 @@ export class LazyWatch {
    * disabled, and listeners receive inverse diffs as a second argument.
    * Pending changes are flushed when the manager attaches, so history
    * starts at a clean batch boundary. Changes made inside
-   * `LazyWatch.silent` bypass emission and are not recorded.
+   * `LazyWatch.silent` bypass emission and are not recorded — but prefer
+   * the `record` option for batches that must stay out of history: silent
+   * changes are invisible to the manager and cannot invalidate the steps
+   * they conflict with.
    *
    * One manager per instance: creating a second one before disposing the
    * first throws. Disposing the instance disposes its manager.
@@ -650,6 +653,14 @@ export class LazyWatch {
    *   within this window of the previous one merge into the same undo
    *   step (sliding window; 0 disables). `manager.checkpoint()` ends the
    *   current window early
+   * @param {Function} [options.record] - `(meta, diff) => boolean`, asked
+   *   per batch; return false for batches that are not this user's edits,
+   *   such as remote diffs applied with `patch(mirror, diff, { origin:
+   *   'remote' })`. A declined batch is not a step, but every step touching
+   *   a path where it changed an array's length, or created, deleted, or
+   *   changed the kind of a container, is dropped from both stacks —
+   *   applying it would truncate or replace what the batch put there.
+   *   Field-level foreign writes leave history alone
    * @returns {UndoManager} The manager: `undo()`, `redo()`, `canUndo`,
    *   `canRedo`, `group()`, `checkpoint()`, `clear()`, `dispose()`
    * @throws {Error} If the instance has been disposed, already has an
@@ -682,6 +693,7 @@ export class LazyWatch {
       manager = new UndoManager({
         limit: options.limit,
         coalesce: options.coalesce,
+        record: options.record,
         compose: (older, newer) => LazyWatch.composeDiffs(older, newer),
         subscribe: listener => instance.#eventEmitter.on(listener, []),
         flush: meta => instance.#eventEmitter.forceEmit(meta),

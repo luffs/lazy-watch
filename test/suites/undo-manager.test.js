@@ -366,4 +366,157 @@ export default function register(runner) {
     assertTrue(!manager.canUndo && !manager.canRedo, 'instance disposal should detach the manager');
     assertTrue(!manager.undo(), 'undo after instance disposal should be a safe no-op');
   });
+
+  // The record filter: remote batches stay out of history and invalidate
+  // the steps they conflict with
+  const REMOTE = { origin: 'remote' };
+  const ownEdits = meta => meta?.origin !== 'remote';
+
+  runner.test('record should keep declined batches out of history while they still apply', async () => {
+    const doc = new LazyWatch({ n: 0, tag: '' });
+    const seen = [];
+    const manager = LazyWatch.createUndoManager(doc, {
+      record: (meta, diff) => { seen.push([meta, diff]); return ownEdits(meta); }
+    });
+    LazyWatch.patch(doc, { n: 5 }, REMOTE);
+    assertEquals(doc.n, 5, 'the remote batch applies');
+    assertTrue(!manager.canUndo, 'a declined batch is not a step');
+    assertTrue(!manager.undo());
+    doc.tag = 'x';
+    await wait(5);
+    assertEquals(seen, [[REMOTE, { n: 5 }], [undefined, { tag: 'x' }]], 'record sees (meta, diff) per batch');
+    assertTrue(manager.undo());
+    assertEquals(LazyWatch.snapshot(doc), { n: 5, tag: '' }, 'undo reverts the own edit only');
+    LazyWatch.dispose(doc);
+  });
+
+  runner.test('a remote field write should leave history usable (last-writer-wins)', async () => {
+    const doc = new LazyWatch({ tasks: [{ id: 'a', done: false, title: 'A' }] });
+    const manager = LazyWatch.createUndoManager(doc, { record: ownEdits });
+    doc.tasks[0].done = true;
+    await wait(5);
+    LazyWatch.patch(doc, { tasks: { 0: { title: 'renamed' }, $length: 1 } }, REMOTE);
+    assertTrue(manager.canUndo, 'a field-level remote write keeps the step');
+    assertTrue(manager.undo());
+    assertEquals(LazyWatch.snapshot(doc).tasks, [{ id: 'a', done: false, title: 'renamed' }], 'undo reverts done and keeps the remote title');
+    assertTrue(manager.redo());
+    assertEquals(doc.tasks[0].done, true);
+    LazyWatch.dispose(doc);
+  });
+
+  runner.test('a remote length change should drop the steps touching that array instead of truncating it', async () => {
+    const doc = new LazyWatch({ tasks: [{ id: 'a', done: false }], title: '' });
+    const manager = LazyWatch.createUndoManager(doc, { record: ownEdits });
+    doc.title = 'mine';
+    await wait(5);
+    doc.tasks[0].done = true;
+    await wait(5);
+    // A teammate appends: the step above recorded $length 1 and would truncate
+    LazyWatch.patch(doc, { tasks: { 1: { id: 'b', done: false }, $length: 2 } }, REMOTE);
+    assertTrue(manager.canUndo, 'steps on other paths survive');
+    assertTrue(manager.undo());
+    assertEquals(LazyWatch.snapshot(doc), { tasks: [{ id: 'a', done: true }, { id: 'b', done: false }], title: '' }, 'the title step undoes; the tasks step is gone');
+    assertTrue(!manager.undo(), 'nothing left: the tasks step was dropped');
+    LazyWatch.dispose(doc);
+  });
+
+  runner.test('invalidation should cover the redo stack, splices, deletions, and kind changes', async () => {
+    const cases = [
+      ['insert at 0', { tasks: { $splice: [[0, 0, [{ id: 'b' }]]], $length: 2 } }],
+      ['delete', { tasks: { $splice: [[0, 1]], $length: 0 } }],
+      ['truncate', { tasks: { $length: 0 } }],
+      ['array deleted', { tasks: null }],
+      ['array replaced by object', { tasks: { byId: {} } }],
+      ['wholesale array', { tasks: [{ id: 'x' }, { id: 'y' }] }]
+    ];
+    for (const [name, remote] of cases) {
+      const doc = new LazyWatch({ tasks: [{ id: 'a', done: false }] });
+      const manager = LazyWatch.createUndoManager(doc, { record: ownEdits });
+      doc.tasks[0].done = true;
+      await wait(5);
+      manager.undo();
+      assertTrue(manager.canRedo, `${name}: redo available before the remote batch`);
+      LazyWatch.patch(doc, remote, REMOTE);
+      const after = LazyWatch.snapshot(doc);
+      assertTrue(!manager.canRedo && !manager.canUndo, `${name}: conflicting steps dropped from both stacks`);
+      assertTrue(!manager.redo() && !manager.undo());
+      assertEquals(LazyWatch.snapshot(doc), after, `${name}: state untouched`);
+      LazyWatch.dispose(doc);
+    }
+  });
+
+  runner.test('invalidation should be path-precise: siblings and other elements keep their steps', async () => {
+    const doc = new LazyWatch({ tasks: [{ id: 'a', done: false, subtasks: [] }, { id: 'b', done: false }], projects: [] });
+    const manager = LazyWatch.createUndoManager(doc, { record: ownEdits });
+    doc.tasks[1].done = true;       // touches tasks (array node) and tasks.1.done
+    await wait(5);
+    doc.projects.push({ id: 'p' }); // touches projects
+    await wait(5);
+    // A teammate adds a subtask under tasks.0: only tasks.0.subtasks changes length
+    LazyWatch.patch(doc, { tasks: { 0: { subtasks: { 0: 's', $length: 1 } }, $length: 2 } }, REMOTE);
+    assertTrue(manager.undo() && manager.undo(), 'both steps survive: neither touches tasks.0.subtasks');
+    assertEquals(LazyWatch.snapshot(doc), { tasks: [{ id: 'a', done: false, subtasks: ['s'] }, { id: 'b', done: false }], projects: [] });
+    LazyWatch.dispose(doc);
+  });
+
+  runner.test('a step holding a complete value over a path should be dropped when the path is reshaped below it', async () => {
+    const doc = new LazyWatch({ cfg: null });
+    const manager = LazyWatch.createUndoManager(doc, { record: ownEdits });
+    doc.cfg = { list: [1] }; // the inverse deletes cfg wholesale
+    await wait(5);
+    LazyWatch.patch(doc, { cfg: { list: { 1: 2, $length: 2 } } }, REMOTE);
+    assertTrue(!manager.canUndo, 'undo would delete cfg, the remote element included');
+    assertEquals(LazyWatch.snapshot(doc), { cfg: { list: [1, 2] } });
+    LazyWatch.dispose(doc);
+  });
+
+  runner.test('a declined batch that only writes or deletes leaves should not touch history', async () => {
+    const doc = new LazyWatch({ a: 1, b: { c: 2 } });
+    const manager = LazyWatch.createUndoManager(doc, { record: ownEdits });
+    doc.a = 10;
+    await wait(5);
+    doc.b.c = 20;
+    await wait(5);
+    LazyWatch.patch(doc, { a: 11, b: { c: null, d: 4 } }, REMOTE);
+    assertTrue(manager.undo() && manager.undo(), 'leaf writes and a leaf deletion are last-writer-wins');
+    assertEquals(LazyWatch.snapshot(doc), { a: 1, b: { d: 4, c: 2 } });
+    LazyWatch.dispose(doc);
+  });
+
+  runner.test('a dropped open step should not swallow the next batch while coalescing', async () => {
+    const doc = new LazyWatch({ tasks: [1], n: 0 });
+    const manager = LazyWatch.createUndoManager(doc, { record: ownEdits, coalesce: 60000 });
+    doc.tasks[0] = 2;
+    await wait(5);
+    LazyWatch.patch(doc, { tasks: { 1: 3, $length: 2 } }, REMOTE); // drops the open step
+    doc.n = 1;
+    await wait(5);
+    assertTrue(manager.undo());
+    assertEquals(LazyWatch.snapshot(doc), { tasks: [2, 3], n: 0 }, 'n undone as its own step; tasks untouched');
+    assertTrue(!manager.canUndo);
+    LazyWatch.dispose(doc);
+  });
+
+  runner.test('undo and redo of surviving steps should still reach other listeners tagged', async () => {
+    const doc = new LazyWatch({ tasks: [1], n: 0 });
+    const manager = LazyWatch.createUndoManager(doc, { record: ownEdits });
+    const origins = [];
+    LazyWatch.on(doc, (diff, inverse, meta) => origins.push(meta?.origin));
+    doc.n = 1;
+    await wait(5);
+    LazyWatch.patch(doc, { tasks: { 1: 2, $length: 2 } }, REMOTE);
+    manager.undo();
+    manager.redo();
+    assertEquals(origins, [undefined, 'remote', 'undo', 'redo']);
+    LazyWatch.dispose(doc);
+  });
+
+  runner.test('an invalid record option should throw and leave the instance clean', () => {
+    const doc = new LazyWatch({ n: 0 });
+    assertThrows(() => LazyWatch.createUndoManager(doc, { record: true }));
+    assertThrows(() => LazyWatch.createUndoManager(doc, { record: 'remote' }));
+    const manager = LazyWatch.createUndoManager(doc); // still allowed after failures
+    manager.dispose();
+    LazyWatch.dispose(doc);
+  });
 }

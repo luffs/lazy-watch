@@ -4,6 +4,27 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+
+- **Undo beside remote edits.** `createUndoManager` takes a `record`
+  option, `(meta, diff) => boolean`, asked for every batch: return false
+  for batches that are not the user's own edits, such as remote diffs
+  applied with `patch(mirror, diff, { origin: 'remote' })`. A declined
+  batch is not recorded as a step, which replaces the `LazyWatch.silent`
+  workaround sync layers needed to keep teammates' edits out of Ctrl+Z —
+  and, unlike a silent change, it still reaches the manager: where the
+  batch changed the shape of the state (an array's length; a container
+  created, deleted, or changed between array and object), every step whose
+  diff or inverse touches that path is dropped from both stacks. Without
+  this, undoing a field edit after a teammate appended an element applied
+  the step's recorded `$length` and truncated the array, deleting the
+  teammate's element. Steps on other paths survive; field-level remote
+  writes leave history alone (last-writer-wins, as documented for inverse
+  diffs). The fuzzer's bidi mode now runs undo/redo ops beside the
+  concurrent peer through this option
+
 ## [6.1.0] - 2026-09-01
 
 Batch metadata lands: `flush`, `patch`, and `overwrite` can tag the batch

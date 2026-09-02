@@ -20,7 +20,7 @@ mirroring, undo/redo, form validation), see [EXAMPLES.md](../EXAMPLES.md).
 - [Inverse Diffs (Undo)](#inverse-diffs-undo)
 - [Transactions](#transactions)
 - [Undo Manager](#undo-manager)
-  - [Grouping and coalescing](#grouping-and-coalescing)
+  - [Grouping and coalescing](#grouping-and-coalescing) · [Undo beside remote edits](#undo-beside-remote-edits)
 - [Applying Changes](#applying-changes)
   - [Patching](#patching) · [Overwriting](#overwriting) · [Batch metadata and origins](#batch-metadata-and-origins)
 - [Composing Diffs](#composing-diffs)
@@ -526,6 +526,10 @@ manager.canRedo;  // false
 - `coalesce` - Milliseconds (default: 0, disabled): batches arriving
   within this window of the previous one merge into the same undo step.
   See [Grouping and coalescing](#grouping-and-coalescing).
+- `record` - `(meta, diff) => boolean`, asked for every batch (default:
+  record all). Return `false` for batches that are not this user's edits,
+  such as remote diffs applied with `{ origin: 'remote' }` metadata. See
+  [Undo beside remote edits](#undo-beside-remote-edits).
 
 **The manager:**
 - `undo()` / `redo()` - Apply the previous/next step; return `true` if a
@@ -555,8 +559,10 @@ usual costs — extra clones on the write path, compact `$splice` recording
 disabled, and listeners receive inverse diffs as a second argument. History
 starts at a clean batch boundary (pending changes are flushed on attach,
 outside the history), changes made inside `LazyWatch.silent` bypass
-emission and are not recorded, and only one manager may exist per instance
-at a time (dispose the current one first).
+emission and are not recorded (for batches that should stay out of history
+prefer the [`record` option](#undo-beside-remote-edits): silent changes
+cannot invalidate the steps they conflict with), and only one manager may
+exist per instance at a time (dispose the current one first).
 
 ### Grouping and coalescing
 
@@ -602,6 +608,51 @@ Merged batches are composed into compact single diffs via the
 (documented under [Composing Diffs](#composing-diffs)) are kept as
 sequential segments inside the step — either way undo/redo replay the step
 exactly, applied and emitted to other listeners as one batch.
+
+### Undo beside remote edits
+
+A synced mirror receives batches that are not the local user's edits. Left
+alone, the manager would record them as steps — Ctrl+Z would revert a
+teammate's change — and hiding them with `LazyWatch.silent` is worse than
+it looks: silent changes are invisible to the manager, yet they change the
+state its steps describe. Every array node in a recorded step carries the
+length it saw, so undoing a field edit after a teammate appended an
+element truncates the array back to the old length, deleting the
+teammate's element (or, after an insert at the front, one of your own).
+
+The `record` option handles both halves. Tag applied batches with
+[metadata](#batch-metadata-and-origins) as usual and decline them:
+
+```js
+const mirror = new LazyWatch({ todos: [] });
+const manager = LazyWatch.createUndoManager(mirror, {
+  record: meta => meta?.origin !== 'remote'
+});
+
+ws.onmessage = e => LazyWatch.patch(mirror, JSON.parse(e.data), { origin: 'remote' });
+LazyWatch.on(mirror, (diff, inverse, meta) => {
+  if (meta?.origin !== 'remote') ws.send(JSON.stringify(diff));
+});
+```
+
+A declined batch does not become a step, but the manager still compares it
+with history. Where the batch changed the *shape* of the state — an
+array's length, a container created, deleted, or changed between array and
+object — every step whose diff or inverse touches that path is dropped from
+both stacks, because applying it would truncate, regrow, or replace what
+the remote batch put there. Steps on other paths survive, and the
+survivors stay consistent with each other. Field-level remote writes leave
+history alone: undoing your own edit to a property a teammate has since
+overwritten reverts it to your pre-edit value, the last-writer-wins rule
+documented for [inverse diffs](#inverse-diffs-undo).
+
+`record` receives the batch's metadata (`undefined` for ordinary batches)
+and its diff, so any convention works — an origin, a user id, a flag on
+snapshot batches. A
+[snapshot resync](../EXAMPLES.md#example-3-websocket-mirroring-with-reconnect-resync)
+applied with `overwrite(mirror, snapshot, { origin: 'remote' })` is
+handled the same way: history that predates a reshaped array is dropped,
+history elsewhere is kept.
 
 ## Applying Changes
 
@@ -727,8 +778,9 @@ ws.onmessage = e => LazyWatch.patch(mirror, JSON.parse(e.data), { origin: 'remot
 Nested listeners receive the same metadata for the batches that touch
 their subtree. The [undo manager](#undo-manager) tags the batches it emits
 with `{ origin: 'undo' }` and `{ origin: 'redo' }`, so history replay is
-distinguishable from an edit. Metadata never travels with the diff — it
-describes the batch on this instance only.
+distinguishable from an edit, and its [`record` option](#undo-beside-remote-edits)
+reads the same metadata to keep remote batches out of history. Metadata
+never travels with the diff — it describes the batch on this instance only.
 
 ## Composing Diffs
 

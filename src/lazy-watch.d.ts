@@ -263,6 +263,21 @@ export interface UndoManagerOptions {
      * @default 0 (disabled)
      */
     coalesce?: number;
+
+    /**
+     * Decide per batch whether it becomes an undo step, from its metadata
+     * (`undefined` for ordinary batches) and diff. Return false for
+     * batches that are not this user's edits — a sync layer's remote diffs
+     * applied with `patch(mirror, diff, { origin: 'remote' })`. A declined
+     * batch still invalidates history where it changed the shape of the
+     * state: every step touching a path at which it changed an array's
+     * length, or created, deleted, or changed the kind of a container, is
+     * dropped from both stacks, because applying such a step would truncate
+     * or replace what the batch put there. Field-level foreign writes
+     * leave history alone (last-writer-wins)
+     * @default undefined (every batch is recorded)
+     */
+    record?: (meta: BatchMeta | undefined, diff: ChangeSet) => boolean;
 }
 
 /**

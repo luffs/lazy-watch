@@ -18,7 +18,7 @@ Deep watch JavaScript objects using Proxy and emit diffs asynchronously. LazyWat
 - ⏸️ Pause and resume event emissions
 - 🤫 Silent mutations without triggering events
 - ↩️ Opt-in inverse diffs (undo) and atomic transactions with rollback
-- 🕑 Built-in undo/redo manager with configurable history depth
+- 🕑 Built-in undo/redo manager with configurable history depth that stays safe beside remote edits
 - 📦 Efficient patching mechanism
 - 🌐 Works in browsers and Node.js
 - 🪶 Tiny: ~9 kB min+gzip, zero dependencies, no build step

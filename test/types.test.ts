@@ -168,6 +168,14 @@ um.dispose();
 // @ts-expect-error - coalesce must be a number
 LazyWatch.createUndoManager(watched, { coalesce: 'fast' });
 
+// Record filter: batches it declines are not steps but still invalidate history
+const filtered = LazyWatch.createUndoManager(watched, {
+  record: (meta, diff) => meta?.origin !== 'remote' && typeof diff === 'object'
+});
+filtered.dispose();
+// @ts-expect-error - record must be a function
+LazyWatch.createUndoManager(watched, { record: true });
+
 // Inverse diffs and transactions
 const inv = new LazyWatch({ n: 1 }, { inverse: true });
 LazyWatch.on(inv, (changes, inverse) => { void changes; void inverse; });
