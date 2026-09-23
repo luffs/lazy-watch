@@ -26,9 +26,13 @@ export class EventEmitter {
   #resolveState = null;
   // Batches consumed but not yet delivered, oldest first, each with its
   // own diff, inverse, metadata, and listener snapshot. Only non-empty
-  // while a delivery is running (see #drain)
+  // while a delivery is running or, while paused, when an implicit flush
+  // split a batch off (see #drain)
   #queue = [];
   #dispatching = false;
+  // How many queued batches (from the front) must be delivered even while
+  // paused: set by an explicit flush
+  #forced = 0;
   // Functions called with every batch the moment it is consumed, before
   // any listener and regardless of deferred delivery (the undo manager:
   // its history must be current when a listener calls undo())
@@ -238,7 +242,7 @@ export class EventEmitter {
    */
   #emit(meta) {
     this.#produce(meta);
-    this.#drain();
+    this.#drain(false);
   }
 
   /**
@@ -285,16 +289,27 @@ export class EventEmitter {
    * Delivering it on the spot would hand it to the listeners after the
    * producing one before the batch they are still owed, and a mirror fed
    * by such a listener would apply the two out of order.
+   *
+   * While paused, queued batches are held (implicit flushes — silent,
+   * transaction, patch/overwrite with metadata, the undo manager — still
+   * split batches but do not notify) until resume() or an explicit
+   * flush. Pause is checked between batches, never within one.
+   * @param {boolean} force - Deliver everything queued so far even while
+   *   paused (explicit flush). Nested inside a running delivery, the
+   *   obligation is handed to the outer drain
    */
-  #drain() {
+  #drain(force) {
+    if (force) this.#forced = this.#queue.length;
     if (this.#dispatching) return;
     this.#dispatching = true;
     try {
-      while (this.#queue.length > 0) {
+      while (this.#queue.length > 0 && (!this.#paused || this.#forced > 0)) {
+        if (this.#forced > 0) this.#forced--;
         this.#deliver(this.#queue.shift());
       }
     } finally {
       this.#dispatching = false;
+      this.#forced = 0;
     }
   }
 
@@ -462,10 +477,12 @@ export class EventEmitter {
 
   /**
    * Resume event emissions
-   * If there are pending changes, they will be emitted
+   * Batches held while paused are delivered now, oldest first; pending
+   * changes are scheduled as usual
    */
   resume() {
     this.#paused = false;
+    this.#drain(false);
     // If there are pending changes, schedule an emit
     if (this.#diffTracker.hasPendingChanges()) {
       this.scheduleEmit();
@@ -481,15 +498,26 @@ export class EventEmitter {
   }
 
   /**
-   * Force immediate emission of pending changes
-   * Bypasses throttle, debounce, and pause state
-   * Used internally by silent() to ensure clean state before silent operations
+   * End the pending batch now and emit it synchronously, bypassing
+   * batching, throttle, and debounce — but not pause: while paused the
+   * batch is held (still a separate batch, metadata attached) and
+   * delivered by resume() or an explicit flush. The implicit flush used by
+   * silent(), transaction(), patch/overwrite with metadata, and the undo
+   * manager, which need a batch boundary rather than a notification
    */
   forceEmit(meta) {
     this.#clearPending();
-    if (this.#diffTracker.hasPendingChanges()) {
-      this.#emit(meta);
-    }
+    this.#emit(meta);
+  }
+
+  /**
+   * LazyWatch.flush: like forceEmit, but also bypasses pause, delivering
+   * any held batches and then this one
+   */
+  flush(meta) {
+    this.#clearPending();
+    this.#produce(meta);
+    this.#drain(true);
   }
 
   /**

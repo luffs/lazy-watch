@@ -535,6 +535,84 @@ export default function register(runner) {
     LazyWatch.dispose(watched);
   });
 
+  runner.test('implicit flushes should hold their batches while paused, and resume should deliver them in order', async () => {
+    // silent, transaction, patch/overwrite with metadata, and the undo
+    // manager used to force-emit the pending batch straight through pause
+    const watched = new LazyWatch({ a: 0, b: 0, c: 0, d: 0, e: 0 });
+    const mirror = LazyWatch.snapshot(watched);
+    const log = [];
+    LazyWatch.on(watched, (diff, inverse, meta) => {
+      log.push([diff, meta?.origin]);
+      LazyWatch.patch(mirror, diff);
+    });
+
+    LazyWatch.pause(watched);
+    watched.a = 1;
+    const silentDiff = LazyWatch.silent(watched, () => { watched.b = 2; });
+    assertEquals(silentDiff, { b: 2 }, 'silent should still return only its own changes');
+    mirror.b = 2; // silent changes never reach listeners
+    watched.c = 3;
+    LazyWatch.transaction(watched, () => { watched.d = 4; });
+    LazyWatch.patch(watched, { e: 5 }, { origin: 'remote' });
+    const manager = LazyWatch.createUndoManager(watched);
+    watched.a = 10;
+    assertTrue(manager.undo(), 'undo should work while paused');
+    await wait(10);
+    assertEquals(log, [], 'nothing should be delivered while paused');
+    assertEquals(LazyWatch.getPendingDiff(watched), {}, 'held batches are no longer pending');
+
+    LazyWatch.resume(watched);
+    assertEquals(log, [
+      [{ a: 1 }, undefined],
+      [{ c: 3 }, undefined],
+      [{ d: 4 }, undefined],
+      [{ e: 5 }, 'remote'],
+      [{ a: 10 }, undefined],
+      [{ a: 1 }, 'undo']
+    ], 'resume should deliver the held batches synchronously, separate and in order, metadata intact');
+    assertEquals(mirror, LazyWatch.snapshot(watched), 'a mirror fed by the held batches should converge');
+    assertTrue(manager.canRedo, 'the undo manager recorded the batches while paused');
+
+    manager.dispose();
+    LazyWatch.dispose(watched);
+  });
+
+  runner.test('an explicit flush while paused should deliver the held batches first', async () => {
+    const watched = new LazyWatch({ a: 0, b: 0 });
+    const log = [];
+    LazyWatch.on(watched, (diff, inverse, meta) => log.push([diff, meta?.origin]));
+
+    LazyWatch.pause(watched);
+    watched.a = 1;
+    LazyWatch.patch(watched, { b: 2 }, { origin: 'remote' });
+    watched.a = 3;
+    LazyWatch.flush(watched, { origin: 'save' });
+    assertEquals(log, [
+      [{ a: 1 }, undefined],
+      [{ b: 2 }, 'remote'],
+      [{ a: 3 }, 'save']
+    ], 'flush bypasses pause for everything produced so far');
+    assertTrue(LazyWatch.isPaused(watched), 'flush should not resume');
+
+    // A listener pausing mid-delivery holds the batches produced after it
+    LazyWatch.resume(watched);
+    log.length = 0;
+    const unsubscribe = LazyWatch.on(watched, diff => {
+      if (diff.a !== 4) return;
+      LazyWatch.pause(watched);
+      LazyWatch.patch(watched, { b: 5 }, { origin: 'inner' });
+    });
+    watched.a = 4;
+    LazyWatch.flush(watched);
+    assertEquals(log, [[{ a: 4 }, undefined]], 'the batch in delivery completes; the one after it is held');
+    unsubscribe();
+    LazyWatch.resume(watched);
+    assertEquals(log, [[{ a: 4 }, undefined], [{ b: 5 }, 'inner']]);
+    await wait(10);
+    assertEquals(log.length, 2, 'no stray emits');
+    LazyWatch.dispose(watched);
+  });
+
   runner.test('should throw error for pause/resume on disposed instance', () => {
     const data = { count: 0 };
     const watched = new LazyWatch(data);

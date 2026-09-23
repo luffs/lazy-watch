@@ -46,6 +46,20 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
   produced rather than as a listener, so `undo()` or `group()` called
   from a listener finds history current and its own batches are never
   mistaken for edits
+- **Operations that split off a batch notified listeners of a paused
+  instance.** `LazyWatch.silent`, `LazyWatch.transaction`, `patch` and
+  `overwrite` with metadata, `LazyWatch.createUndoManager`, and the undo
+  manager's `undo()`/`redo()`/`group()` end the pending batch before doing
+  their work, and did so with a forced emit that ignored pause: a paused
+  instance delivered its pending changes the moment any of them ran. They
+  still split the batch at the same point — the pending changes and the
+  operation's own changes stay separate batches, each with its metadata —
+  but while paused the batches are now held, and `resume()` delivers them
+  synchronously, oldest first, before the remaining pending changes emit
+  on the usual schedule. An explicit `LazyWatch.flush` keeps its
+  documented bypass and delivers held batches first. Held batches no
+  longer show in `getPendingDiff`; the undo manager records them as they
+  are split off, so undo keeps working while paused
 - **An `async` transaction callback was never rolled back.**
   `LazyWatch.transaction(watched, async () => { watched.a = 1; throw ... })`
   returned the rejected promise with `a` still 1: an async function

@@ -461,7 +461,8 @@ export class LazyWatch {
 
   /**
    * Synchronously emit any pending changes to all listeners.
-   * Bypasses microtask batching, throttle, debounce, and pause state.
+   * Bypasses microtask batching, throttle, debounce, and pause state
+   * (while paused, batches held by implicit flushes are delivered first).
    * Does nothing if there are no pending changes.
    * @param {Object} watched - The LazyWatch proxy
    * @throws {Error} If the instance has been disposed
@@ -473,7 +474,7 @@ export class LazyWatch {
     const instance = LazyWatch.#getInstance(watched);
     instance.#checkDisposed();
     LazyWatch.#assertMeta(meta);
-    instance.#eventEmitter.forceEmit(meta);
+    instance.#eventEmitter.flush(meta);
   }
 
   /**
@@ -506,7 +507,9 @@ export class LazyWatch {
 
   /**
    * Pause event emissions
-   * Changes continue to be tracked but listeners won't be notified until resumed
+   * Changes continue to be tracked but listeners won't be notified until resumed.
+   * Operations that split off a batch (silent, transaction, patch/overwrite
+   * with metadata, the undo manager) hold it instead of emitting it
    * @param {Object} watched - The LazyWatch proxy
    */
   static pause(watched) {
@@ -517,7 +520,8 @@ export class LazyWatch {
 
   /**
    * Resume event emissions
-   * If there are pending changes, they will be emitted
+   * Batches held while paused are delivered synchronously, oldest first;
+   * pending changes are then emitted on the usual schedule
    * @param {Object} watched - The LazyWatch proxy
    */
   static resume(watched) {
@@ -630,9 +634,8 @@ export class LazyWatch {
         // The caller gets the TypeError, not the promise; keep its
         // eventual rejection from surfacing as unhandled
         try { result.then(undefined, () => {}); } catch (e) { /* hostile thenable */ }
-        throw new TypeError('LazyWatch.transaction callback must be synchronous: it returned a promise ' +
-          '(or thenable), so its changes were rolled back. Await the async work first, then ' +
-          'apply the changes inside a synchronous transaction');
+        throw new TypeError('LazyWatch.transaction callback must be synchronous; it returned a ' +
+          'promise, so its changes were rolled back');
       }
       return result;
     } finally {

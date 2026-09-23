@@ -607,7 +607,8 @@ export interface LazyWatchStatic {
 
     /**
      * Synchronously emit any pending changes to all listeners.
-     * Bypasses microtask batching, throttle, debounce, and pause state.
+     * Bypasses microtask batching, throttle, debounce, and pause state
+     * (while paused, batches held by implicit flushes are delivered first).
      * Does nothing if there are no pending changes
      * @param watched - The LazyWatch proxy
      * @param meta - Batch metadata handed to listeners as the third
@@ -619,7 +620,9 @@ export interface LazyWatchStatic {
 
     /**
      * Pause event emissions
-     * Changes continue to be tracked but listeners won't be notified until resumed
+     * Changes continue to be tracked but listeners won't be notified until resumed.
+     * Operations that split off a batch (silent, transaction, patch/overwrite
+     * with metadata, the undo manager) hold it instead of emitting it
      * @param watched - The LazyWatch proxy
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
      */
@@ -627,7 +630,8 @@ export interface LazyWatchStatic {
 
     /**
      * Resume event emissions
-     * If there are pending changes, they will be emitted
+     * Batches held while paused are delivered synchronously, oldest first;
+     * pending changes are then emitted on the usual schedule
      * @param watched - The LazyWatch proxy
      * @throws {Error} If the proxy is not a LazyWatch instance or has been disposed
      */

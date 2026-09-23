@@ -16,6 +16,7 @@ mirroring, undo/redo, form validation), see [EXAMPLES.md](../EXAMPLES.md).
 - [Inspecting Pending Changes](#inspecting-pending-changes)
 - [Taking Snapshots](#taking-snapshots)
 - [Pausing and Resuming Event Emissions](#pausing-and-resuming-event-emissions)
+  - [Batches split off while paused](#batches-split-off-while-paused)
 - [Silent Mutations](#silent-mutations)
 - [Inverse Diffs (Undo)](#inverse-diffs-undo)
 - [Transactions](#transactions)
@@ -310,7 +311,9 @@ LazyWatch.flush(watchedObject);
 ```
 
 Synchronously emits any pending changes to all listeners, bypassing microtask
-batching, throttle, debounce, and pause state. Does nothing when there are no
+batching, throttle, debounce, and pause state (while paused it also delivers,
+first, any [batches held](#batches-split-off-while-paused) by earlier
+implicit flushes; it does not resume). Does nothing when there are no
 pending changes. Useful before serializing state, unloading a page, or any
 time you need listeners up to date *now*:
 
@@ -413,13 +416,39 @@ LazyWatch.resume(data);
 // Immediately logs: Changes: { count: 3 }
 ```
 
+### Batches split off while paused
+
+Some operations end the pending batch before doing their work, so that
+their own changes form a batch of their own: `LazyWatch.silent`,
+`LazyWatch.transaction`, `patch`/`overwrite` with
+[metadata](#batch-metadata-and-origins), `LazyWatch.createUndoManager`, and
+the undo manager's `undo()`, `redo()`, and `group()`. While paused they
+still split the batch there — the pending changes and the operation's own
+changes stay separate batches, each with its metadata — but **hold** the
+batches instead of notifying anyone. `resume()` delivers the held batches
+synchronously, oldest first, before the changes still pending emit on the
+usual schedule; an explicit `LazyWatch.flush` delivers them too (it bypasses
+pause by design). Held batches are no longer part of
+[`getPendingDiff`](#inspecting-pending-changes), and the undo manager
+records them as they are split off, so undo works while paused.
+
+```js
+LazyWatch.pause(doc);
+doc.title = 'Draft';
+LazyWatch.patch(doc, remoteDiff, { origin: 'remote' });
+// nothing delivered yet
+
+LazyWatch.resume(doc);
+// listeners, synchronously: { title: 'Draft' }, then remoteDiff tagged 'remote'
+```
+
 ## Silent Mutations
 
 ```js
 const diff = LazyWatch.silent(watchedObject, callback);
 ```
 
-Executes a callback while suppressing event emissions. Any changes made during the callback are tracked and returned as a diff object. Forces emission of any pending changes before silent execution to ensure a clean slate.
+Executes a callback while suppressing event emissions. Any changes made during the callback are tracked and returned as a diff object. Pending changes are emitted first as their own batch to ensure a clean slate (held instead while [paused](#batches-split-off-while-paused)).
 
 **Parameters:**
 - `watchedObject` - The LazyWatch proxy
@@ -803,7 +832,9 @@ listener as the third argument. On a proxy target, `patch`/`overwrite`
 with metadata first emit any changes still batched — untagged, as their
 own batch — then apply the source and emit the applied changes
 synchronously with the metadata attached, so the tagged batch contains
-exactly what the call applied. `flush` tags whatever is pending. Ordinary
+exactly what the call applied (while paused, both batches are
+[held](#batches-split-off-while-paused) until `resume`, still separate).
+`flush` tags whatever is pending. Ordinary
 microtask-batched changes carry no metadata (`meta` is `undefined`), and
 metadata is ignored on plain targets, which emit nothing.
 
