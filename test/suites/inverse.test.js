@@ -196,6 +196,50 @@ export default function register(runner) {
     LazyWatch.dispose(watched);
   });
 
+  runner.test('an async transaction callback should be rolled back and refused with a TypeError', async () => {
+    // It used to return the promise with the changes applied; a rejection
+    // after the first await could never be rolled back
+    const watched = new LazyWatch({ a: 0, list: [1] });
+    const emitted = [];
+    LazyWatch.on(watched, d => { emitted.push(d); });
+    const unhandled = [];
+    const onUnhandled = reason => { unhandled.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      let error = null;
+      try {
+        LazyWatch.transaction(watched, async () => {
+          watched.a = 1;
+          watched.list.push(2);
+          throw new Error('boom');
+        });
+      } catch (e) {
+        error = e;
+      }
+      assertTrue(error instanceof TypeError && /synchronous/.test(error.message),
+        'should throw a TypeError explaining callbacks must be synchronous');
+      assertEquals(LazyWatch.snapshot(watched), { a: 0, list: [1] }, 'changes should be rolled back');
+
+      // Any thenable counts, not just native promises
+      assertThrows(() => LazyWatch.transaction(watched, () => {
+        watched.a = 2;
+        return { then() {} };
+      }));
+      assertEquals(watched.a, 0);
+
+      await wait(10);
+      assertEquals(unhandled, [], 'the rejected promise should not surface as unhandled');
+      assertEquals(emitted, [], 'nothing should emit');
+
+      LazyWatch.transaction(watched, () => { watched.a = 3; }); // not left in a transaction
+      LazyWatch.flush(watched);
+      assertEquals(emitted, [{ a: 3 }]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+    LazyWatch.dispose(watched);
+  });
+
   runner.test('transactions cannot be nested', () => {
     const watched = new LazyWatch({ a: 1 });
     assertThrows(() => LazyWatch.transaction(watched, () => {

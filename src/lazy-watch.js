@@ -578,13 +578,16 @@ export class LazyWatch {
    * synchronously) first, so the rollback covers exactly the callback's own
    * changes. Works whether or not the instance was created with
    * `{ inverse: true }` — inverse recording is enabled just for the duration.
-   * The callback must be synchronous; transactions cannot be nested.
+   * The callback must be synchronous (one that returns a promise or other
+   * thenable has its changes rolled back and a TypeError thrown);
+   * transactions cannot be nested.
    *
    * @param {Object} watched - The LazyWatch proxy
    * @param {Function} callback - Function whose changes are applied atomically
    * @returns {*} The callback's return value
    * @throws {Error} If the instance has been disposed or a transaction is
    *   already active; rethrows whatever the callback throws (after rollback)
+   * @throws {TypeError} If the callback returns a thenable (after rollback)
    * @example
    * LazyWatch.transaction(watched, () => {
    *   watched.balance -= 100;
@@ -605,13 +608,33 @@ export class LazyWatch {
     const wasEnabled = tracker.inverseEnabled;
     tracker.inverseEnabled = true;
     instance.#inTransaction = true;
-    try {
-      return callback();
-    } catch (error) {
+    const rollback = () => {
       const inverse = tracker.consumeInverse();
       tracker.consumeDiff(); // discard the forward diff; nothing may emit
       instance.#proxyHandler.rollback(inverse);
-      throw error;
+    };
+    try {
+      let result;
+      try {
+        result = callback();
+      } catch (error) {
+        rollback();
+        throw error;
+      }
+      if (result !== null && (typeof result === 'object' || typeof result === 'function') &&
+          typeof result.then === 'function') {
+        // An async callback returns at its first await: a rejection after
+        // that point could never be rolled back, and changes made after it
+        // land outside the transaction. Undo what ran so far and refuse
+        rollback();
+        // The caller gets the TypeError, not the promise; keep its
+        // eventual rejection from surfacing as unhandled
+        try { result.then(undefined, () => {}); } catch (e) { /* hostile thenable */ }
+        throw new TypeError('LazyWatch.transaction callback must be synchronous: it returned a promise ' +
+          '(or thenable), so its changes were rolled back. Await the async work first, then ' +
+          'apply the changes inside a synchronous transaction');
+      }
+      return result;
     } finally {
       instance.#inTransaction = false;
       tracker.inverseEnabled = wasEnabled;

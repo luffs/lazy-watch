@@ -530,7 +530,14 @@ Transactions work on any instance — `{ inverse: true }` is not required
 (inverse recording is enabled just for the callback's duration). Pending
 changes from before the transaction are flushed first, so the rollback covers
 exactly the callback's own changes. The callback must be synchronous, and
-transactions cannot be nested. Avoid calling `LazyWatch.flush` inside the
+transactions cannot be nested. An `async` callback (or one returning any
+thenable) is refused: it returns at its first `await`, so a later failure
+could never be rolled back. The changes it made before returning are rolled
+back, a `TypeError` is thrown, and the returned promise gets a no-op
+rejection handler so it cannot surface as unhandled — but code after its
+first `await` still runs, outside any transaction. Await the async work
+first, then apply its result in a synchronous transaction. (The TypeScript
+definitions reject such callbacks at compile time.) Avoid calling `LazyWatch.flush` inside the
 callback: flushed changes are emitted immediately and leave the transaction's
 rollback scope.
 

@@ -46,6 +46,17 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
   produced rather than as a listener, so `undo()` or `group()` called
   from a listener finds history current and its own batches are never
   mistaken for edits
+- **An `async` transaction callback was never rolled back.**
+  `LazyWatch.transaction(watched, async () => { watched.a = 1; throw ... })`
+  returned the rejected promise with `a` still 1: an async function
+  returns at its first `await` (or its end), so the synchronous `catch`
+  that rolls back never saw the failure. The callback was documented as
+  synchronous-only but nothing enforced it. A callback that returns a
+  promise or any other thenable now has its changes rolled back, and the
+  transaction throws a `TypeError` saying callbacks must be synchronous; a
+  no-op rejection handler is attached to the returned promise so it cannot
+  surface as an unhandled rejection. The TypeScript definitions reject
+  such callbacks at compile time (new exported helper type `NotThenable`)
 - **Consecutive `once` listeners skipped each other.** After a batch, the
   emitter removed the fired once-listeners while iterating the live
   listener list, and each removal shifted the next entry into the slot

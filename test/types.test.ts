@@ -187,6 +187,12 @@ LazyWatch.on(inv, (changes, inverse) => {
 const txResult: number = LazyWatch.transaction(inv, () => { inv.n = 2; return 42; });
 void txResult;
 LazyWatch.transaction(inv, () => {}); // void callbacks are fine
+const txAny: any = LazyWatch.transaction(inv, (): any => 1); // any stays usable
+void txAny;
+// @ts-expect-error - transaction callbacks must be synchronous
+LazyWatch.transaction(inv, async () => { inv.n = 3; });
+// @ts-expect-error - a returned promise is rejected too
+LazyWatch.transaction(inv, () => Promise.resolve(1));
 LazyWatch.dispose(inv);
 LazyWatch.dispose(watched);
 

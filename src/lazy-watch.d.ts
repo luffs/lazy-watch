@@ -18,6 +18,12 @@ export type ChangeSet = Record<string, any>;
 export type Unsubscribe = () => void;
 
 /**
+ * Resolves to never for a promise or other thenable: rejects async
+ * `LazyWatch.transaction` callbacks at compile time
+ */
+export type NotThenable<R> = R extends PromiseLike<unknown> ? never : unknown;
+
+/**
  * Metadata attached to one emitted batch: the object passed to
  * `LazyWatch.flush`, or as the third argument of `patch`/`overwrite`. By
  * convention it carries an `origin` telling listeners where the batch
@@ -660,12 +666,15 @@ export interface LazyWatchStatic {
      * return value is returned.
      * Pending changes from before the transaction are flushed first. Works
      * whether or not the instance was created with `{ inverse: true }`.
-     * The callback must be synchronous; transactions cannot be nested
+     * The callback must be synchronous: one that returns a promise (or any
+     * thenable) is rejected at compile time, and at runtime has its changes
+     * rolled back and a TypeError thrown. Transactions cannot be nested
      * @param watched - The LazyWatch proxy
      * @param callback - Function whose changes are applied atomically
      * @returns The callback's return value
      * @throws {Error} If the instance has been disposed or a transaction is
      * already active; rethrows whatever the callback throws (after rollback)
+     * @throws {TypeError} If the callback returns a thenable (after rollback)
      *
      * @example
      * LazyWatch.transaction(watched, () => {
@@ -673,7 +682,7 @@ export interface LazyWatchStatic {
      *   applyFees(watched); // if this throws, balance is restored
      * });
      */
-    transaction<R>(watched: object, callback: () => R): R;
+    transaction<R>(watched: object, callback: () => R & NotThenable<R>): R;
 
     /**
      * Create an undo/redo manager for a watched instance.
