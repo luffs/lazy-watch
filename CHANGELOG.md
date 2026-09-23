@@ -4,7 +4,15 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
-## [Unreleased]
+## [6.4.0] - 2026-09-23
+
+`splice` and `shift` return plain copies of what they removed, so the
+usual move (`splice` an element out and back in elsewhere) no longer
+duplicates its neighbour and loses it; `splice`, `shift` and `unshift` on
+arrays of objects are some ten times faster; and object writes about
+twice as fast. No wire-format change. Code that used the proxy `splice`
+or `shift` returned (to write through it, say) gets a plain copy instead,
+and a value that reaches one object twice is cloned as two.
 
 ### Fixed
 
