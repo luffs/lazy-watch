@@ -4,7 +4,17 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
-## [Unreleased]
+## [6.3.0] - 2026-09-23
+
+Batches are delivered in the order they were produced, even when a
+listener emits one (a revert, a flush), so a mirror can no longer end on
+an edit its own state rejected; a paused instance holds the batches that
+`silent`, `transaction`, tagged patches and the undo manager split off,
+until `resume()`; an `async` transaction callback is rolled back and
+refused rather than half-applied; and consecutive `once` listeners each
+fire once. No wire-format change. Code that relied on a nested emit
+arriving immediately, or on a paused instance emitting through those
+operations, sees the documented behavior instead.
 
 ### Added
 
@@ -27,6 +37,8 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
   accesses; the median ratios settle at ~6x for reads and ~30x for writes
   (creation stays ~150-190x), and the guard limits are re-based ~10x above
   them. No library code changed
+- The bundle-size budget is 11 kB min+gzip (the library is 9.7 kB after
+  the delivery queue below), and the README says ~10 kB
 
 ### Fixed
 

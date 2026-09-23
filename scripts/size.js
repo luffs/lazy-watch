@@ -2,7 +2,7 @@
 //
 // Bundles and minifies the library with esbuild (fetched on demand via npx,
 // like the TypeScript definition check), gzips the result, and fails when
-// the gzipped size exceeds the budget. Keeps the "~9 kB min+gzip" claim
+// the gzipped size exceeds the budget. Keeps the "~10 kB min+gzip" claim
 // in the README honest: a change that blows the budget fails CI, and the
 // README number should be updated whenever the printed size drifts from it.
 import { execSync } from 'node:child_process';
@@ -13,11 +13,12 @@ import { gzipSync } from 'node:zlib';
 // trackability checks, whose explanatory error messages are the cost — the
 // budget was raised from 8 kB then; 9.0 kB after the convergence-fuzzer
 // fixes (self-describing array nodes, kind-change replacement, stale-fill
-// through lost ancestors, complete inverse records), raising it to 10 kB.
-// The headroom allows
+// through lost ancestors, complete inverse records), raising it to 10 kB;
+// 9.7 kB after the emitter's delivery queue and held batches (6.3.0),
+// raising it to 11 kB. The headroom allows
 // normal growth while still catching an accidentally bundled dependency
 // or a runaway feature.
-const GZIP_BUDGET_BYTES = 10 * 1024;
+const GZIP_BUDGET_BYTES = 11 * 1024;
 
 const minified = execSync(
   'npx -y esbuild src/lazy-watch.js --bundle --minify --format=esm --log-level=warning',

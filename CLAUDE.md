@@ -37,7 +37,7 @@ CI (`.github/workflows/test.yml`) runs tests on Node 22/24/26 and Bun (invoked a
 ```bash
 npm run test:size
 ```
-Bundles/minifies via `npx esbuild`, gzips, and fails if the gzipped size exceeds the budget in `scripts/size.js` (10 kB; ~9.0 kB actual as of the convergence-fuzzer work). When the printed size drifts from the "~9 kB min+gzip" claim, update README.md along with the budget.
+Bundles/minifies via `npx esbuild`, gzips, and fails if the gzipped size exceeds the budget in `scripts/size.js` (11 kB; ~9.7 kB actual as of 6.3.0's emitter delivery queue). When the printed size drifts from the "~10 kB min+gzip" claim, update README.md along with the budget.
 
 ## Documentation Layout
 
