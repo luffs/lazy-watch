@@ -220,7 +220,6 @@ export class EventEmitter {
     const inverse = this.#diffTracker.inverseEnabled
       ? this.#diffTracker.consumeInverse()
       : undefined;
-    let removeFired = false;
     // Dispatch over a snapshot: listeners that unsubscribe during emit would
     // otherwise splice the live array mid-iteration and skip the next
     // listener. The membership check gives EventTarget semantics — a
@@ -247,11 +246,11 @@ export class EventEmitter {
         // container is always a real value)
         if (filteredDiff !== undefined) {
           entry.gone = filteredDiff === null;
-          // Mark before invoking so a throwing once-listener is still removed
-          if (entry.once) {
-            entry.fired = true;
-            removeFired = true;
-          }
+          // Remove before invoking: a throwing once-listener is still
+          // removed, and an emit the listener triggers synchronously
+          // cannot deliver to it a second time. Removal splices the live
+          // list, never the snapshot being iterated
+          if (entry.once) this.#remove(entry);
           const filteredInverse = inverse === undefined
             ? undefined
             : this.#filterDiffByPath(inverse, entry.path);
@@ -261,11 +260,6 @@ export class EventEmitter {
         console.error('Error in LazyWatch listener:', e);
       }
     });
-    if (removeFired) {
-      for (const entry of this.#listeners) {
-        if (entry.fired) this.#remove(entry);
-      }
-    }
   }
 
   /**

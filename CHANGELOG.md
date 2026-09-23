@@ -28,6 +28,16 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
   (creation stays ~150-190x), and the guard limits are re-based ~10x above
   them. No library code changed
 
+### Fixed
+
+- **Consecutive `once` listeners skipped each other.** After a batch, the
+  emitter removed the fired once-listeners while iterating the live
+  listener list, and each removal shifted the next entry into the slot
+  just visited: three `once` listeners over three flushes fired 1, 2, and
+  1 times. A once-listener is now removed right before it is invoked
+  (still removed when it throws), which also keeps an emit it triggers
+  synchronously from reaching it a second time
+
 ## [6.2.1] - 2026-09-02
 
 The emitter schedules one dispatch per batch instead of one per write,

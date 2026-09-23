@@ -216,6 +216,22 @@ export default function register(runner) {
     LazyWatch.dispose(watched);
   });
 
+  runner.test('consecutive once listeners should each fire exactly once', () => {
+    // Removing fired entries from the live list while iterating it skipped
+    // every other one: three once listeners over three flushes fired 1, 2, 1
+    const watched = new LazyWatch({ a: 0 });
+    const counts = [0, 0, 0, 0];
+    for (let i = 0; i < counts.length; i++) {
+      LazyWatch.once(watched, () => { counts[i]++; });
+    }
+    for (let n = 1; n <= 3; n++) {
+      watched.a = n;
+      LazyWatch.flush(watched);
+    }
+    assertEquals(counts, [1, 1, 1, 1], 'every once listener should fire exactly once');
+    LazyWatch.dispose(watched);
+  });
+
   runner.test('once on a nested proxy should wait for its subtree', async () => {
     const watched = new LazyWatch({ user: { name: 'a' }, other: 1 });
     let received = null;
