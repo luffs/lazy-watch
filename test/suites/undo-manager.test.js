@@ -519,4 +519,44 @@ export default function register(runner) {
     manager.dispose();
     LazyWatch.dispose(doc);
   });
+  runner.test('undo() and group() called from a listener should see current history and deliver in order', () => {
+    const watched = new LazyWatch({ x: 1, log: 0 });
+    const mirror = { x: 1, log: 0 };
+    let manager = null;
+    // Registered before the manager exists: history must already hold the
+    // batch this listener is receiving
+    LazyWatch.on(watched, (diff, inverse, meta) => {
+      if (diff.x === 99 && !meta) manager.undo(); // reject the edit
+      if (diff.x === 5 && !meta) {
+        manager.group(() => {
+          watched.log = 1;
+          LazyWatch.flush(watched);
+          watched.log = 2;
+        });
+      }
+    });
+    manager = LazyWatch.createUndoManager(watched);
+    const seen = [];
+    LazyWatch.on(watched, (diff, inverse, meta) => {
+      seen.push([diff, meta?.origin]);
+      LazyWatch.patch(mirror, diff);
+    });
+
+    watched.x = 99;
+    LazyWatch.flush(watched);
+    assertEquals(seen, [[{ x: 99 }, undefined], [{ x: 1 }, 'undo']], 'the undo batch should follow the one it reverts');
+    assertEquals(mirror, { x: 1, log: 0 });
+    assertTrue(!manager.canUndo && manager.canRedo, 'the undone edit should sit on the redo stack only');
+
+    watched.x = 5;
+    LazyWatch.flush(watched);
+    assertEquals(mirror, { x: 5, log: 2 });
+    assertTrue(manager.undo(), 'the group should be one step');
+    assertEquals(LazyWatch.snapshot(watched), { x: 5, log: 0 });
+    assertTrue(manager.undo());
+    assertEquals(LazyWatch.snapshot(watched), { x: 1, log: 0 });
+    assertEquals(mirror, { x: 1, log: 0 });
+    manager.dispose();
+    LazyWatch.dispose(watched);
+  });
 }

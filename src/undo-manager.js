@@ -58,7 +58,8 @@ export class UndoManager {
   /**
    * @param {Object} deps
    * @param {Function} deps.subscribe - (listener) => unsubscribe; listener
-   *   receives (diff, inverse) per batch
+   *   receives (diff, inverse, meta) per batch as the batch is produced
+   *   (before listeners see it, even when their delivery is deferred)
    * @param {Function} deps.flush - (meta?) => void; synchronously emit
    *   pending changes, tagged with `meta` when given
    * @param {Function} deps.patch - Apply a diff to the watched state

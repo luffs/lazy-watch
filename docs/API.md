@@ -10,7 +10,7 @@ mirroring, undo/redo, form validation), see [EXAMPLES.md](../EXAMPLES.md).
 - [Creating Watched Objects](#creating-watched-objects)
   - [With Throttling](#with-throttling) · [With Debouncing](#with-debouncing) · [With a Custom Scheduler](#with-a-custom-scheduler-frame-alignment)
 - [Listening for Changes](#listening-for-changes)
-  - [One-shot Listeners](#one-shot-listeners) · [Nested Proxy Listeners](#nested-proxy-listeners)
+  - [One-shot Listeners](#one-shot-listeners) · [Nested Proxy Listeners](#nested-proxy-listeners) · [Changes Made Inside a Listener](#changes-made-inside-a-listener)
 - [Removing Listeners](#removing-listeners)
 - [Flushing Pending Changes](#flushing-pending-changes)
 - [Inspecting Pending Changes](#inspecting-pending-changes)
@@ -259,6 +259,38 @@ before making changes.
 (Handles are slot-bound in the same way: see
 [Detached Proxies](#detached-proxies).)
 
+### Changes Made Inside a Listener
+
+A listener may write to the instance it listens on, and may emit
+synchronously while doing so — `LazyWatch.flush`, or `patch`/`overwrite`
+with [metadata](#batch-metadata-and-origins), for instance to reject an
+edit by applying its inverse. Every listener still receives batches in the
+order they were produced: the new batch is consumed at the call (the batch
+boundary is where you asked for it) but delivered only after the current
+batch has reached every listener, and before the outermost emit returns —
+so a `flush` from outside any listener still delivers everything
+synchronously.
+
+```js
+const doc = new LazyWatch({ x: 1 }, { inverse: true });
+const mirror = { x: 1 };
+
+LazyWatch.on(doc, (diff, inverse, meta) => {
+  if (!meta && diff.x > 10) LazyWatch.patch(doc, inverse, { origin: 'rejected' });
+});
+LazyWatch.on(doc, diff => LazyWatch.patch(mirror, diff));
+
+doc.x = 99;
+// second listener: { x: 99 }, then { x: 1 } tagged 'rejected'; mirror is { x: 1 }
+```
+
+A deferred batch reaches the listeners registered when it was produced,
+minus any removed before their turn; `once` listeners fire on the first
+batch they receive, and nested listeners only for batches touching their
+subtree, as usual. The [undo manager](#undo-manager) records each batch
+as it is produced, so `undo()` or `group()` called from a listener sees
+current history.
+
 ## Removing Listeners
 
 ```js
@@ -299,6 +331,11 @@ that listeners receive alongside it:
 LazyWatch.flush(data, { origin: 'autosave' });
 // listeners: (diff, inverse, meta) => meta.origin === 'autosave'
 ```
+
+Called from inside a listener of the same instance, `flush` still ends the
+batch at the call, but the flushed batch is delivered after the batch
+currently being delivered — see
+[Changes Made Inside a Listener](#changes-made-inside-a-listener).
 
 ## Inspecting Pending Changes
 

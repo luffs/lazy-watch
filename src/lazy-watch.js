@@ -695,7 +695,10 @@ export class LazyWatch {
         coalesce: options.coalesce,
         record: options.record,
         compose: (older, newer) => LazyWatch.composeDiffs(older, newer),
-        subscribe: listener => instance.#eventEmitter.on(listener, []),
+        // Recorded as batches are produced, not as they reach listeners:
+        // a listener calling undo()/group() mid-delivery must find history
+        // current, and a batch it flushes is delivered only afterwards
+        subscribe: listener => instance.#eventEmitter.observe(listener),
         flush: meta => instance.#eventEmitter.forceEmit(meta),
         patch: diff => instance.#proxyHandler.patch(instance.#proxy, diff),
         hasPending: () => tracker.hasPendingChanges(),

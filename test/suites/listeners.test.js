@@ -315,6 +315,93 @@ export default function register(runner) {
     LazyWatch.dispose(watched);
   });
 
+  // --- batches produced while a delivery is running ---
+
+  runner.test('a batch a listener produces should reach later listeners after the batch they are owed', async () => {
+    // Listener A rejects a batch by applying its inverse with metadata. The
+    // tagged batch used to be force-emitted on the spot, so listener B got
+    // it before the batch it was still owed and its mirror ended at 99
+    const watched = new LazyWatch({ x: 1 }, { inverse: true });
+    const mirror = { x: 1 };
+    const seen = [];
+    LazyWatch.on(watched, (diff, inverse, meta) => {
+      if (!meta && diff.x === 99) LazyWatch.patch(watched, inverse, { origin: 'rejected' });
+    });
+    LazyWatch.on(watched, (diff, inverse, meta) => {
+      seen.push([diff.x, meta?.origin]);
+      LazyWatch.patch(mirror, diff);
+    });
+
+    watched.x = 99;
+    await wait(0);
+    assertEquals(seen, [[99, undefined], [1, 'rejected']], 'batches should arrive in production order');
+    assertEquals(mirror, { x: 1 }, 'the mirror should converge');
+    assertEquals(LazyWatch.snapshot(watched), { x: 1 });
+    LazyWatch.dispose(watched);
+  });
+
+  runner.test('flush inside a listener should split the batch now and deliver it before the outer flush returns', () => {
+    const watched = new LazyWatch({ a: 0, b: 0 });
+    const log = [];
+    LazyWatch.on(watched, (diff, inverse, meta) => {
+      log.push(['first', diff, meta]);
+      if (diff.a === 1) {
+        watched.b = 1;
+        LazyWatch.flush(watched, { origin: 'inner' });
+        // Consumed at the call, delivered after the current batch
+        log.push(['pending', LazyWatch.getPendingDiff(watched)]);
+        watched.b = 2; // joins a later batch, not the flushed one
+        log.push(['first returns']);
+      }
+    });
+    LazyWatch.on(watched, (diff, inverse, meta) => log.push(['second', diff, meta]));
+
+    watched.a = 1;
+    LazyWatch.flush(watched);
+    assertEquals(log, [
+      ['first', { a: 1 }, undefined],
+      ['pending', {}],
+      ['first returns'],
+      ['second', { a: 1 }, undefined],
+      ['first', { b: 1 }, { origin: 'inner' }],
+      ['second', { b: 1 }, { origin: 'inner' }]
+    ], 'the inner batch should be delivered after the outer one, before flush returns');
+    assertEquals(LazyWatch.getPendingDiff(watched), { b: 2 }, 'later writes stay pending');
+    LazyWatch.dispose(watched);
+  });
+
+  runner.test('deferred batches should keep once, nested-path, and registration-time semantics', () => {
+    const watched = new LazyWatch({ a: 0, user: { name: 'x' } });
+    const log = [];
+    let lateAdded = false;
+    LazyWatch.on(watched, diff => {
+      if (diff.a !== 1) return;
+      LazyWatch.on(watched, d => log.push(['early', d])); // registered before batch 2 exists
+      watched.user.name = 'y';
+      LazyWatch.flush(watched);
+      LazyWatch.on(watched, d => { lateAdded = true; log.push(['late', d]); }); // after it
+    });
+    LazyWatch.once(watched, d => log.push(['once', d]));
+    LazyWatch.once(watched.user, d => log.push(['user once', d]));
+
+    watched.a = 1;
+    LazyWatch.flush(watched);
+    assertEquals(log, [
+      ['once', { a: 1 }],
+      ['user once', { name: 'y' }],
+      ['early', { user: { name: 'y' } }]
+    ], 'once fires on its first batch only; the nested once waits for its subtree; ' +
+      'a listener added after a batch was produced waits for the next one');
+    assertTrue(!lateAdded, 'the late listener should not receive the deferred batch');
+
+    watched.a = 2;
+    watched.user.name = 'z';
+    LazyWatch.flush(watched);
+    assertEquals(log.length, 5, 'only early and late fire on the next batch');
+    assertTrue(lateAdded);
+    LazyWatch.dispose(watched);
+  });
+
   // --- patch atomicity and nested-listener subtree semantics ---
 
   runner.test('a throwing patch should not corrupt later overwrite semantics', () => {

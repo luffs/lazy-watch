@@ -30,6 +30,22 @@ This project follows the Keep a Changelog format and adheres to Semantic Version
 
 ### Fixed
 
+- **A batch emitted from inside a listener overtook the batch being
+  delivered.** When a listener emitted synchronously — rejecting an edit
+  with `LazyWatch.patch(watched, inverse, { origin: 'rejected' })`, or
+  calling `LazyWatch.flush` — the new batch was delivered on the spot, so
+  every listener after it received the second batch before the first. A
+  mirror fed by such a listener applied the revert and then the edit, and
+  ended at `{ x: 99 }` while the state was back at `{ x: 1 }`. The emitter
+  now queues a batch produced during a delivery: it is still consumed at
+  the call (the batch boundary stays where it was asked for), and is
+  delivered once the current batch has reached every listener, before the
+  outermost emit returns, so a `flush` from outside any listener is as
+  synchronous as before. A deferred batch reaches the listeners registered
+  when it was produced. The undo manager now records batches as they are
+  produced rather than as a listener, so `undo()` or `group()` called
+  from a listener finds history current and its own batches are never
+  mistaken for edits
 - **Consecutive `once` listeners skipped each other.** After a batch, the
   emitter removed the fired once-listeners while iterating the live
   listener list, and each removal shifted the next entry into the slot

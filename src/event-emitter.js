@@ -24,6 +24,15 @@ export class EventEmitter {
   // nested listener's slot survived. Injected by LazyWatch after the
   // handler exists.
   #resolveState = null;
+  // Batches consumed but not yet delivered, oldest first, each with its
+  // own diff, inverse, metadata, and listener snapshot. Only non-empty
+  // while a delivery is running (see #drain)
+  #queue = [];
+  #dispatching = false;
+  // Functions called with every batch the moment it is consumed, before
+  // any listener and regardless of deferred delivery (the undo manager:
+  // its history must be current when a listener calls undo())
+  #observers = [];
 
   constructor(diffTracker, options = {}) {
     if (!diffTracker) {
@@ -76,6 +85,25 @@ export class EventEmitter {
     }
     this.#listeners.push(entry);
     return () => this.#remove(entry);
+  }
+
+  /**
+   * Observe every batch at the moment it is consumed: called with
+   * (diff, inverse, meta) before any listener, even when delivery to the
+   * listeners is deferred because a delivery is already running. For
+   * internal consumers whose state must track batch production (the undo
+   * manager), not for user listeners
+   * @param {Function} observer
+   * @returns {Function} Idempotent removal
+   */
+  observe(observer) {
+    // Wrapped so removal targets exactly this registration
+    const entry = { observer };
+    this.#observers.push(entry);
+    return () => {
+      const index = this.#observers.indexOf(entry);
+      if (index !== -1) this.#observers.splice(index, 1);
+    };
   }
 
   /**
@@ -202,14 +230,28 @@ export class EventEmitter {
   }
 
   /**
-   * Emit the current diff to all listeners
-   */
-  /**
+   * Emit the pending diff: consume it as a batch, then deliver it (and
+   * any batch produced while delivering) to the listeners
    * @param {Object} [meta] - Batch metadata handed to every listener as
    *   the third argument (only synchronous emits carry one: flush, and
    *   patch/overwrite called with metadata)
    */
   #emit(meta) {
+    this.#produce(meta);
+    this.#drain();
+  }
+
+  /**
+   * Consume the pending changes as one batch and queue it for delivery.
+   *
+   * Consumption is always immediate — the batch boundary is where the
+   * caller asked for it, so a flush inside a listener still splits the
+   * batch there. Delivery may not be: see #drain. The listener snapshot is
+   * taken now, so a batch reaches exactly the listeners registered when it
+   * was produced (minus any removed before their turn), as a synchronous
+   * delivery would. Observers see the batch now, before any listener.
+   */
+  #produce(meta) {
     if (!this.#diffTracker.hasPendingChanges()) return;
 
     this.#lastEmitTime = performance.now();
@@ -222,10 +264,44 @@ export class EventEmitter {
       : undefined;
     // Dispatch over a snapshot: listeners that unsubscribe during emit would
     // otherwise splice the live array mid-iteration and skip the next
-    // listener. The membership check gives EventTarget semantics — a
-    // listener removed by an earlier listener in the same emit does not
-    // fire, and one added during the emit waits for the next batch.
-    const entries = [...this.#listeners];
+    // listener. The flag check gives EventTarget semantics — a listener
+    // removed by an earlier listener in the same emit does not fire, and
+    // one added during the emit waits for the next batch.
+    this.#queue.push({ diff, inverse, meta, entries: [...this.#listeners] });
+    for (const { observer } of [...this.#observers]) {
+      try {
+        observer(diff, inverse, meta);
+      } catch (e) {
+        console.error('Error in LazyWatch listener:', e);
+      }
+    }
+  }
+
+  /**
+   * Deliver queued batches oldest-first. While a delivery is running, a
+   * batch produced by one of its listeners (a flush, or patch/overwrite
+   * with metadata) waits in the queue until the current batch has reached
+   * every listener, and the outermost drain delivers it before returning.
+   * Delivering it on the spot would hand it to the listeners after the
+   * producing one before the batch they are still owed, and a mirror fed
+   * by such a listener would apply the two out of order.
+   */
+  #drain() {
+    if (this.#dispatching) return;
+    this.#dispatching = true;
+    try {
+      while (this.#queue.length > 0) {
+        this.#deliver(this.#queue.shift());
+      }
+    } finally {
+      this.#dispatching = false;
+    }
+  }
+
+  /**
+   * Hand one batch to every listener in its snapshot
+   */
+  #deliver({ diff, inverse, meta, entries }) {
     entries.forEach(entry => {
       // The flag (set by #remove) is O(1); a membership scan per listener
       // made dispatch quadratic in the listener count
@@ -421,6 +497,8 @@ export class EventEmitter {
    */
   dispose() {
     this.#clearPending();
+    this.#queue.length = 0;
+    this.#observers.length = 0;
     // Flag and detach every registration (an emit in progress skips them;
     // abort handlers stop referencing this emitter)
     for (const entry of this.#listeners.splice(0)) {
