@@ -22,4 +22,28 @@ export default function register(runner) {
     }
     assertTrue(Utils.isArrayDiff({ 0: 'a', $length: 1 }));
   });
+
+  runner.test('deepClone copies plain data by hand, holes and an own __proto__ key included, and falls back for the rest', () => {
+    const { Utils } = LazyWatch;
+    const sparse = [1, , 3];
+    const copy = Utils.deepClone({ a: [sparse, { b: 'c' }], n: null });
+    assertEquals(copy, { a: [[1, null, 3], { b: 'c' }], n: null });
+    assertEquals(1 in copy.a[0], false, 'a hole stays a hole');
+    const odd = JSON.parse('{"__proto__": {"x": 1}}');
+    const oddCopy = Utils.deepClone(odd);
+    assertEquals(Object.getPrototypeOf(oddCopy), Object.prototype, 'the key is data, not a prototype');
+    assertEquals(Object.keys(oddCopy), ['__proto__']);
+    assertEquals(({}).x, undefined);
+    const cyclic = { name: 'loop' };
+    cyclic.self = cyclic;
+    const cyclicCopy = Utils.deepClone(cyclic);
+    assertTrue(cyclicCopy.self === cyclicCopy && cyclicCopy !== cyclic, 'a cycle falls back to the general clone');
+    const date = new Date(5);
+    const dated = Utils.deepClone({ at: date });
+    assertTrue(dated.at instanceof Date && dated.at.getTime() === 5 && dated.at !== date, 'so does a Date');
+    let deep = {};
+    const root = deep;
+    for (let i = 0; i < 400; i++) deep = deep.next = {};
+    assertTrue(Utils.deepClone(root).next.next !== undefined, 'and a nesting past the depth guard');
+  });
 }

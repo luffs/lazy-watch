@@ -997,6 +997,17 @@ app.todos.unshift({ id: 0 }); // slot 1 now holds id 1
 todo.done = true;             // marks id 1 — re-find elements after structural ops
 ```
 
+What `splice` and `shift` return is different: a plain copy of what they
+removed, not a handle. A handle there would address the slot, which the
+shift has already filled with the next element, so the usual move would
+duplicate that element and lose the one moved. With a copy it works as
+it does on a plain array:
+
+```js
+const [moved] = app.todos.splice(from, 1);   // a plain copy of the element
+app.todos.splice(to, 0, moved);              // lands where it should
+```
+
 When the slot itself is destroyed — the property deleted, replaced by a
 leaf value, truncated away, or removed by `splice`/`shift` — the handle
 becomes **detached**: its object is no longer anywhere in the tree. Reads

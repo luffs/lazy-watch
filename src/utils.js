@@ -18,6 +18,43 @@ const RESERVED_DIFF_KEYS = new Set(['$splice', '$length']);
 // Error-path helper: renders a path prefix for validation messages
 const pathLabel = path => path.length ? ` at "${path.map(String).join('.')}"` : '';
 
+// What cloneData returns when a value is not plain data (or nests too deep
+// to be anything but a cycle): the caller falls back to the general clone
+const NOT_DATA = Symbol('LazyWatch.NotData');
+const MAX_DATA_DEPTH = 256;
+
+/**
+ * Copy plain data (plain objects, arrays, primitives) by hand: several
+ * times faster than structuredClone for the small values watched state is
+ * written in. Holes stay holes, and an own `__proto__` key is copied as the
+ * data it is. Anything else, and a nesting deep enough to be a cycle, gives
+ * NOT_DATA
+ */
+function cloneData(value, depth) {
+  if (value === null || typeof value !== 'object') return value;
+  if (depth > MAX_DATA_DEPTH) return NOT_DATA;
+  if (Array.isArray(value)) {
+    const out = new Array(value.length);
+    for (let i = 0; i < value.length; i++) {
+      if (!(i in value)) continue;
+      const item = cloneData(value[i], depth + 1);
+      if (item === NOT_DATA) return NOT_DATA;
+      out[i] = item;
+    }
+    return out;
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return NOT_DATA;
+  const out = {};
+  for (const key of Object.keys(value)) {
+    const item = cloneData(value[key], depth + 1);
+    if (item === NOT_DATA) return NOT_DATA;
+    if (key === '__proto__') Object.defineProperty(out, key, { value: item, enumerable: true, writable: true, configurable: true });
+    else out[key] = item;
+  }
+  return out;
+}
+
 export const Utils = {
   /**
    * True for property names that are rejected in watched state because
@@ -392,10 +429,21 @@ export const Utils = {
    * watched state — plain objects, arrays, Date and RegExp leaves — since the
    * collection types are rejected by `assertSupported` before any clone
    * happens. Functions are copied by reference. Cycle-safe on both paths.
+   *
+   * Plain data, which is all watched state holds, is copied by hand first
+   * (see cloneData); a value that is not plain data takes the path above.
+   * The copy of plain data is a tree: an object the value reaches twice is
+   * copied twice, where structuredClone would keep the two shared.
    */
-  deepClone(obj, hash = new WeakMap()) {
+  deepClone(obj, hash) {
     // Primitives, and functions (copied by reference)
     if (Object(obj) !== obj || typeof obj === 'function') return obj;
+
+    if (hash === undefined) {
+      const copy = cloneData(obj, 0);
+      if (copy !== NOT_DATA) return copy;
+      hash = new WeakMap();
+    }
 
     // Cyclic reference
     if (hash.has(obj)) return hash.get(obj);

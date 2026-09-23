@@ -529,4 +529,70 @@ export default function register(runner) {
     assertEquals(LazyWatch.snapshot(src), { arr: [1, 2, 3] });
     LazyWatch.dispose(src);
   });
+
+  // splice/shift return what they removed, not the slot it was in
+  // A proxy for a removed element addresses its slot, which the shift
+  // fills with the next element: the usual move (splice it out, splice it
+  // back in) duplicated that element and lost the one moved.
+
+  const moveCases = [
+    ['the compact path', () => new LazyWatch({ list: [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }] })],
+    ['the inverse path', () => new LazyWatch({ list: [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }] }, { inverse: true })],
+    ['a listener below the array', () => {
+      const w = new LazyWatch({ list: [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }] });
+      LazyWatch.on(w.list, () => {});
+      return w;
+    }]
+  ];
+  for (const [name, make] of moveCases) {
+    runner.test(`splice should return plain copies of what it removed, so a move keeps the element (${name})`, async () => {
+      const w = make();
+      const mirror = { list: [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }] };
+      LazyWatch.on(w, diff => LazyWatch.patch(mirror, diff));
+      const [moved] = w.list.splice(1, 1);
+      assertEquals(LazyWatch.isProxy(moved), false, 'a copy, not a handle on the slot');
+      assertEquals(moved, { id: 'b' });
+      w.list.splice(2, 0, moved);
+      assertEquals(LazyWatch.snapshot(w.list).map(x => x.id), ['a', 'c', 'b', 'd']);
+      const first = w.list.shift();
+      assertEquals([LazyWatch.isProxy(first), first.id], [false, 'a']);
+      assertEquals(w.list.unshift({ id: 'z' }), 4, 'unshift still returns the new length');
+      await wait(5);
+      assertConverged(w, mirror, 'mirrors follow');
+      LazyWatch.dispose(w);
+    });
+  }
+
+  runner.test('splice on the compact path gives exactly what a plain array gives, holes, nested values and kind changes included', () => {
+    let seed = 7;
+    const random = n => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+    const values = [
+      () => ({ id: random(50), tags: ['x', random(3)], meta: { n: random(4), deep: { k: random(2) } } }),
+      () => ({ id: random(50) }),
+      () => [random(9), { v: random(9) }],
+      () => random(100),
+      () => 'text' + random(5),
+      () => null
+    ];
+    const pick = () => values[random(values.length)]();
+    for (let run = 0; run < 40; run++) {
+      const start = Array.from({ length: 5 + random(20) }, pick);
+      if (random(3) === 0) delete start[random(start.length)];   // a hole
+      const plain = LazyWatch.Utils.deepClone(start);
+      const w = new LazyWatch({ list: LazyWatch.Utils.deepClone(start) });
+      const mirror = { list: LazyWatch.Utils.deepClone(start) };
+      for (let step = 0; step < 15; step++) {
+        const at = random(plain.length + 2) - 1;
+        const count = random(4);
+        const items = Array.from({ length: random(3) }, pick);
+        const expected = LazyWatch.Utils.deepClone(plain.splice(at, count, ...LazyWatch.Utils.deepClone(items)));
+        const got = w.list.splice(at, count, ...items);
+        assertEquals(got, expected, `run ${run} step ${step}: what splice returned`);
+        assertEquals(LazyWatch.snapshot(w).list, plain, `run ${run} step ${step}: the array`);
+        assertEquals(Object.keys(LazyWatch.resolveIfProxy(w.list)), Object.keys(plain), `run ${run} step ${step}: holes`);
+        LazyWatch.flush(w);
+      }
+      LazyWatch.dispose(w);
+    }
+  });
 }

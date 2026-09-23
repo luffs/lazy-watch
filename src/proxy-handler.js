@@ -527,10 +527,19 @@ export class ProxyHandler {
    *
    * Records a single compact `$splice` op instead of per-index writes when
    * the array's diff node is clean; otherwise falls back to plain
-   * trap-driven recording (correct, just larger). The mutation itself
-   * always runs as the native method through the proxy, because the
-   * trap-driven slot-merge semantics is what keeps cached child-proxy
-   * paths valid — raw splicing would move elements and stale them.
+   * trap-driven recording (correct, just larger). Either way the objects
+   * stay in their slots and their contents move (slot-merge), which is
+   * what keeps cached child-proxy paths valid — raw splicing would move
+   * elements and stale them. The compact path, which records nothing per
+   * slot, does that merge on the raw array directly (#spliceSlots) rather
+   * than through the traps, which cost a validation and a clone per field
+   * of every element shifted.
+   *
+   * What splice and shift return is a plain copy of what they removed,
+   * taken before anything moved: a proxy there would address the slot,
+   * which by then holds the element that moved in, and splicing it back
+   * in elsewhere (the usual move) would duplicate that one and lose the
+   * removed one.
    */
   #structuralArrayOp(target, method, args, path, receiver) {
     this.#assertAttached(target, path);
@@ -552,18 +561,6 @@ export class ProxyHandler {
       }
     }
 
-    // Inverse tracking disables the compact form entirely: a $splice op
-    // cannot be correctly interleaved with per-key inverse entries
-    // (receivers apply $splice before a node's other keys, breaking
-    // chronological undo ordering), while plain trap-driven recording is
-    // handled exactly by the per-key inverse rules. Correct, just larger.
-    // Listeners registered below this array disable it too: a compact op
-    // cannot say what moved into their slot, while per-index recording
-    // gives each of them the exact path-relative diff.
-    if (this.#diffTracker.inverseEnabled || this.#eventEmitter.hasListenersBelow(path)) {
-      return native.apply(receiver, args);
-    }
-
     // Normalize the call into one splice op: [start, deleteCount, items]
     let start = 0;
     let deleteCount = 0;
@@ -582,11 +579,32 @@ export class ProxyHandler {
       }
       items = args.slice(2);
     }
+
+    // What the call removes, copied before anything moves, as it returns it
+    const removed = [];
+    for (let i = start; i < start + deleteCount; i++) {
+      removed.length = i - start + 1;
+      if (i in target) removed[i - start] = Utils.isObjectOrArray(target[i]) ? Utils.deepClone(target[i]) : target[i];
+    }
+    const returned = result => (method === 'splice' ? removed : method === 'shift' ? removed[0] : result);
+
+    // Inverse tracking disables the compact form entirely: a $splice op
+    // cannot be correctly interleaved with per-key inverse entries
+    // (receivers apply $splice before a node's other keys, breaking
+    // chronological undo ordering), while plain trap-driven recording is
+    // handled exactly by the per-key inverse rules. Correct, just larger.
+    // Listeners registered below this array disable it too: a compact op
+    // cannot say what moved into their slot, while per-index recording
+    // gives each of them the exact path-relative diff.
+    if (this.#diffTracker.inverseEnabled || this.#eventEmitter.hasListenersBelow(path)) {
+      return returned(native.apply(receiver, args));
+    }
+
     items = items.map(item => this.resolveIfProxy(item));
 
     // No mutation: run the method only for its return value
     if (deleteCount === 0 && items.length === 0) {
-      return native.apply(receiver, args);
+      return returned(native.apply(receiver, args));
     }
 
     // Compact recording is only safe when the array's diff node carries no
@@ -600,18 +618,12 @@ export class ProxyHandler {
     const clean = !Array.isArray(node) &&
       Object.keys(node).every(key => key === '$splice' || key === '$length');
     if (!clean) {
-      return native.apply(receiver, args);
+      return returned(native.apply(receiver, args));
     }
 
     // Items were validated above, before any branch could mutate
-
-    this.#suppress = true;
-    let result;
-    try {
-      result = native.apply(receiver, args);
-    } finally {
-      this.#suppress = false;
-    }
+    this.#spliceSlots(target, start, deleteCount, items);
+    const result = returned(target.length);
 
     if (!node.$splice) node.$splice = [];
     node.$splice.push([
@@ -624,6 +636,80 @@ export class ProxyHandler {
     node.$length = target.length;
     this.#eventEmitter.scheduleEmit();
     return result;
+  }
+
+  /**
+   * The native splice's effect on the raw array, with the set trap's
+   * slot-merge semantics but none of its per-write work (nothing is
+   * recorded: the compact path records the op itself). Elements shift in
+   * the native order, so a slot is always read before it is written;
+   * each shifted value merges into the object already in its new slot
+   * (#writeSlot), a slot past the old length gets a copy, a hole moves as
+   * a hole, and the inserted items land last.
+   */
+  #spliceSlots(target, start, deleteCount, items) {
+    const len = target.length;
+    const shift = items.length - deleteCount;
+    const newLength = len + shift;
+    const moveFrom = (to, from) => {
+      if (!(from in target)) delete target[to];
+      else if (to >= len) target[to] = Utils.isObjectOrArray(target[from]) ? Utils.deepClone(target[from]) : target[from];
+      else this.#writeSlot(target, to, target[from]);
+    };
+    if (shift < 0) {
+      for (let i = start + items.length; i < newLength; i++) moveFrom(i, i - shift);
+      target.length = newLength;
+    } else if (shift > 0) {
+      for (let i = newLength - 1; i >= start + items.length; i--) moveFrom(i, i - shift);
+    }
+    for (let k = 0; k < items.length; k++) {
+      const i = start + k;
+      if (i >= len && !(i in target)) target[i] = Utils.isObjectOrArray(items[k]) ? Utils.deepClone(items[k]) : items[k];
+      else this.#writeSlot(target, i, items[k]);
+    }
+  }
+
+  /**
+   * What the set trap does to a slot assigned `value` when nothing is
+   * recorded: a container of the same kind as the one there is merged
+   * into it wholesale (#mergeSlot), anything else replaces it, a
+   * container as a copy
+   */
+  #writeSlot(target, key, value) {
+    const current = target[key];
+    if (Utils.isObjectOrArray(current) && Utils.isObjectOrArray(value) && Array.isArray(current) === Array.isArray(value)) {
+      this.#mergeSlot(current, value);
+    } else if (current !== value || !(key in target)) {
+      target[key] = Utils.isObjectOrArray(value) ? Utils.deepClone(value) : value;
+    }
+  }
+
+  /**
+   * `overwrite` of a full value into a same-kind container with nothing
+   * recorded: null deletes, same-kind containers merge, anything else is
+   * replaced by a copy without null markers, a hole clears its slot, and
+   * an object's keys the value lacks are deleted
+   */
+  #mergeSlot(target, source) {
+    if (Array.isArray(target) && target.length !== source.length) target.length = source.length;
+    for (const prop in source) {
+      if (Utils.isUnsafeKey(prop)) continue;
+      const value = source[prop];
+      if (value === null || value === undefined) {
+        if (prop in target) delete target[prop];
+      } else if (Utils.isObjectOrArray(target[prop]) && Utils.isObjectOrArray(value) && Array.isArray(target[prop]) === Array.isArray(value)) {
+        this.#mergeSlot(target[prop], value);
+      } else if (target[prop] !== value) {
+        target[prop] = Utils.isObjectOrArray(value) ? Utils.cloneWithoutNulls(value) : value;
+      }
+    }
+    if (Array.isArray(target)) {
+      for (let i = 0; i < source.length; i++) if (!(i in source) && i in target) delete target[i];
+    } else {
+      for (const prop in target) {
+        if (Object.hasOwn(target, prop) && (source[prop] === null || source[prop] === undefined)) delete target[prop];
+      }
+    }
   }
 
   /**

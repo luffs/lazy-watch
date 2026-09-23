@@ -4,6 +4,39 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+
+- **`splice` and `shift` return what they removed.** They returned
+  proxies for the removed elements, and a nested proxy addresses a slot:
+  by the time the caller used one, the shift had filled the slot with the
+  next element. So the usual move — `const [m] = list.splice(i, 1);
+  list.splice(j, 0, m)` — inserted a second copy of the element after
+  the removed one and lost the removed one (`[a, b, c, d]` became
+  `[a, c, c, d]`). Both now return plain copies taken before anything
+  moves, on every path; `unshift` still returns the new length. Handles
+  held on elements keep addressing their slots, as documented
+
+### Changed
+
+- **`splice`, `shift` and `unshift` on arrays of objects are some ten
+  times faster.** The compact path ran the native method through the
+  proxy, so every element shifted paid the set trap's per-field
+  validation, merge and clones: a splice on 5k small objects took ~5.6
+  ms. It now does the same slot-merge on the raw array directly, nothing
+  recorded per slot (~0.6 ms), with results identical to a plain array's
+  (a differential test pins it). The paths that record per index (inverse
+  on, listeners below the array) are unchanged
+- **Object writes are about twice as fast.** `Utils.deepClone` handed
+  every object to `structuredClone` (and allocated a `WeakMap` per call,
+  primitives included); plain data is now copied by hand, falling back to
+  `structuredClone` for anything else, a cycle included. A 5-field object
+  write went from ~9 µs to ~4.5 µs, a field write from ~1.9 µs to ~1.2 µs.
+  One visible difference: an object the cloned value reaches twice is
+  copied twice rather than kept shared
+- The bundle is 10.25 kB min+gzip (budget 11 kB)
+
 ## [6.3.0] - 2026-09-23
 
 Batches are delivered in the order they were produced, even when a
