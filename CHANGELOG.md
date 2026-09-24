@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
-## [Unreleased]
+## [7.0.0] - 2026-09-24
 
 Handles follow their objects, as references do in plain JavaScript: a
 nested proxy keeps addressing the same object wherever `splice`,
