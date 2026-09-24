@@ -1,7 +1,36 @@
 // event-emitter.js - Handles event emission with batching
 import {Utils} from "./utils.js";
+import {preBatchPath} from "./diff-tracker.js";
 
 const INDEX_RE = /^\d+$/;
+
+/**
+ * Mark in `value` (a full value, copied) every key a fragment deletes that
+ * the value no longer has, recursively through plain objects both have: a
+ * listener that merges the value into what it holds then drops them too
+ */
+function markDeletions(value, fragment) {
+  if (!Utils.isPlainObject(value) || !Utils.isPlainObject(fragment) || Utils.hasArrayMarker(fragment)) return;
+  for (const key of Object.keys(fragment)) {
+    if (Utils.isReservedDiffKey(key) || Utils.isUnsafeKey(key)) continue;
+    const part = fragment[key];
+    if (part === null) {
+      if (!(key in value)) value[key] = null;
+    } else if (Utils.isPlainObject(value[key])) {
+      markDeletions(value[key], part);
+    }
+  }
+}
+
+/** The part of a fragment at a relative path, or undefined */
+function fragmentAt(fragment, path) {
+  let node = fragment;
+  for (const key of path) {
+    if (!Utils.isObjectOrArray(node) || !(key in node)) return undefined;
+    node = node[key];
+  }
+  return node === null ? undefined : node;
+}
 
 export class EventEmitter {
   #listeners = [];
@@ -21,9 +50,15 @@ export class EventEmitter {
   #paused = false;
   // (path) => { found, value }: the live watched state, consulted by
   // #filterDiffByPath for the one diff shape that cannot say whether a
-  // nested listener's slot survived. Injected by LazyWatch after the
+  // nested listener's object survived. Injected by LazyWatch after the
   // handler exists.
   #resolveState = null;
+  // (object) => path | null: where a listener's object is now, or null
+  // once it has left the tree. Listeners follow their objects: a nested
+  // listener is filed under the object it was registered on, and each
+  // batch finds it where the batch left it. Injected like #resolveState;
+  // standalone, every listener is at the root
+  #locate = () => [];
   // Batches consumed but not yet delivered, oldest first, each with its
   // own diff, inverse, metadata, and listener snapshot. Only non-empty
   // while a delivery is running or, while paused, when an implicit flush
@@ -59,16 +94,26 @@ export class EventEmitter {
   }
 
   /**
+   * Provide where an object is in the watched state: (object) => path | null
+   */
+  setLocator(locate) {
+    this.#locate = locate;
+  }
+
+  /**
    * Add a change listener
    * @param {Function} listener - The listener function
-   * @param {Array} path - The path of the proxy this listener is registered on
+   * @param {Object} target - The object this listener is registered on
+   *   (the raw object behind the proxy): it receives the diff of that
+   *   object wherever it is, `null` when it leaves the tree, and its whole
+   *   value if it is put back
    * @param {Object} [options] - Listener options
    * @param {boolean} [options.once=false] - Remove the listener after its first invocation
    * @param {AbortSignal} [options.signal] - Removes the listener when aborted
    * @returns {Function} An idempotent unsubscribe function that removes
    *   exactly this registration
    */
-  on(listener, path = [], options = {}) {
+  on(listener, target, options = {}) {
     if (typeof listener !== 'function') {
       throw new TypeError('Listener must be a function');
     }
@@ -76,7 +121,17 @@ export class EventEmitter {
     // Match addEventListener semantics: an already-aborted signal never adds
     if (signal && signal.aborted) return () => {};
 
-    const entry = { listener, path, once, removed: false, detach: null };
+    // `path` is where the object was when the last batch ended (the
+    // batch after it began there); `attached` whether it was in the tree.
+    // A nested object is held weakly: one that left the tree and is
+    // otherwise unreachable can never come back, and a listener left
+    // registered on it must not keep it alive. The root never leaves
+    const path = this.#locate(target);
+    const root = path !== null && path.length === 0;
+    const entry = {
+      listener, target: root ? target : null, ref: root ? null : new WeakRef(target),
+      once, removed: false, detach: null, path: path ?? [], attached: path !== null
+    };
     if (signal) {
       // Remove only this registration: the same function may also be
       // registered on other paths (or on this one without the signal).
@@ -127,17 +182,13 @@ export class EventEmitter {
   /**
    * Remove a change listener
    * @param {Function} listener - The listener to remove
-   * @param {Array} [path] - Only remove the registration made at this path;
-   *   when omitted, the first registration of the function is removed
+   * @param {Object} [target] - Only remove the registration made on this
+   *   object; when omitted, the first registration of the function is removed
    */
-  off(listener, path) {
+  off(listener, target) {
     const entry = this.#listeners.find(l =>
-      l.listener === listener && (path === undefined || this.#samePath(l.path, path)));
+      l.listener === listener && (target === undefined || (l.target ?? l.ref.deref()) === target));
     if (entry) this.#remove(entry);
-  }
-
-  #samePath(a, b) {
-    return a.length === b.length && a.every((segment, i) => segment === b[i]);
   }
 
   /**
@@ -253,7 +304,10 @@ export class EventEmitter {
    * batch there. Delivery may not be: see #drain. The listener snapshot is
    * taken now, so a batch reaches exactly the listeners registered when it
    * was produced (minus any removed before their turn), as a synchronous
-   * delivery would. Observers see the batch now, before any listener.
+   * delivery would. So is where each listener's object is: the batch's
+   * diff describes the tree as the batch left it, which later batches may
+   * rearrange before this one is delivered. Observers see the batch now,
+   * before any listener.
    */
   #produce(meta) {
     if (!this.#diffTracker.hasPendingChanges()) return;
@@ -271,7 +325,8 @@ export class EventEmitter {
     // listener. The flag check gives EventTarget semantics — a listener
     // removed by an earlier listener in the same emit does not fire, and
     // one added during the emit waits for the next batch.
-    this.#queue.push({ diff, inverse, meta, entries: [...this.#listeners] });
+    const carried = this.#diffTracker.takeCarried();
+    this.#queue.push({ diff, inverse, meta, entries: this.#placeListeners(diff, carried) });
     for (const { observer } of [...this.#observers]) {
       try {
         observer(diff, inverse, meta);
@@ -314,43 +369,123 @@ export class EventEmitter {
   }
 
   /**
+   * Where the batch left each listener's object, for its delivery: its
+   * path now (null once it left the tree), where it was when the batch
+   * began (the inverse speaks in those positions: preBatchPath, or the
+   * last path seen), and its whole value when the diff cannot describe
+   * it: it came back into the tree, or went out of an array and back in
+   * within the batch (see #movedValue). An object out of the tree before
+   * the batch and after it has nothing to hear, and is left out
+   */
+  #placeListeners(diff, carried) {
+    const placed = [];
+    const collected = [];
+    for (const entry of this.#listeners) {
+      const target = entry.target ?? entry.ref.deref();
+      const path = target === undefined ? null : this.#locate(target);
+      const wasAttached = entry.attached;
+      const lastPath = entry.path;
+      entry.attached = path !== null;
+      if (path !== null) entry.path = path;
+      if (path === null && !wasAttached) {
+        // Told already; an object garbage-collected since can never return
+        if (target === undefined) collected.push(entry);
+        continue;
+      }
+      let before = path === null ? lastPath : wasAttached ? preBatchPath(diff, path) : null;
+      let value;
+      if (path !== null && !wasAttached) {
+        const live = this.#resolveState ? this.#resolveState(path) : { found: false };
+        value = live.found ? Utils.deepClone(live.value) : undefined;
+      } else if (path !== null && before === null) {
+        value = this.#movedValue(diff, carried, path);
+        before = lastPath;
+      }
+      placed.push({ entry, path, before, value });
+    }
+    for (const entry of collected) this.#remove(entry);
+    return placed;
+  }
+
+  /**
+   * An object that went out of an array and back in within the batch (a
+   * move by splice, sort, or reverse): the diff carries it whole in an
+   * op's items, so what the batch changed in it is not there as changes.
+   * The listener gets its whole value, with what the batch deleted in it
+   * marked, when the batch changed it — as the fragments the ops carried
+   * away (DiffTracker.recordSplice) or the diff at its new place show —
+   * and nothing when it only moved
+   */
+  #movedValue(diff, carried, path) {
+    if (!this.#resolveState) return undefined;
+    // The element that moved: the shortest part of the path the diff's
+    // ops cannot map back
+    let depth = 1;
+    while (depth < path.length && preBatchPath(diff, path.slice(0, depth)) !== null) depth++;
+    const element = this.#resolveState(path.slice(0, depth));
+    if (!element.found) return undefined;
+    // Each carried fragment speaks in the element's own positions as they
+    // were when it went out; ops on arrays inside it since it came back in
+    // moved them. Newest first: the path is mapped back through the ops
+    // recorded after the element returned, looked up, and mapped again
+    // through that fragment's own ops for the one before
+    let relative = path.slice(depth);
+    const fragments = [];
+    let since = this.#filterDiffByPath(diff, path.slice(0, depth));
+    const trail = carried.get(element.value) ?? [];
+    for (let i = trail.length - 1; i >= 0 && relative !== null; i--) {
+      if (Utils.isObjectOrArray(since)) relative = preBatchPath(since, relative);
+      if (relative === null) break;
+      const part = fragmentAt(trail[i], relative);
+      if (part !== undefined) fragments.push(part);
+      since = trail[i];
+    }
+    const here = this.#filterDiffByPath(diff, path);
+    if (here !== undefined && here !== null) fragments.push(here);
+    if (fragments.length === 0) return undefined;
+    const live = this.#resolveState(path);
+    if (!live.found) return undefined;
+    const value = Utils.deepClone(live.value);
+    for (const fragment of fragments) markDeletions(value, fragment);
+    return value;
+  }
+
+  /**
    * Hand one batch to every listener in its snapshot
    */
   #deliver({ diff, inverse, meta, entries }) {
-    entries.forEach(entry => {
+    for (const { entry, path, before, value } of entries) {
       // The flag (set by #remove) is O(1); a membership scan per listener
       // made dispatch quadratic in the listener count
-      if (entry.removed) return;
+      if (entry.removed) continue;
       try {
-        // Filter the diff based on the listener's path
-        const filteredDiff = this.#filterDiffByPath(diff, entry.path);
-        // A subtree already reported gone stays gone until a later batch
-        // lands something at its path again: array growth below a slot
-        // that was truncated away restates `$length`, which must not
-        // re-notify the slot's listener
-        if (filteredDiff === null && entry.gone) return;
-        // undefined means the batch didn't touch this listener's subtree.
-        // Everything else is meaningful: null (deleted), a leaf (replaced
-        // by it), a fragment, or a wholesale container value — an empty
-        // one included (`x = []` over an object replaces it; diff nodes
-        // are only created when something is recorded, so an empty
-        // container is always a real value)
-        if (filteredDiff !== undefined) {
-          entry.gone = filteredDiff === null;
-          // Remove before invoking: a throwing once-listener is still
-          // removed, and an emit the listener triggers synchronously
-          // cannot deliver to it a second time. Removal splices the live
-          // list, never the snapshot being iterated
-          if (entry.once) this.#remove(entry);
-          const filteredInverse = inverse === undefined
-            ? undefined
-            : this.#filterDiffByPath(inverse, entry.path);
-          entry.listener(filteredDiff, filteredInverse, meta);
-        }
+        // The listener's part of the diff: the object's whole value when it
+        // came back into the tree (the listener was told it had gone),
+        // null when it left, else the diff at where it is now. undefined
+        // means the batch didn't touch the object. Everything else is
+        // meaningful: a leaf (replaced by it), a fragment, or a wholesale
+        // container value — an empty one included (`x = []` over an object
+        // replaces it; diff nodes are only created when something is
+        // recorded, so an empty container is always a real value)
+        const filteredDiff = value !== undefined ? value
+          : path === null ? null
+          : this.#filterDiffByPath(diff, path);
+        if (filteredDiff === undefined) continue;
+        // Remove before invoking: a throwing once-listener is still
+        // removed, and an emit the listener triggers synchronously cannot
+        // deliver to it a second time. Removal splices the live list,
+        // never the snapshot being iterated
+        if (entry.once) this.#remove(entry);
+        // An object the batch put there has nothing to restore: undo
+        // removes it
+        const filteredInverse = inverse === undefined ? undefined
+          : before === null ? null
+          : this.#filterDiffByPath(inverse, before);
+        entry.listener(filteredDiff, filteredInverse, meta);
       } catch (e) {
         console.error('Error in LazyWatch listener:', e);
       }
-    });
+    }
   }
 
   /**
@@ -363,15 +498,15 @@ export class EventEmitter {
    *   batch didn't touch this path at all. (Diffs never store `undefined` —
    *   it is normalized to `null` at write time — so it is a safe sentinel.)
    *
-   * Three shapes destroy a listener's slot without naming it in the diff,
-   * and each yields `null`: a real array value (a wholesale replacement)
-   * that lacks the key; an array fragment whose `$length` truncated the
-   * slot away; and a plain object without array markers replacing the
-   * array the slot lived in — indistinguishable from an object merge that
-   * left the key alone, so that one case consults the live tree.
-   * (Structural array ops are recorded per index whenever a listener
-   * exists below the array, so a `$splice` node never hides a slot
-   * change from a listener registered before the op.)
+   * Three shapes destroy what is at a path without naming it in the
+   * diff, and each yields `null`: a real array value (a wholesale
+   * replacement) that lacks the key; an array fragment whose `$length`
+   * truncated the index away; and a plain object without array markers
+   * replacing the array the path ran through — indistinguishable from an
+   * object merge that left the key alone, so that one case consults the
+   * live tree. (A listener's own object is located before this: an object
+   * the batch left in the tree is at `path`, and the diff's index keys
+   * name the positions the batch's `$splice` ops left them at.)
    */
   #filterDiffByPath(diff, path) {
     if (path.length === 0) {
@@ -424,16 +559,6 @@ export class EventEmitter {
    */
   #pathExists(path) {
     return this.#resolveState ? this.#resolveState(path).found : true;
-  }
-
-  /**
-   * True when any listener is registered strictly below `path`. Structural
-   * array ops fall back to per-index recording for such arrays, so those
-   * listeners receive exact path-relative diffs.
-   */
-  hasListenersBelow(path) {
-    return this.#listeners.some(entry =>
-      entry.path.length > path.length && path.every((segment, i) => entry.path[i] === segment));
   }
 
   /**

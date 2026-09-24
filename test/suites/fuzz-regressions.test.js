@@ -210,7 +210,7 @@ export default function register(runner) {
     LazyWatch.dispose(mirror);
   });
 
-  runner.test('a nested listener should receive an empty container that replaces its subtree', async () => {
+  runner.test('a nested listener should receive null when an empty container of the other kind replaces its object', async () => {
     const src = new LazyWatch({ b: { x: 1 }, c: [1] });
     const log = [];
     LazyWatch.on(src.b, d => log.push(['b', d]));
@@ -219,7 +219,7 @@ export default function register(runner) {
     src.b = [];
     src.c = {};
     await wait(5);
-    assertEquals(log, [['b', []], ['c', {}]]);
+    assertEquals(log, [['b', null], ['c', null]], 'the objects listened to left the tree');
     LazyWatch.dispose(src);
   });
 
@@ -235,7 +235,7 @@ export default function register(runner) {
     src.b = [{ e: 1, k: 2 }];
     await wait(5);
     assertEquals(diff, { b: [{ e: 1, k: 2, d: null }] });
-    assertEquals(canon(shadow.v), canon({ e: 1, k: 2 }), 'a listener fed only by its deliveries must drop the stale key');
+    assertEquals('v' in shadow, false, 'the listener\'s object left with the array it was in');
     assertSameState(src, mirror);
     assertEquals(canon(LazyWatch.snapshot(mirror)), canon({ b: [{ e: 1, k: 2 }] }), 'receivers drop the markers when applying wholesale');
     LazyWatch.dispose(src);

@@ -90,7 +90,7 @@ export default function register(runner) {
     LazyWatch.dispose(watched);
   });
 
-  runner.test('inverse tracking should fall back from $splice and still undo structural ops', async () => {
+  runner.test('inverse tracking should record a structural op as an op both ways, and undo it', async () => {
     const watched = new LazyWatch({ items: [1, 2, 3, 4] }, { inverse: true });
     let got = null;
     LazyWatch.on(watched, (d, i) => { got = { diff: d, inverse: i }; });
@@ -98,7 +98,8 @@ export default function register(runner) {
     watched.items.splice(1, 2, 'x');
     LazyWatch.flush(watched);
 
-    assertTrue(!got.diff.items.$splice, 'compact $splice must be disabled with inverse tracking');
+    assertEquals(got.diff.items.$splice, [[1, 2, ['x']]]);
+    assertEquals(got.inverse.items.$splice, [[1, 1, [2, 3]]], 'the op that undoes it');
     assertEquals(JSON.parse(JSON.stringify(LazyWatch.resolveIfProxy(watched.items))), [1, 'x', 4]);
 
     LazyWatch.silent(watched, () => LazyWatch.patch(watched, got.inverse));

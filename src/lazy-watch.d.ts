@@ -44,7 +44,8 @@ export type SpliceOp<E = any> = [start: number, deleteCount: number, items?: E[]
  * How an array of E appears in a diff: either a real array (a wholesale
  * value — its elements are full values too) or an index-keyed fragment
  * carrying the wire format's markers: the array's `$length`, optionally a
- * `$splice` op list, and per-index patches (`null` deletes the slot).
+ * `$splice` op list (applied first), and per-index patches (`null`
+ * deletes the element).
  * A fragment has no `length`; narrow with `Array.isArray` before treating
  * a diff value as an array.
  */
@@ -82,16 +83,15 @@ export type Patch<T> = T extends readonly (infer E)[] ? ArrayPatch<E> : {
  * object: diffs are `Patch<T>` fragments, so property access on them is
  * checked and autocompleted.
  *
- * Root listeners always receive a diff object. Listeners registered on
- * nested proxies receive path-relative diffs — and when their subtree (or an
- * ancestor of it) is deleted they receive `null` (hence the nullable
- * parameter; narrow before use); when it is replaced wholesale by a leaf
- * value (string, number, boolean) they receive that value directly (cast
- * when handling this case). While a listener sits below an array, that
- * array's structural ops are recorded per index, so an element listener
- * receives the exact diff for its slot; a slot truncated away or destroyed
- * by a kind change delivers `null`. A container replacing the subtree is
- * delivered as the full value, an empty `[]`/`{}` included.
+ * Root listeners always receive a diff object. A listener registered on a
+ * nested proxy listens to that object, wherever structural array ops move
+ * it: it receives the object's own diffs, and `null` once the object
+ * leaves the tree — deleted, replaced, truncated or spliced away, or gone
+ * with an ancestor (hence the nullable parameter; narrow before use). An
+ * object put back into the tree is delivered whole, as is an element moved
+ * out and back in within a batch that also changed it (with `null` for
+ * the keys it lost). A new object later placed at the same path is another
+ * object: the listener does not follow it.
  *
  * When the instance was created with `{ inverse: true }` (or has an undo
  * manager attached), listeners receive a second argument: the inverse diff
@@ -391,9 +391,9 @@ export interface LazyWatchConstructorOptions {
      * Also record an inverse diff per batch; listeners receive it as a
      * second argument. Applying the inverse with LazyWatch.patch restores
      * the pre-batch state (undo).
-     * Costs extra clones on the write path, and disables compact $splice
-     * recording — structural array ops (splice/unshift/shift) fall back to
-     * per-index diffs, which are still correct, just larger
+     * Costs extra clones on the write path. A structural array op is
+     * recorded as a $splice op both ways: the inverse carries the op that
+     * undoes it
      * @default false
      */
     inverse?: boolean;
@@ -694,8 +694,8 @@ export interface LazyWatchStatic {
      * instance's other listeners as normal batches, so synced mirrors follow
      * undo history automatically. New changes clear the redo stack.
      * Works on any instance: inverse recording is enabled for the manager's
-     * lifetime (with its usual costs — extra clones, compact $splice
-     * recording disabled, listeners receive inverse diffs) and restored on
+     * lifetime (with its usual costs — extra clones, and listeners receive
+     * inverse diffs) and restored on
      * manager.dispose(). One manager per instance; disposing the instance
      * disposes its manager. Changes made inside LazyWatch.silent bypass
      * emission and are not recorded

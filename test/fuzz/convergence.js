@@ -13,9 +13,11 @@
 // - inverse restore: when inverses are recorded, patching the post-batch
 //   state with the inverse yields the pre-batch state
 // - nested listeners: a shadow value maintained purely from a nested
-//   listener's path-relative deliveries equals the live value at its path
-// - detached handles: a write through a stale nested proxy throws exactly
-//   when its object is no longer at its path, and never records anything
+//   listener's deliveries equals its object's live value while the object
+//   is in the tree (wherever array ops moved it), and is gone while not
+// - handles: a write through a nested proxy lands exactly when its object
+//   is still in the tree (wherever array ops moved it), and throws, never
+//   recording anything, once the object has left it
 // - transactions: a throwing callback leaves the state untouched
 // - undo manager (undo mode): undoing every step returns to the initial
 //   state and redoing every step returns to the final one, with mirrors
@@ -285,6 +287,19 @@ function perturbWholesale(rng, v) {
   return out;
 }
 
+/** Whether `target` (a raw object) is anywhere in the tree under `root` */
+function inTree(root, target) {
+  const stack = [root];
+  while (stack.length) {
+    const node = stack.pop();
+    if (node === target) return true;
+    for (const key of Object.keys(node)) {
+      if (isObjectOrArray(node[key])) stack.push(node[key]);
+    }
+  }
+  return false;
+}
+
 function valueAtProxy(root, path) {
   let cur = root;
   for (const seg of path) {
@@ -309,7 +324,7 @@ function opApply(ctx, method) {
 function opTakeHandle(ctx) {
   const { node, path } = randomContainer(ctx.rng, ctx.sender);
   if (ctx.handles.length >= 6) ctx.handles.shift();
-  ctx.handles.push({ proxy: node, path, root: ctx.sender });
+  ctx.handles.push({ proxy: node, raw: LazyWatch.resolveIfProxy(node), path, root: ctx.sender });
   return `take handle ${path.join('.') || '<root>'}`;
 }
 
@@ -319,9 +334,8 @@ function opHandleWrite(ctx) {
   // library's single-writer scope excludes
   const mine = ctx.handles.filter(h => h.root === ctx.sender);
   if (!mine.length) return opTakeHandle(ctx);
-  const { proxy, path, root } = ctx.rng.pick(mine);
-  const raw = LazyWatch.resolveIfProxy(root);
-  const attached = valueAt(raw, path) === LazyWatch.resolveIfProxy(proxy);
+  const { proxy, raw, path, root } = ctx.rng.pick(mine);
+  const attached = inTree(LazyWatch.resolveIfProxy(root), raw);
   const k = keyFor(ctx.rng, proxy);
   const v = genLeaf(ctx.rng);
   let threw = null;
@@ -410,7 +424,7 @@ function opWatch(ctx) {
   }
   const box = { v: LazyWatch.snapshot(node) };
   const stop = LazyWatch.on(node, d => { LazyWatch.patch(box, { v: d }); });
-  ctx.shadows.push({ path, box, stop, root: ctx.sender });
+  ctx.shadows.push({ path, raw: LazyWatch.resolveIfProxy(node), box, stop, root: ctx.sender });
   return `watch ${path.join('.')}`;
 }
 
@@ -547,10 +561,10 @@ function runOne({ seed, mode, steps, runIndex, trace }) {
       throw ctx.fail(`peer diverged ${where}\n  sender: ${expected}\n  peer:   ${canon(LazyWatch.snapshot(peer))}`);
     }
     for (const shadow of ctx.shadows) {
-      const live = valueAt(LazyWatch.resolveIfProxy(shadow.root), shadow.path);
+      const live = inTree(LazyWatch.resolveIfProxy(shadow.root), shadow.raw) ? shadow.raw : MISSING;
       const seen = Object.hasOwn(shadow.box, 'v') ? shadow.box.v : MISSING;
       if (canon(live) !== canon(seen)) {
-        throw ctx.fail(`nested listener at ${shadow.path.join('.')} diverged ${where}\n  live:   ${canon(live)}\n  shadow: ${canon(seen)}`);
+        throw ctx.fail(`nested listener on the object first at ${shadow.path.join('.')} diverged ${where}\n  live:   ${canon(live)}\n  shadow: ${canon(seen)}`);
       }
     }
   };

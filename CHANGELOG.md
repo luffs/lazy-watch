@@ -4,6 +4,73 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
+## [Unreleased]
+
+Handles follow their objects, as references do in plain JavaScript: a
+nested proxy keeps addressing the same object wherever `splice`,
+`unshift`, `shift`, `sort`, or `reverse` moves it, and so does a listener
+registered on one. Elements themselves move instead of their contents
+being copied from index to index, which makes moves in large arrays 10 to
+250 times faster, and their diffs and undo history a fraction of the size
+(50 moves on 5,000 records kept 64 MB of undo history; now 0.2 MB). A
+handle costs up to a fifth less memory, and writes that move nothing find
+their path without walking the tree, so deep writes are faster too. The
+wire format is unchanged: 6.x and 7.0 replicas read each other's diffs.
+The library grows from about 10 to about 13 kB min+gzip.
+
+### Changed (breaking)
+
+- **Handles follow their objects.** A nested proxy used to address a
+  position: after `list.unshift(x)`, a handle read as `list[1]` edited
+  whatever element then sat at index 1. It now addresses the object it
+  was read as, wherever it moves. Code that re-read elements after
+  structural ops is unaffected; code that relied on a handle staying at
+  its index must re-read it by index. Receivers keep theirs too: a mirror
+  applying ops that take an element out and put the same content back (a
+  move, as a diff records it) puts its own object back
+- **`splice`, `shift` and `pop` return the removed elements' handles**,
+  not plain copies (6.4.0). A removed element's handle is detached — reads
+  work, writes throw — until it is put back: inserting it with `splice`,
+  `unshift`, or `push`, or assigning it where no object stands, puts the
+  object itself back, so the usual move
+  (`list.splice(j, 0, ...list.splice(i, 1))`) keeps the element and every
+  handle on it. Code that wrote to a returned element before putting it
+  back must put it back first, or write to a copy
+  (`LazyWatch.snapshot(handle)`)
+- **Listeners on nested proxies follow their objects too.** They hear
+  their object's own changes wherever it moves, and nothing about a pure
+  move. When the object leaves the tree — deleted, replaced by a leaf or
+  a container of the other kind, truncated or spliced away — they receive
+  `null` once, and a new object later put at the same path is not
+  followed (previously the listener received the new value and kept
+  listening at the path). Register on the new object, or on its parent,
+  to keep hearing a path. An object put back into the tree is delivered
+  whole and followed again
+- **Structural ops are always recorded as `$splice` ops**: also when the
+  array has element listeners, when the instance records inverses (the
+  inverse carries the op undoing each one), and when the batch wrote to
+  the array before. `sort` and `reverse` are recorded as ops that move
+  only the elements out of order, instead of rewriting every relocated
+  index. Writes made before an op name the index their element holds
+  after it; elements pushed before an op go into the op list first. Diffs
+  of pushes, index writes, and truncations alone look as before
+- **Transactions roll back by restoring the objects themselves**: the
+  callback's writes, deletions, and moves are logged and undone in
+  reverse, so handles and listeners on the objects a failed transaction
+  touched never notice it. Inverse recording is no longer switched on for
+  the callback
+- `LazyWatch.composeDiffs` refuses an older diff that changes an array's
+  length followed by a newer one with `$splice` ops on it (the ops were
+  recorded against the length the older diff leaves, which a bare
+  `$length` cannot say was reached by growing or truncating). Apply such
+  pairs one after the other; the undo manager keeps them as separate
+  segments of one step, as it does for other pairs it cannot compose
+
+### Fixed
+
+- An inverse completed from an array with holes left whatever the batch
+  put at a hole's index when it was applied, instead of deleting it
+
 ## [6.4.0] - 2026-09-23
 
 `splice` and `shift` return plain copies of what they removed, so the

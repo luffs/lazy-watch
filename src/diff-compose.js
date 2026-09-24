@@ -65,6 +65,12 @@ export function composeFragments(a, b, applyFragment, path = []) {
           "diff's $splice ops would be applied before them, reordering history");
       }
     }
+    // A bare `$length` is a length change, not a stamp: dropped, a growth
+    // would leave b's ops short of the elements they were recorded
+    // against (a truncation would not matter, but the two look alike)
+    if (!aOps && typeof a.$length === 'number') {
+      fail(path, "the newer diff's $splice ops rely on the length the older diff sets");
+    }
   }
 
   const out = {};

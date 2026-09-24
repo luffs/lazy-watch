@@ -264,18 +264,19 @@ export default function register(runner) {
     LazyWatch.dispose(dst);
   });
 
-  runner.test('index write before an op in one batch should fall back but converge', async () => {
+  runner.test('an index write before an op in one batch should move with its element and converge', async () => {
     const init = () => ({ items: [1, 2, 3] });
     const src = new LazyWatch(init());
     const dst = new LazyWatch(init());
     let diff = null;
     LazyWatch.on(src, d => { diff = d; LazyWatch.patch(dst, d); });
 
-    src.items[1] = 'changed'; // dirty node before the op
+    src.items[1] = 'changed'; // a write before the op
     src.items.unshift(0);
     await wait(10);
 
-    assertTrue(!diff.items.$splice, 'op should fall back to per-index recording');
+    assertEquals(diff.items, { 2: 'changed', $splice: [[0, 0, [0]]], $length: 4 },
+      'the write names the index its element holds after the op');
     assertConverged(src, dst);
     LazyWatch.dispose(src);
     LazyWatch.dispose(dst);
@@ -530,10 +531,10 @@ export default function register(runner) {
     LazyWatch.dispose(src);
   });
 
-  // splice/shift return what they removed, not the slot it was in
-  // A proxy for a removed element addresses its slot, which the shift
-  // fills with the next element: the usual move (splice it out, splice it
-  // back in) duplicated that element and lost the one moved.
+  // splice/shift return what they removed: the elements' own handles,
+  // detached until put back. Putting one back puts the object itself back,
+  // so the usual move (splice it out, splice it back in) keeps the element
+  // and every handle on it.
 
   const moveCases = [
     ['the compact path', () => new LazyWatch({ list: [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }] })],
@@ -545,17 +546,22 @@ export default function register(runner) {
     }]
   ];
   for (const [name, make] of moveCases) {
-    runner.test(`splice should return plain copies of what it removed, so a move keeps the element (${name})`, async () => {
+    runner.test(`splice should return the removed elements' handles, and a move should keep the element (${name})`, async () => {
       const w = make();
       const mirror = { list: [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }] };
       LazyWatch.on(w, diff => LazyWatch.patch(mirror, diff));
+      const held = w.list[1];
       const [moved] = w.list.splice(1, 1);
-      assertEquals(LazyWatch.isProxy(moved), false, 'a copy, not a handle on the slot');
+      assertEquals(moved === held, true, 'the handle of the element removed');
       assertEquals(moved, { id: 'b' });
+      assertThrows(() => { moved.x = 1; }, 'detached until put back');
       w.list.splice(2, 0, moved);
       assertEquals(LazyWatch.snapshot(w.list).map(x => x.id), ['a', 'c', 'b', 'd']);
+      assertEquals(w.list[2] === held, true, 'the same object, back in');
+      held.x = 1;
+      assertEquals(LazyWatch.snapshot(w.list[2]), { id: 'b', x: 1 });
       const first = w.list.shift();
-      assertEquals([LazyWatch.isProxy(first), first.id], [false, 'a']);
+      assertEquals([LazyWatch.isProxy(first), first.id], [true, 'a']);
       assertEquals(w.list.unshift({ id: 'z' }), 4, 'unshift still returns the new length');
       await wait(5);
       assertConverged(w, mirror, 'mirrors follow');

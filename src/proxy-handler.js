@@ -4,30 +4,104 @@ import {Utils} from "./utils.js";
 export const PROXY_TARGET = Symbol('LazyWatch.ProxyTarget');
 export const LAZYWATCH_INSTANCE = Symbol('LazyWatch.Instance');
 
-// Array methods whose per-index trap writes are collapsed into compact
-// `$splice` diff ops. push/pop are already cheap (tail-only) and stay as-is.
+// Array methods that move elements: run on the raw array, so the objects
+// themselves move and their handles with them, and recorded as one
+// `$splice` op each. push/pop only touch the tail and go through the traps.
 const STRUCTURAL_ARRAY_METHODS = new Set(['splice', 'unshift', 'shift']);
 
-// Array methods that rearrange existing elements in place. Run natively
-// through the proxy, their read-all/write-back pattern corrupts object
-// elements: the set trap's slot-merge mutates the raw object at each
-// written slot in place, while that same object may still be the pending
-// source for a later slot — the later write then reads already-overwritten
-// state (sorting [{n:3},{n:1},{n:2}] produced [{n:1},{n:2},{n:1}]).
-// splice's own shifts are safe (its move order never overwrites a slot it
-// has yet to read), but these three permute in both directions.
+// Array methods that rearrange existing elements in place. sort and reverse
+// permute: the elements move as by splice (see #rearrange). copyWithin
+// copies, which state cannot do by reference (an object lives in one
+// place), so it writes copies, index by index.
 const REORDER_ARRAY_METHODS = new Set(['sort', 'reverse', 'copyWithin']);
 
 // Sentinel for "this path no longer resolves in the watched tree"
 const MISSING = Symbol('LazyWatch.Missing');
 
+// The root's path, shared: paths handed out are never changed (see #pathOf)
+const ROOT_PATH = Object.freeze([]);
+
+/** Array.prototype.splice, without the limit on spread arguments */
+function nativeSplice(target, start, deleteCount, items) {
+  if (items.length < 10000) return Array.prototype.splice.call(target, start, deleteCount, ...items);
+  const removed = target.slice(start, start + deleteCount);
+  const tail = target.slice(start + deleteCount);
+  target.length = start;
+  for (const item of items) target.push(item);
+  for (const value of tail) target.push(value);
+  return removed;
+}
+
+/**
+ * JSON with every object's keys sorted: equal content, equal string. A
+ * hole reads as null, as JSON writes it
+ */
+function canonical(value) {
+  if (Array.isArray(value)) {
+    const parts = [];
+    for (let i = 0; i < value.length; i++) parts.push(i in value && value[i] !== undefined ? canonical(value[i]) : 'null');
+    return '[' + parts.join(',') + ']';
+  }
+  if (value !== null && typeof value === 'object') {
+    return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + canonical(value[k])).join(',') + '}';
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * The positions in `values` of a longest strictly increasing run (not
+ * necessarily contiguous), in O(n log n)
+ * @param {number[]} values
+ * @returns {Set<number>}
+ */
+function longestIncreasing(values) {
+  const tails = [];
+  const previous = new Array(values.length);
+  for (let i = 0; i < values.length; i++) {
+    let lo = 0;
+    let hi = tails.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (values[tails[mid]] < values[i]) lo = mid + 1;
+      else hi = mid;
+    }
+    previous[i] = lo > 0 ? tails[lo - 1] : -1;
+    tails[lo] = i;
+  }
+  const out = new Set();
+  for (let i = tails.length ? tails[tails.length - 1] : -1; i !== -1; i = previous[i]) out.add(i);
+  return out;
+}
+
 export class ProxyHandler {
   #original;
-  // Raw target object -> its proxy. Ensures each object in the tree gets
-  // exactly one proxy, so identity checks and cached paths stay stable.
-  #proxies = new WeakMap();
-  // Proxy -> its path from the root, for path-relative listeners
-  #proxyPaths = new WeakMap();
+  // Raw object -> { proxy, parent, key, self }: its one proxy (so identity
+  // checks stay stable; made on first read), and where it was last put —
+  // the container holding it and its key there. An object moves only by
+  // the structural ops here, which update the link; everything else keeps
+  // objects in place or copies them. A path is found by walking links up
+  // to the root, checking at every step that the parent still holds the
+  // object at that key: a handle follows its object wherever a splice or
+  // sort takes it, and one whose object left the tree is detached.
+  //
+  // The link to the parent is a WeakRef (the parent's `self`, shared by its
+  // children), so a handle kept on an object that left the tree keeps only
+  // that object alive, not the containers it was in. Anything in the tree
+  // is reachable from the root, so a link only clears once its parent is
+  // out of the tree. Every record's parent has a record, up to the root.
+  #records = new WeakMap();
+  // Bumped whenever a container may have moved or left the tree (a splice,
+  // a truncation, a container deleted, replaced, or put back, a rollback):
+  // a path found at the current generation still holds (see #pathOf)
+  #generation = 0;
+  // While a diff is applied: objects its `$splice` ops took out, so an op
+  // putting the same content back (a move, sent as out and in) puts the
+  // object itself back and handles on it keep working (see #applySpliceOps)
+  #pool = null;
+  // While a transaction runs: every raw mutation, with what it replaced,
+  // so a rollback undoes them exactly — the same objects back in the same
+  // places, handles and listeners on them untouched (see rollbackLog)
+  #log = null;
   #diffTracker;
   #eventEmitter;
   #patchMode = false;
@@ -53,16 +127,64 @@ export class ProxyHandler {
    */
   createRootProxy(lazyWatchInstance) {
     this.#instance = lazyWatchInstance;
-    const proxy = this.#createProxy(this.#original, [], lazyWatchInstance);
-    this.#proxies.set(this.#original, proxy);
-    this.#proxyPaths.set(proxy, []);
+    const proxy = this.#createProxy(this.#original, lazyWatchInstance);
+    // Children of the root link to it strongly: it never leaves the tree,
+    // and every handle keeps the instance, and so the root, alive anyway
+    const original = this.#original;
+    const self = { deref: () => original };
+    this.#records.set(original, { proxy, parent: null, key: null, self, path: [], generation: -1 });
     return proxy;
   }
 
   /**
-   * Create a proxy for an object at a given path
+   * The proxy for `value`, just read at `parent[key]` (a container with a
+   * record: it was read through its own proxy). Made on first read, with
+   * its link; an object's link moves with it after that (see #relink)
    */
-  #createProxy(obj, path, lazyWatchInstance) {
+  #handleAt(value, parent, key) {
+    let record = this.#records.get(value);
+    if (!record) {
+      record = { proxy: null, parent: this.#refTo(parent), key, self: null, path: null, generation: -1 };
+      this.#records.set(value, record);
+    }
+    if (record.proxy === null) record.proxy = this.#createProxy(value, this.#instance);
+    return record.proxy;
+  }
+
+  /**
+   * The weak link children of `parent` share, or null when `parent` has no
+   * record. Given the parent's path, the records it lacks on the way are
+   * made first (an array a received diff moved an element into, say,
+   * which nothing read through a proxy yet)
+   */
+  #refTo(parent, path = null) {
+    let record = this.#records.get(parent);
+    if (!record && path !== null) {
+      this.#ensureRecords(path);
+      record = this.#records.get(parent);
+    }
+    if (!record) return null;
+    return record.self ??= new WeakRef(parent);
+  }
+
+  /** Records, with their links, for the containers along `path` */
+  #ensureRecords(path) {
+    let node = this.#original;
+    for (const seg of path) {
+      const child = node[seg];
+      if (!Utils.isObjectOrArray(child)) return;
+      if (!this.#records.has(child)) {
+        this.#records.set(child, { proxy: null, parent: this.#refTo(node), key: seg, self: null, path: null, generation: -1 });
+      }
+      node = child;
+    }
+  }
+
+  /**
+   * Create a proxy for an object. Its traps find the object's path when
+   * they need it (#attachedPath): the object may have moved since
+   */
+  #createProxy(obj, lazyWatchInstance) {
     return new Proxy(obj, {
       get: (target, prop, receiver) => {
         // Allow access to the proxy marker
@@ -88,36 +210,27 @@ export class ProxyHandler {
           return value;
         }
 
-        // Intercept structural array methods to record compact $splice ops
+        // Intercept the methods that move elements (see STRUCTURAL_ARRAY_METHODS)
         if (Array.isArray(target) && STRUCTURAL_ARRAY_METHODS.has(prop) &&
           value === Array.prototype[prop]) {
-          return (...args) => this.#structuralArrayOp(target, prop, args, path, receiver);
+          return (...args) => this.#structuralArrayOp(target, prop, args, receiver);
         }
 
-        // Intercept reordering methods: run natively, they corrupt object
-        // elements via slot-merge aliasing (see REORDER_ARRAY_METHODS)
+        // Intercept reordering methods (see REORDER_ARRAY_METHODS)
         if (Array.isArray(target) && REORDER_ARRAY_METHODS.has(prop) &&
           value === Array.prototype[prop]) {
-          return (...args) => this.#reorderArrayOp(target, prop, args, path, receiver);
+          return (...args) => this.#reorderArrayOp(target, prop, args, receiver);
         }
 
         if (Utils.isObjectOrArray(value)) {
-          // Get proxy from cache, or create and cache it
-          let childProxy = this.#proxies.get(value);
-          if (!childProxy) {
-            const childPath = [...path, prop];
-            childProxy = this.#createProxy(value, childPath, lazyWatchInstance);
-            this.#proxies.set(value, childProxy);
-            this.#proxyPaths.set(childProxy, childPath);
-          }
-          return childProxy;
+          return this.#handleAt(value, target, prop);
         }
 
         return value;
       },
 
       set: (target, prop, value, receiver) =>
-        this.#applySet(target, prop, value, receiver, path),
+        this.#applySet(target, prop, value, receiver),
 
       // Route Object.defineProperty through the same tracked write path as
       // assignment. Without this trap, defineProperty mutated the target
@@ -149,7 +262,7 @@ export class ProxyHandler {
         // Flags-only redefinition: every attribute is already true, so
         // there is nothing to change or record
         if (!('value' in descriptor)) return true;
-        return this.#applySet(target, prop, descriptor.value, this.#proxies.get(target), path);
+        return this.#applySet(target, prop, descriptor.value, this.#records.get(target).proxy);
       },
 
       setPrototypeOf: (target, proto) => {
@@ -175,11 +288,11 @@ export class ProxyHandler {
           delete target[prop];
           return true;
         }
-        this.#assertAttached(target, path);
+        const path = this.#attachedPath(target);
 
         if (prop in target) {
           this.#recordDeletion(target, prop, path);
-          delete target[prop];
+          this.#deleteRaw(target, prop);
           this.#scheduleEmit();
         }
         return true;
@@ -224,8 +337,8 @@ export class ProxyHandler {
 
   /**
    * Whether `path` still resolves in the watched tree, and to what — for
-   * the emitter, which delivers the live value to nested listeners whose
-   * array slot was displaced by a structural op.
+   * the emitter, which consults the live tree for the one diff shape that
+   * cannot say whether a listener's object survived.
    * @returns {{ found: boolean, value?: * }}
    */
   valueAt(path) {
@@ -234,19 +347,118 @@ export class ProxyHandler {
   }
 
   /**
-   * A proxy's raw object stays at its slot for its whole life (assigned
-   * values are cloned, containers merge in place), so the object behind a
-   * cached proxy is either still at the proxy's path or detached from the
-   * tree entirely — deleted, replaced by a leaf, truncated away, or
-   * removed by a structural array op. A tracked write through a detached
-   * proxy would mutate an object no replica can see while recording a
-   * diff at a path that no longer holds it, so it fails loudly instead.
+   * The path of a raw object in the tree, or null when it is no longer in
+   * it: its links are walked up to the root, and every parent must still
+   * hold the object at the recorded key. The answer is kept until a
+   * container next moves or leaves the tree, so a run of writes that move
+   * nothing finds it without the walk. Callers must not change the array
    */
-  #assertAttached(target, path) {
-    if (this.#valueAt(path) !== target) {
-      throw new Error(
-        `LazyWatch proxy is detached: the object it wraps is no longer at "${path.join('.')}" in the watched tree (it was deleted, replaced, truncated away, or removed by a structural array op). Re-read it from the root proxy.`
-      );
+  #pathOf(raw) {
+    if (raw === this.#original) return ROOT_PATH;
+    const record = this.#records.get(raw);
+    if (record === undefined) return null;
+    if (record.generation === this.#generation) return record.path;
+    const path = this.#walkUp(raw);
+    record.path = path;
+    record.generation = this.#generation;
+    return path;
+  }
+
+  /** #pathOf without the kept answer */
+  #walkUp(raw) {
+    const path = [];
+    let node = raw;
+    while (node !== this.#original) {
+      const record = this.#records.get(node);
+      if (!record || record.parent === null) return null;
+      const parent = record.parent.deref();
+      const key = record.key;
+      if (parent === undefined || !Object.hasOwn(parent, key) || parent[key] !== node) return null;
+      path.push(key);
+      node = parent;
+    }
+    return path.reverse();
+  }
+
+  /**
+   * Where a raw object (or a proxy's) is in the tree, or null when it is
+   * detached; for the emitter (listeners follow their objects) and the
+   * static API
+   */
+  locate(value) {
+    return this.#pathOf(this.resolveIfProxy(value));
+  }
+
+  /**
+   * Where the object was last seen: its links, unchecked. For messages
+   */
+  #lastKnownPath(raw) {
+    const path = [];
+    let node = raw;
+    for (let depth = 0; node !== this.#original && depth < 1000; depth++) {
+      const record = this.#records.get(node);
+      const parent = record?.parent?.deref();
+      if (parent === undefined) break;
+      path.push(record.key);
+      node = parent;
+    }
+    return path.reverse();
+  }
+
+  /**
+   * The path of the object a tracked write goes to. A handle follows its
+   * object wherever structural array ops move it; one whose object left
+   * the tree — deleted, replaced, truncated away, spliced out and not put
+   * back — would mutate an object no replica can see, so the write fails
+   * loudly instead. (Putting the object back reattaches the handle.)
+   */
+  #attachedPath(raw) {
+    const path = this.#pathOf(raw);
+    if (path === null) throw this.#detachedError(raw);
+    return path;
+  }
+
+  #detachedError(raw) {
+    return new Error(
+      `LazyWatch proxy is detached: its object left the watched tree (last at "${this.#lastKnownPath(raw).join('.')}"). Re-read it from the root proxy, or put it back into the tree.`
+    );
+  }
+
+  /**
+   * Whether an assigned or inserted value is an object of this tree that
+   * has left it: such an object is put back itself rather than copied, so
+   * its handles work again, as a plain object would be moved
+   */
+  #isDetached(raw) {
+    return raw !== this.#original && this.#records.has(raw) && this.#pathOf(raw) === null;
+  }
+
+  /** Point the link of the object now at `parent[key]` there */
+  #relinkAt(parent, key) {
+    const record = this.#records.get(parent[key]);
+    if (!record) return;
+    const ref = this.#refTo(parent);
+    if (ref === null) return;
+    record.parent = ref;
+    record.key = key;
+  }
+
+  /**
+   * Point the links of the elements from `from` on at their new indices
+   * (after an op moved them); objects without a record have no handle yet.
+   * `path` is the array's, for a record it may lack (see #refTo)
+   */
+  #relink(target, from, to = target.length, path = null) {
+    let ref = null;
+    for (let i = from; i < to; i++) {
+      const value = target[i];
+      if (!Utils.isObjectOrArray(value)) continue;
+      const record = this.#records.get(value);
+      if (!record) continue;
+      ref ??= this.#refTo(target, path);
+      if (ref === null) return;
+      record.parent = ref;
+      record.key = String(i);
     }
   }
 
@@ -255,7 +467,7 @@ export class ProxyHandler {
    * value, records the change (or deletion, for undefined) in the diff, and
    * applies it to the target.
    */
-  #applySet(target, prop, value, receiver, path) {
+  #applySet(target, prop, value, receiver) {
     // Symbol-keyed properties are local-only metadata: stored on the
     // target but never recorded, emitted, or synced (JSON cannot carry
     // them anyway). They are also exempt from value validation, since
@@ -265,7 +477,7 @@ export class ProxyHandler {
       return true;
     }
 
-    this.#assertAttached(target, path);
+    const path = this.#attachedPath(target);
 
     // Assigning these would mutate prototypes, not data
     if (Utils.isUnsafeKey(prop)) {
@@ -303,7 +515,7 @@ export class ProxyHandler {
     if (value === undefined && !(Array.isArray(target) && prop === 'length')) {
       if (prop in target) {
         this.#recordDeletion(target, prop, path);
-        delete target[prop];
+        this.#deleteRaw(target, prop);
         this.#scheduleEmit();
       }
       return true;
@@ -327,8 +539,7 @@ export class ProxyHandler {
     // an array fragment: the wire format's markers are reserved names that
     // cannot enter state.) An assigned value is a full value, so the merge
     // runs in wholesale mode: it must delete what the value doesn't carry
-    // even during patch application (structural-op slot writes ride
-    // through this trap).
+    // even during patch application.
     const sameKind = Array.isArray(currentValue) === Array.isArray(value);
     if (currentIsObject && valueIsObject && sameKind) {
       this.overwrite(receiver[prop], value, [...path, prop], true, true);
@@ -342,29 +553,31 @@ export class ProxyHandler {
   /**
    * Intercepted sort/reverse/copyWithin on a watched array.
    *
-   * Run natively through the proxy, these methods read elements and write
-   * them back rearranged; the set trap's slot-merge then mutates the raw
-   * object at each written slot in place, while that same object may still
-   * be the pending source for a later slot — later writes read
-   * already-overwritten state and corrupt elements.
-   *
-   * Instead, the final arrangement is computed natively on a detached copy
-   * of the raw elements, and every relocated element is cloned BEFORE the
-   * first write-back. The clones are then assigned through the proxy, so
-   * recording, inverse capture, and echo semantics all run normally.
-   * Length never changes, so only relocated slots emit; a throwing sort
-   * comparator leaves state untouched (the copy absorbs any partial work).
-   * Note that a sort comparator sees raw elements, not proxies — reads
-   * behave identically, and comparators must not mutate.
+   * The final arrangement is computed natively on a copy of the raw
+   * elements, so a throwing sort comparator leaves state untouched. sort
+   * and reverse then move the elements themselves to it (#rearrange):
+   * handles follow, and the batch records the moves as `$splice` ops.
+   * copyWithin copies elements, which state holds by value only, and an
+   * array with holes has no op that moves a hole: those write the
+   * relocated values index by index, as copies, through the proxy. Note
+   * that a sort comparator sees raw elements, not proxies — reads behave
+   * identically, and comparators must not mutate.
    */
-  #reorderArrayOp(target, method, args, path, receiver) {
-    this.#assertAttached(target, path);
+  #reorderArrayOp(target, method, args, receiver) {
+    const path = this.#attachedPath(target);
     const copy = target.slice();
     Array.prototype[method].apply(copy, args);
 
+    let holes = false;
+    for (let i = 0; i < target.length && !holes; i++) holes = !(i in target);
+    if (method !== 'copyWithin' && !holes) {
+      this.#rearrange(target, path, copy);
+      return receiver;
+    }
+
     const writes = [];
     for (let i = 0; i < copy.length; i++) {
-      if (target[i] !== copy[i]) {
+      if (target[i] !== copy[i] || (i in target) !== (i in copy)) {
         writes.push([i, Utils.isObjectOrArray(copy[i]) ? Utils.deepClone(copy[i]) : copy[i]]);
       }
     }
@@ -373,6 +586,52 @@ export class ProxyHandler {
     }
     // All three methods return the array they were called on
     return receiver;
+  }
+
+  /**
+   * Move the elements of `target` into the order of `next`, a permutation
+   * of them: the longest run already in order stays, the rest are spliced
+   * out and back in at their places, so the objects themselves move (and
+   * are recorded as ops, like any splice). Equal primitives are
+   * interchangeable and matched in order.
+   */
+  #rearrange(target, path, next) {
+    const objects = new Map();
+    const primitives = new Map();
+    for (let i = 0; i < target.length; i++) {
+      const value = target[i];
+      if (Utils.isObjectOrArray(value)) objects.set(value, i);
+      else if (primitives.has(value)) primitives.get(value).push(i);
+      else primitives.set(value, [i]);
+    }
+    const from = next.map(value => Utils.isObjectOrArray(value) ? objects.get(value) : primitives.get(value).shift());
+    const keep = longestIncreasing(from);
+    if (keep.size === next.length) return;
+    const stays = new Set();
+    for (const j of keep) stays.add(from[j]);
+
+    // Out: every element that moves, runs from the end so indices hold
+    let first = target.length;
+    for (let i = target.length - 1; i >= 0; i--) {
+      if (stays.has(i)) continue;
+      let start = i;
+      while (start > 0 && !stays.has(start - 1)) start--;
+      this.#spliceRaw(target, path, start, i - start + 1, [], false);
+      first = start;
+      i = start;
+    }
+    // In: each at its place in the new order, runs from the front; what
+    // precedes a place is already there
+    for (let j = 0; j < next.length; j++) {
+      if (keep.has(j)) continue;
+      let end = j;
+      while (end + 1 < next.length && !keep.has(end + 1)) end++;
+      this.#spliceRaw(target, path, j, 0, next.slice(j, end + 1), false);
+      first = Math.min(first, j);
+      j = end;
+    }
+    // Every element from the first that moved has its final index now
+    this.#relink(target, first, target.length, path);
   }
 
   /**
@@ -509,48 +768,95 @@ export class ProxyHandler {
     this.#nullFillStale(child, container, node, [...path, key]);
   }
 
+  /** Start logging raw mutations (LazyWatch.transaction) */
+  beginLog() {
+    this.#log = [];
+  }
+
+  /** Stop logging */
+  endLog() {
+    this.#log = null;
+  }
+
   /**
-   * Apply an inverse diff to restore pre-batch state, without recording or
-   * emitting anything. Used by LazyWatch.transaction() on failure.
+   * Undo every mutation since beginLog, newest first, without recording
+   * or emitting anything: each write puts back what it replaced, each
+   * splice the elements it removed. The objects themselves return to
+   * their places, so handles and listeners on them never notice.
+   * LazyWatch.transaction() on failure
    */
-  rollback(inverse) {
-    this.#suppress = true;
-    try {
-      this.patch(this.#original, inverse);
-    } finally {
-      this.#suppress = false;
+  rollbackLog() {
+    const log = this.#log;
+    this.#log = null;
+    this.#generation++;
+    for (let i = log.length - 1; i >= 0; i--) {
+      const entry = log[i];
+      if (entry[0] === 'splice') {
+        const [, target, start, removed, inserted, path] = entry;
+        nativeSplice(target, start, inserted, removed);
+        for (let k = 0; k < removed.length; k++) {
+          if (!(k in removed)) delete target[start + k];
+        }
+        this.#relink(target, start, target.length, path);
+      } else if (entry[0] === 'length') {
+        const [, target, length, tail] = entry;
+        const from = Math.min(target.length, length);
+        target.length = length;
+        for (const [i, value] of tail) target[i] = value;
+        this.#relink(target, from);
+      } else {
+        const [, target, key, had, prev] = entry;
+        if (had) {
+          target[key] = prev;
+          this.#relinkAt(target, key);
+        } else {
+          delete target[key];
+        }
+      }
     }
+  }
+
+  /** `target[key] = value`, logged in a transaction */
+  #setRaw(target, key, value) {
+    if (Utils.isObjectOrArray(target[key]) || Utils.isObjectOrArray(value)) this.#generation++;
+    if (this.#log) {
+      // A write past the end of an array grows it too
+      if (Array.isArray(target) && /^\d+$/.test(key) && Number(key) >= target.length) {
+        this.#log.push(['length', target, target.length, []]);
+      }
+      this.#log.push(['set', target, key, Object.hasOwn(target, key), target[key]]);
+    }
+    target[key] = value;
+  }
+
+  /** `delete target[key]`, logged in a transaction */
+  #deleteRaw(target, key) {
+    if (Utils.isObjectOrArray(target[key])) this.#generation++;
+    this.#log?.push(['set', target, key, Object.hasOwn(target, key), target[key]]);
+    delete target[key];
   }
 
   /**
    * Intercepted splice/unshift/shift on a watched array.
    *
-   * Records a single compact `$splice` op instead of per-index writes when
-   * the array's diff node is clean; otherwise falls back to plain
-   * trap-driven recording (correct, just larger). Either way the objects
-   * stay in their slots and their contents move (slot-merge), which is
-   * what keeps cached child-proxy paths valid — raw splicing would move
-   * elements and stale them. The compact path, which records nothing per
-   * slot, does that merge on the raw array directly (#spliceSlots) rather
-   * than through the traps, which cost a validation and a clone per field
-   * of every element shifted.
+   * The elements themselves move, as in a plain array: a handle read
+   * before the op still addresses the same object afterwards, at its new
+   * index (#spliceRaw relinks it). The batch records one `$splice` op,
+   * whatever it wrote to the array before (see DiffTracker.recordSplice),
+   * and its inverse one op that undoes it.
    *
-   * What splice and shift return is a plain copy of what they removed,
-   * taken before anything moved: a proxy there would address the slot,
-   * which by then holds the element that moved in, and splicing it back
-   * in elsewhere (the usual move) would duplicate that one and lose the
-   * removed one.
+   * An inserted value is copied, as any value entering state — except a
+   * handle whose object left the tree (spliced out, say): that object
+   * itself goes back in, so `list.splice(j, 0, ...list.splice(i, 1))`
+   * moves an element and its handles keep working. What splice and shift
+   * return are the removed elements' handles, detached until put back.
    */
-  #structuralArrayOp(target, method, args, path, receiver) {
-    this.#assertAttached(target, path);
-    const native = Array.prototype[method];
+  #structuralArrayOp(target, method, args, receiver) {
+    const path = this.#attachedPath(target);
     const len = target.length;
 
     // Inserted items are full values landing in state, so validate them
-    // before anything mutates. This has to happen ahead of the fallback
-    // branches below: those run the native method straight away, and the
-    // per-index set traps would then reject mid-splice, after the shift
-    // writes had already moved elements.
+    // before anything mutates
     const inserted = method === 'splice' ? args.slice(2)
       : method === 'unshift' ? args
       : [];
@@ -564,190 +870,156 @@ export class ProxyHandler {
     // Normalize the call into one splice op: [start, deleteCount, items]
     let start = 0;
     let deleteCount = 0;
-    let items = [];
-    if (method === 'unshift') {
-      items = args;
-    } else if (method === 'shift') {
+    if (method === 'shift') {
       deleteCount = Math.min(1, len);
-    } else { // splice
-      const rel = args.length ? Math.trunc(args[0]) || 0 : 0;
-      start = rel < 0 ? Math.max(len + rel, 0) : Math.min(rel, len);
-      if (args.length === 1) {
-        deleteCount = len - start;
-      } else if (args.length > 1) {
-        deleteCount = Math.min(Math.max(Math.trunc(args[1]) || 0, 0), len - start);
-      }
-      items = args.slice(2);
+    } else if (method === 'splice') {
+      [start, deleteCount] = this.#spliceRange(len, args);
     }
 
-    // What the call removes, copied before anything moves, as it returns it
-    const removed = [];
-    for (let i = start; i < start + deleteCount; i++) {
-      removed.length = i - start + 1;
-      if (i in target) removed[i - start] = Utils.isObjectOrArray(target[i]) ? Utils.deepClone(target[i]) : target[i];
-    }
-    const returned = result => (method === 'splice' ? removed : method === 'shift' ? removed[0] : result);
-
-    // Inverse tracking disables the compact form entirely: a $splice op
-    // cannot be correctly interleaved with per-key inverse entries
-    // (receivers apply $splice before a node's other keys, breaking
-    // chronological undo ordering), while plain trap-driven recording is
-    // handled exactly by the per-key inverse rules. Correct, just larger.
-    // Listeners registered below this array disable it too: a compact op
-    // cannot say what moved into their slot, while per-index recording
-    // gives each of them the exact path-relative diff.
-    if (this.#diffTracker.inverseEnabled || this.#eventEmitter.hasListenersBelow(path)) {
-      return returned(native.apply(receiver, args));
+    if (deleteCount === 0 && inserted.length === 0) {
+      return method === 'unshift' ? len : method === 'shift' ? undefined : [];
     }
 
-    items = items.map(item => this.resolveIfProxy(item));
-
-    // No mutation: run the method only for its return value
-    if (deleteCount === 0 && items.length === 0) {
-      return returned(native.apply(receiver, args));
-    }
-
-    // Compact recording is only safe when the array's diff node carries no
-    // pending index/nested changes: receivers apply $splice before merging
-    // the node's other keys, so earlier writes must not share a node with
-    // a later op. Consecutive ops append to the same $splice list. A node
-    // that is the diff's real-array copy (the array was assigned wholesale
-    // this batch) is a full value, not a fragment: ops on it fall back to
-    // per-index recording, which keeps the copy itself exact.
-    const node = this.#diffTracker.getDiffObject(path);
-    const clean = !Array.isArray(node) &&
-      Object.keys(node).every(key => key === '$splice' || key === '$length');
-    if (!clean) {
-      return returned(native.apply(receiver, args));
-    }
-
-    // Items were validated above, before any branch could mutate
-    this.#spliceSlots(target, start, deleteCount, items);
-    const result = returned(target.length);
-
-    if (!node.$splice) node.$splice = [];
-    node.$splice.push([
-      start,
-      deleteCount,
-      items.map(item => Utils.isObjectOrArray(item) ? Utils.deepClone(item) : item)
-    ]);
-    // Re-insert the stamp so the fragment serializes as { $splice, $length }
-    delete node.$length;
-    node.$length = target.length;
-    this.#eventEmitter.scheduleEmit();
-    return result;
+    const removed = this.#spliceRaw(target, path, start, deleteCount, this.#placeable(inserted));
+    if (method === 'unshift') return target.length;
+    // A removed object's handle: its link still names the place it left,
+    // which no longer holds it, so it is detached until put back
+    const handles = removed.map((value, i) =>
+      Utils.isObjectOrArray(value) ? this.#handleAt(value, target, String(start + i)) : value);
+    return method === 'shift' ? handles[0] : handles;
   }
 
   /**
-   * The native splice's effect on the raw array, with the set trap's
-   * slot-merge semantics but none of its per-write work (nothing is
-   * recorded: the compact path records the op itself). Elements shift in
-   * the native order, so a slot is always read before it is written;
-   * each shifted value merges into the object already in its new slot
-   * (#writeSlot), a slot past the old length gets a copy, a hole moves as
-   * a hole, and the inserted items land last.
+   * A splice call's start and delete count, clamped as the native method
+   * clamps them
    */
-  #spliceSlots(target, start, deleteCount, items) {
-    const len = target.length;
-    const shift = items.length - deleteCount;
-    const newLength = len + shift;
-    const moveFrom = (to, from) => {
-      if (!(from in target)) delete target[to];
-      else if (to >= len) target[to] = Utils.isObjectOrArray(target[from]) ? Utils.deepClone(target[from]) : target[from];
-      else this.#writeSlot(target, to, target[from]);
-    };
-    if (shift < 0) {
-      for (let i = start + items.length; i < newLength; i++) moveFrom(i, i - shift);
-      target.length = newLength;
-    } else if (shift > 0) {
-      for (let i = newLength - 1; i >= start + items.length; i--) moveFrom(i, i - shift);
+  #spliceRange(len, args) {
+    const rel = args.length ? Math.trunc(args[0]) || 0 : 0;
+    const start = rel < 0 ? Math.max(len + rel, 0) : Math.min(rel, len);
+    let deleteCount = 0;
+    if (args.length === 1) {
+      deleteCount = len - start;
+    } else if (args.length > 1) {
+      deleteCount = Math.min(Math.max(Math.trunc(args[1]) || 0, 0), len - start);
     }
-    for (let k = 0; k < items.length; k++) {
-      const i = start + k;
-      if (i >= len && !(i in target)) target[i] = Utils.isObjectOrArray(items[k]) ? Utils.deepClone(items[k]) : items[k];
-      else this.#writeSlot(target, i, items[k]);
-    }
+    return [start, deleteCount];
   }
 
   /**
-   * What the set trap does to a slot assigned `value` when nothing is
-   * recorded: a container of the same kind as the one there is merged
-   * into it wholesale (#mergeSlot), anything else replaces it, a
-   * container as a copy
+   * What inserted values land in state as: copies, except the object of a
+   * handle that has left the tree, which goes back itself (once per call:
+   * a second occurrence is a copy)
    */
-  #writeSlot(target, key, value) {
-    const current = target[key];
-    if (Utils.isObjectOrArray(current) && Utils.isObjectOrArray(value) && Array.isArray(current) === Array.isArray(value)) {
-      this.#mergeSlot(current, value);
-    } else if (current !== value || !(key in target)) {
-      target[key] = Utils.isObjectOrArray(value) ? Utils.deepClone(value) : value;
-    }
+  #placeable(values) {
+    const used = new Set();
+    return values.map(value => {
+      const raw = this.resolveIfProxy(value);
+      if (!Utils.isObjectOrArray(raw)) return raw;
+      if (!used.has(raw) && this.#isDetached(raw)) {
+        used.add(raw);
+        this.#diffTracker.freezeLosses();
+        return raw;
+      }
+      return Utils.deepClone(raw);
+    });
   }
 
   /**
-   * `overwrite` of a full value into a same-kind container with nothing
-   * recorded: null deletes, same-kind containers merge, anything else is
-   * replaced by a copy without null markers, a hole clears its slot, and
-   * an object's keys the value lacks are deleted
+   * One splice on a raw array: the elements themselves move, and every
+   * handle on one is relinked to its new index. Recorded (unless
+   * suppressed) as one `$splice` op carrying copies of `items`, and in the
+   * inverse as the op undoing it. `items` land in state as given (see
+   * #placeable). Returns the removed elements. `relink` false leaves the
+   * links to the caller, which moves many elements at once (#rearrange)
    */
-  #mergeSlot(target, source) {
-    if (Array.isArray(target) && target.length !== source.length) target.length = source.length;
-    for (const prop in source) {
-      if (Utils.isUnsafeKey(prop)) continue;
-      const value = source[prop];
-      if (value === null || value === undefined) {
-        if (prop in target) delete target[prop];
-      } else if (Utils.isObjectOrArray(target[prop]) && Utils.isObjectOrArray(value) && Array.isArray(target[prop]) === Array.isArray(value)) {
-        this.#mergeSlot(target[prop], value);
-      } else if (target[prop] !== value) {
-        target[prop] = Utils.isObjectOrArray(value) ? Utils.cloneWithoutNulls(value) : value;
-      }
+  #spliceRaw(target, path, start, deleteCount, items, relink = true) {
+    const newLength = target.length - deleteCount + items.length;
+    if (!this.#suppress) {
+      // Before anything moves: the inverse copies what the op removes
+      this.#diffTracker.recordInverseSplice(path, target, start, deleteCount, items.length);
+      this.#diffTracker.recordSplice(path, start, deleteCount,
+        items.map(item => Utils.isObjectOrArray(item) ? Utils.deepClone(item) : item), newLength, target);
     }
-    if (Array.isArray(target)) {
-      for (let i = 0; i < source.length; i++) if (!(i in source) && i in target) delete target[i];
-    } else {
-      for (const prop in target) {
-        if (Object.hasOwn(target, prop) && (source[prop] === null || source[prop] === undefined)) delete target[prop];
-      }
-    }
+    this.#generation++;
+    const removed = nativeSplice(target, start, deleteCount, items);
+    this.#log?.push(['splice', target, start, removed, items.length, path]);
+    // Shifted elements took new indices; with no shift only the inserted
+    // ones are new at theirs
+    if (relink) this.#relink(target, start, deleteCount === items.length ? start + items.length : target.length, path);
+    this.#scheduleEmit();
+    return removed;
   }
 
   /**
-   * Apply received $splice ops to a target array. Ops run through the
-   * array's own proxy, so the mutation is recorded (compactly, via the
-   * interception above) and re-emitted for listeners downstream of this
-   * instance.
+   * Apply received $splice ops to a target array, as local splices: the
+   * elements move and the ops are recorded, so relaying mirrors re-emit
+   * them. An op's items are data, so they are copied; but an item with the
+   * content of an object an earlier op of the same diff took out puts that
+   * object back instead — a move arrives as an op out and an op in, and
+   * handles on the moved object keep working (see #pool).
    */
   #applySpliceOps(rawTarget, ops, path) {
-    const proxy = this.#proxyFor(rawTarget, path);
     for (const op of ops) {
-      proxy.splice(op[0], op[1], ...(op[2] || []));
+      if (!Array.isArray(op)) continue;
+      const [start, deleteCount] = this.#spliceRange(rawTarget.length, [op[0], op[1]]);
+      const items = (Array.isArray(op[2]) ? op[2] : []).map(item => this.#fromPool(item));
+      if (deleteCount === 0 && items.length === 0) continue;
+      const removed = this.#spliceRaw(rawTarget, path, start, deleteCount, items);
+      if (this.#pool) {
+        for (const value of removed) {
+          if (Utils.isObjectOrArray(value)) this.#pool.raws.push(value);
+        }
+      }
     }
   }
 
   /**
-   * Get or create the proxy for a raw object already inside the watched tree
+   * An op item as it lands in state: an object the diff took out with the
+   * same content (matched by canonical JSON, each object at most once), or
+   * a copy
    */
-  #proxyFor(value, path) {
-    let proxy = this.#proxies.get(value);
-    if (!proxy) {
-      proxy = this.#createProxy(value, path, this.#instance);
-      this.#proxies.set(value, proxy);
-      this.#proxyPaths.set(proxy, path);
+  #fromPool(item) {
+    item = this.resolveIfProxy(item);
+    if (!Utils.isObjectOrArray(item)) return item;
+    const pool = this.#pool;
+    if (pool) {
+      for (const raw of pool.raws.splice(0)) {
+        const key = canonical(raw);
+        if (pool.byKey.has(key)) pool.byKey.get(key).push(raw);
+        else pool.byKey.set(key, [raw]);
+      }
+      if (pool.byKey.size > 0) {
+        const key = canonical(item);
+        const matches = pool.byKey.get(key);
+        while (matches && matches.length > 0) {
+          const raw = matches.shift();
+          if (matches.length === 0) pool.byKey.delete(key);
+          if (this.#isDetached(raw)) {
+            this.#diffTracker.freezeLosses();
+            return raw;
+          }
+        }
+      }
     }
-    return proxy;
+    return Utils.deepClone(item);
   }
+
 
   /**
    * When an array is truncated, drop pending diff entries for indices
    * beyond the new length — they would be trimmed by the receiver anyway
    */
   #handleArrayLengthChange(target, newLength, path) {
-    if (newLength !== target.length) {
+    if (newLength < target.length) {
       // Truncation destroys elements; capture them (holes excluded) so the
       // inverse can restore them, and record container losses so a
       // same-batch recreation at those indices null-fills its diff.
-      // Growth records nothing here.
+      // Growth records nothing here. After the batch's $splice ops, the
+      // inverse also needs the tail back before it undoes them (see
+      // DiffTracker.recordInverseTruncation)
+      if (this.#inverseActive()) {
+        this.#diffTracker.recordInverseTruncation(path, target, newLength);
+      }
       for (let i = newLength; i < target.length; i++) {
         if (i in target) {
           if (this.#inverseActive()) {
@@ -765,6 +1037,17 @@ export class ProxyHandler {
     }
   }
 
+  /** `target.length = value`, logged in a transaction */
+  #setLength(target, value) {
+    if (value < target.length) this.#generation++;
+    if (this.#log && value !== target.length) {
+      const tail = [];
+      for (let i = value; i < target.length; i++) if (i in target) tail.push([i, target[i]]);
+      this.#log.push(['length', target, target.length, tail]);
+    }
+    target.length = value;
+  }
+
   /**
    * Record a change in the diff
    */
@@ -776,7 +1059,10 @@ export class ProxyHandler {
     const isArrayLength = Array.isArray(target) && prop === 'length';
     const isArrayIndex = Array.isArray(target) && !isArrayLength && /^\d+$/.test(String(prop));
 
-    // Only clone if it's an object/array
+    // Only clone if it's an object/array. The object of a handle that left
+    // the tree is put back itself, not copied (as a plain object would be
+    // moved), so its handles work again; the diff still gets its own copy
+    const reattach = Utils.isObjectOrArray(value) && !this.#suppress && this.#isDetached(value);
     const clonedValue = Utils.isObjectOrArray(value) ? Utils.deepClone(value) : value;
 
     // Capture pre-change values before the writes below (inverse diffs are
@@ -787,11 +1073,14 @@ export class ProxyHandler {
       if (isArrayIndex) {
         this.#diffTracker.recordInverse(path, '$length', target.length);
       }
+      // A write past the end grows the array (see recordInverseGrowth)
+      const grownTo = isArrayLength ? value : isArrayIndex ? Number(prop) + 1 : 0;
+      this.#diffTracker.recordInverseGrowth(path, target, grownTo);
     }
 
     if (isArrayLength) {
       this.#setDiffLength(diff, value);
-      target.length = value;
+      this.#setLength(target, value);
       this.#scheduleEmit();
       return;
     }
@@ -803,7 +1092,13 @@ export class ProxyHandler {
 
     // The diff gets its own copy (see #staleFilledDiffValue)
     diff[prop] = this.#staleFilledDiffValue(clonedValue, path, prop);
-    target[prop] = clonedValue;
+    if (reattach) {
+      this.#diffTracker.freezeLosses();
+      this.#setRaw(target, prop, value);
+      this.#relinkAt(target, prop);
+    } else {
+      this.#setRaw(target, prop, clonedValue);
+    }
 
     // Array fragments always carry `$length`, so receivers can tell them
     // apart from plain objects even when the field doesn't exist on their
@@ -870,17 +1165,25 @@ export class ProxyHandler {
     // index-keyed array fragments are the format, not corrupt data.
     if (!internal) {
       Utils.assertSupportedDiff(this.resolveIfProxy(source));
+      // The subtree's path now; an external call entering through a
+      // detached nested proxy would record its diff where the object no
+      // longer is
+      path = this.#attachedPath(this.resolveIfProxy(target));
+      if (this.#pool === null) {
+        // Objects this diff's ops take out, for its ops putting them back
+        this.#pool = { raws: [], byKey: new Map() };
+        try {
+          this.overwrite(target, source, path, true, wholesale);
+        } finally {
+          this.#pool = null;
+        }
+        return;
+      }
     }
 
     // Get the target object (resolve proxy if needed)
     const rawTarget = this.resolveIfProxy(target);
     const rawSource = this.resolveIfProxy(source);
-
-    // An external call entering through a detached nested proxy would
-    // record its diff at a path that no longer holds the object
-    if (!internal) {
-      this.#assertAttached(rawTarget, path);
-    }
     // Inside a real-array source every entry is a full value, never a
     // fragment; the whole subtree below it applies with wholesale semantics
     wholesale = wholesale || Array.isArray(rawSource);
@@ -907,12 +1210,15 @@ export class ProxyHandler {
     // recording for truncated elements, and stale diff indices beyond the
     // new length trimmed
     if (Array.isArray(rawTarget) && Array.isArray(rawSource) && rawTarget.length !== rawSource.length) {
+      // The node first: it records the length the batch found
+      const node = getDiff();
       this.#handleArrayLengthChange(rawTarget, rawSource.length, path);
       if (this.#inverseActive()) {
         this.#diffTracker.recordInverse(path, '$length', rawTarget.length);
+        this.#diffTracker.recordInverseGrowth(path, rawTarget, rawSource.length);
       }
-      rawTarget.length = rawSource.length;
-      this.#setDiffLength(getDiff(), rawSource.length);
+      this.#setLength(rawTarget, rawSource.length);
+      this.#setDiffLength(node, rawSource.length);
       hasChanges = true;
     }
 
@@ -928,7 +1234,7 @@ export class ProxyHandler {
         if (prop in rawTarget) {
           getDiff();
           this.#recordDeletion(rawTarget, prop, path);
-          delete rawTarget[prop];
+          this.#deleteRaw(rawTarget, prop);
           hasChanges = true;
         }
       } else if (Utils.isObjectOrArray(rawTarget[prop]) && Utils.isObjectOrArray(rawSource[prop]) &&
@@ -961,13 +1267,14 @@ export class ProxyHandler {
             path, prop, prop in rawTarget ? prevValue : undefined, clonedValue);
           if (Array.isArray(rawTarget) && /^\d+$/.test(String(prop))) {
             this.#diffTracker.recordInverse(path, '$length', rawTarget.length);
+            this.#diffTracker.recordInverseGrowth(path, rawTarget, Number(prop) + 1);
           }
         }
         this.#recordLoss(path, prop, prevValue);
         // The diff copy null-fills stale keys receivers still hold (from a
         // container destroyed earlier this batch, or replaced right here)
         getDiff()[prop] = this.#staleFilledDiffValue(clonedValue, path, prop, prevValue);
-        rawTarget[prop] = clonedValue;
+        this.#setRaw(rawTarget, prop, clonedValue);
         // Keep array fragments self-describing (see #recordChange).
         if (Array.isArray(rawTarget) && /^\d+$/.test(String(prop))) {
           this.#setDiffLength(getDiff(), rawTarget.length);
@@ -985,12 +1292,14 @@ export class ProxyHandler {
       // Same bookkeeping as a `length` assignment through the trap:
       // truncated elements are captured for the inverse and recorded as
       // container losses, and stale diff indices are trimmed
+      const node = getDiff();
       this.#handleArrayLengthChange(rawTarget, rawSource.$length, path);
       if (this.#inverseActive()) {
         this.#diffTracker.recordInverse(path, '$length', rawTarget.length);
+        this.#diffTracker.recordInverseGrowth(path, rawTarget, rawSource.$length);
       }
-      rawTarget.length = rawSource.$length;
-      this.#setDiffLength(getDiff(), rawSource.$length);
+      this.#setLength(rawTarget, rawSource.$length);
+      this.#setDiffLength(node, rawSource.$length);
       hasChanges = true;
     }
 
@@ -1002,7 +1311,7 @@ export class ProxyHandler {
         if (!(i in rawSource) && i in rawTarget) {
           getDiff();
           this.#recordDeletion(rawTarget, String(i), path);
-          delete rawTarget[i];
+          this.#deleteRaw(rawTarget, String(i));
           hasChanges = true;
         }
       }
@@ -1021,7 +1330,7 @@ export class ProxyHandler {
           }
           this.#recordLoss(path, prop, rawTarget[prop]);
           getDiff()[prop] = null;
-          delete rawTarget[prop];
+          this.#deleteRaw(rawTarget, prop);
           hasChanges = true;
         }
       }
@@ -1033,14 +1342,13 @@ export class ProxyHandler {
   }
 
   /**
-   * Patch (merge without deleting missing properties)
-   * @param {Array} path - Base path for external calls entering at a
-   *   nested proxy, so the diff is recorded where the subtree lives
+   * Patch (merge without deleting missing properties); the diff is
+   * recorded where the target (a nested proxy, say) is now
    */
-  patch(target, source, path = []) {
+  patch(target, source) {
     this.#patchMode = true;
     try {
-      this.overwrite(target, source, path);
+      this.overwrite(target, source);
     } finally {
       this.#patchMode = false;
     }
@@ -1064,17 +1372,10 @@ export class ProxyHandler {
   }
 
   /**
-   * Get the path for a given proxy
-   */
-  getProxyPath(proxy) {
-    return this.#proxyPaths.get(proxy) || [];
-  }
-
-  /**
    * Clean up resources
    */
   dispose() {
-    this.#proxies = new WeakMap();
-    this.#proxyPaths = new WeakMap();
+    this.#records = new WeakMap();
+    this.#pool = null;
   }
 }

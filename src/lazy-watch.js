@@ -53,19 +53,21 @@ export class LazyWatch {
    * @param {boolean} [options.inverse=false] - Also record an inverse diff per
    *   batch; listeners receive it as a second argument. Applying the inverse
    *   with LazyWatch.patch restores the pre-batch state (undo). Costs extra
-   *   clones on the write path and disables compact $splice recording
-   *   (structural array ops fall back to per-index diffs — still correct)
+   *   clones on the write path
    * @returns {Object} A proxy that tracks changes
    * @throws {TypeError} If original is not an object or array
    */
   constructor(original, options = {}) {
     this.#diffTracker = new DiffTracker(original);
     this.#diffTracker.inverseEnabled = !!options.inverse;
+    this.#diffTracker.applyFragment = (target, fragment) => LazyWatch.#patchObjectInto(target, fragment);
     this.#eventEmitter = new EventEmitter(this.#diffTracker, options);
     this.#proxyHandler = new ProxyHandler(original, this.#diffTracker, this.#eventEmitter);
     // The emitter consults the live tree to tell an object merge from an
-    // object replacing an array under a nested listener (see EventEmitter)
+    // object replacing an array under a nested listener, and finds where
+    // each listener's object is (see EventEmitter)
     this.#eventEmitter.setStateResolver(path => this.#proxyHandler.valueAt(path));
+    this.#eventEmitter.setLocator(object => this.#proxyHandler.locate(object));
     this.#proxy = this.#proxyHandler.createRootProxy(this);
 
     // Store the instance reference so we can access it from the proxy
@@ -107,9 +109,12 @@ export class LazyWatch {
   /**
    * Add a change listener
    *
-   * Listeners on nested proxies receive path-relative diffs; they receive
-   * `null` when their subtree (or an ancestor) is deleted, and the new leaf
-   * value when the subtree is replaced wholesale.
+   * A listener on a nested proxy listens to that object, wherever it is:
+   * it receives the object's own diffs, and follows it when splice, sort,
+   * or reverse move it. It receives `null` when the object leaves the
+   * tree (deleted, replaced, truncated or spliced away) and the object's
+   * whole value if it is put back; a new object later placed where it was
+   * is not it.
    * @param {Object} watched - The LazyWatch proxy
    * @param {Function} listener - Callback function that receives changes
    * @param {Object} [options] - Listener options
@@ -125,8 +130,7 @@ export class LazyWatch {
   static on(watched, listener, options) {
     const instance = LazyWatch.#getInstance(watched);
     instance.#checkDisposed();
-    const path = instance.#proxyHandler.getProxyPath(watched);
-    return instance.#eventEmitter.on(listener, path, options);
+    return instance.#eventEmitter.on(listener, LazyWatch.resolveIfProxy(watched), options);
   }
 
   /**
@@ -156,8 +160,7 @@ export class LazyWatch {
   static off(watched, listener) {
     const instance = LazyWatch.#getInstance(watched);
     instance.#checkDisposed();
-    const path = instance.#proxyHandler.getProxyPath(watched);
-    instance.#eventEmitter.off(listener, path);
+    instance.#eventEmitter.off(listener, LazyWatch.resolveIfProxy(watched));
   }
 
   /**
@@ -188,8 +191,7 @@ export class LazyWatch {
     const instance = LazyWatch.#tryGetInstance(target);
     if (instance) {
       instance.#checkDisposed();
-      LazyWatch.#applyTracked(instance, () => instance.#proxyHandler.overwrite(
-        target, source, instance.#proxyHandler.getProxyPath(target)), meta);
+      LazyWatch.#applyTracked(instance, () => instance.#proxyHandler.overwrite(target, source), meta);
       return;
     }
     LazyWatch.#assertPlainTarget(target, 'overwrite');
@@ -224,8 +226,7 @@ export class LazyWatch {
     const instance = LazyWatch.#tryGetInstance(target);
     if (instance) {
       instance.#checkDisposed();
-      LazyWatch.#applyTracked(instance, () => instance.#proxyHandler.patch(
-        target, source, instance.#proxyHandler.getProxyPath(target)), meta);
+      LazyWatch.#applyTracked(instance, () => instance.#proxyHandler.patch(target, source), meta);
       return;
     }
     LazyWatch.#assertPlainTarget(target, 'patch');
@@ -580,8 +581,8 @@ export class LazyWatch {
    *
    * Pending changes from before the transaction are flushed (emitted
    * synchronously) first, so the rollback covers exactly the callback's own
-   * changes. Works whether or not the instance was created with
-   * `{ inverse: true }` — inverse recording is enabled just for the duration.
+   * changes. A rollback puts back the very objects the callback replaced,
+   * moved, or removed, so handles and listeners on them never notice.
    * The callback must be synchronous (one that returns a promise or other
    * thenable has its changes rolled back and a TypeError thrown);
    * transactions cannot be nested.
@@ -609,13 +610,16 @@ export class LazyWatch {
     instance.#eventEmitter.forceEmit();
 
     const tracker = instance.#diffTracker;
-    const wasEnabled = tracker.inverseEnabled;
-    tracker.inverseEnabled = true;
+    const handler = instance.#proxyHandler;
     instance.#inTransaction = true;
+    // Every raw mutation is logged, so a rollback puts back the very
+    // objects the callback replaced or moved (handles on them never notice)
+    handler.beginLog();
     const rollback = () => {
-      const inverse = tracker.consumeInverse();
-      tracker.consumeDiff(); // discard the forward diff; nothing may emit
-      instance.#proxyHandler.rollback(inverse);
+      // Discard what the callback recorded; nothing may emit
+      tracker.consumeDiff();
+      tracker.consumeInverse();
+      handler.rollbackLog();
     };
     try {
       let result;
@@ -640,12 +644,7 @@ export class LazyWatch {
       return result;
     } finally {
       instance.#inTransaction = false;
-      tracker.inverseEnabled = wasEnabled;
-      if (!wasEnabled) {
-        // The instance doesn't track inverses; drop the one recorded for
-        // the callback (after a rollback this is already empty)
-        tracker.consumeInverse();
-      }
+      handler.endLog();
     }
   }
 
@@ -659,8 +658,8 @@ export class LazyWatch {
    *
    * Works on any instance: inverse recording is enabled for the manager's
    * lifetime and restored on `manager.dispose()`. While enabled it has the
-   * usual costs — extra clones on the write path, compact $splice recording
-   * disabled, and listeners receive inverse diffs as a second argument.
+   * usual costs — extra clones on the write path, and listeners receive
+   * inverse diffs as a second argument.
    * Pending changes are flushed when the manager attaches, so history
    * starts at a clean batch boundary. Changes made inside
    * `LazyWatch.silent` bypass emission and are not recorded — but prefer
@@ -703,7 +702,7 @@ export class LazyWatch {
     if (LazyWatch.#undoManagers.has(instance)) {
       throw new Error('This LazyWatch instance already has an undo manager (dispose it first)');
     }
-    if (instance.#proxyHandler.getProxyPath(watched).length > 0) {
+    if (instance.#proxyHandler.locate(watched)?.length !== 0) {
       throw new Error('LazyWatch.createUndoManager requires the root proxy, not a nested one');
     }
 

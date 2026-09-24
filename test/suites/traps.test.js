@@ -139,25 +139,26 @@ export default function register(runner) {
     LazyWatch.dispose(mirror);
   });
 
-  // --- Detached proxies ---
-  // A nested proxy addresses a slot; the raw object behind it stays at that
-  // slot for life (assigned values are cloned, containers merge in place).
-  // Once the slot is destroyed the object is unreachable from the tree, and
-  // a write through the stale handle used to mutate it anyway while
-  // recording a diff at the dead path: the sender's state stayed unchanged
-  // while every mirror grew a phantom entry.
-  runner.test('a write through a handle detached by shift() should throw and keep mirrors converged', async () => {
+  // --- Handles and detached proxies ---
+  // A nested proxy is a handle on its object, which it follows wherever
+  // structural array ops move it. Once the object leaves the tree it is
+  // unreachable, and a write through the stale handle used to mutate it
+  // anyway while recording a diff at a dead path: the sender's state stayed
+  // unchanged while every mirror grew a phantom entry. It throws instead.
+  runner.test('a handle should follow its object through shift(), and one whose object shift() removed should throw', async () => {
     const src = new LazyWatch({ todos: [{ id: 1 }, { id: 2 }] });
     const mirror = new LazyWatch({ todos: [{ id: 1 }, { id: 2 }] });
     LazyWatch.on(src, d => LazyWatch.patch(mirror, JSON.parse(JSON.stringify(d))));
 
+    const first = src.todos[0];
     const held = src.todos[1];
     src.todos.shift();
     await wait(5);
 
-    assertThrows(() => { held.done = true; });
+    held.done = true; // id 2, now at index 0
+    assertThrows(() => { first.done = true; });
     await wait(5);
-    assertEquals(LazyWatch.snapshot(src), { todos: [{ id: 2 }] }, 'the detached write must not land');
+    assertEquals(LazyWatch.snapshot(src), { todos: [{ id: 2, done: true }] }, 'the detached write must not land');
     assertConverged(src, mirror, 'no phantom element may reach the mirror');
     LazyWatch.dispose(src);
     LazyWatch.dispose(mirror);
@@ -243,19 +244,22 @@ export default function register(runner) {
     LazyWatch.dispose(src);
   });
 
-  runner.test('a handle displaced by unshift() should keep addressing its slot (documented design)', async () => {
+  runner.test('a handle should follow its object through unshift(), sort() and reverse()', async () => {
     const src = new LazyWatch({ todos: [{ id: 1 }, { id: 2 }] });
     const mirror = new LazyWatch({ todos: [{ id: 1 }, { id: 2 }] });
     LazyWatch.on(src, d => LazyWatch.patch(mirror, JSON.parse(JSON.stringify(d))));
 
-    const slot1 = src.todos[1]; // currently id 2
+    const held = src.todos[1]; // id 2
     src.todos.unshift({ id: 0 });
     await wait(5);
-    slot1.done = true; // slot 1 now holds id 1
+    held.done = true; // still id 2, now at index 2
+    src.todos.reverse();
+    src.todos.sort((x, y) => x.id - y.id);
+    held.seen = 1;
     await wait(5);
 
     assertEquals(LazyWatch.snapshot(src),
-      { todos: [{ id: 0 }, { id: 1, done: true }, { id: 2 }] });
+      { todos: [{ id: 0 }, { id: 1 }, { id: 2, done: true, seen: 1 }] });
     assertConverged(src, mirror);
     LazyWatch.dispose(src);
     LazyWatch.dispose(mirror);

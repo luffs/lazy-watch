@@ -65,9 +65,9 @@ export default function register(runner) {
 
     await wait(50);
 
-    // The truncation cleanup drops the redundant `2: null` entry — the
-    // receiver's length assignment trims that index anyway
-    assertEquals(changesCaught, { items: { 0: 10, 1: 3, $length: 2 } });
+    // The splice is one op; the write before it rides along at the index
+    // its element holds after it (receivers apply ops before index keys)
+    assertEquals(changesCaught, { items: { 0: 10, $splice: [[1, 1, []]], $length: 2 } });
     LazyWatch.dispose(watched);
   });
 

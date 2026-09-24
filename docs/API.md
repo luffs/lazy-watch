@@ -27,7 +27,7 @@ mirroring, undo/redo, form validation), see [EXAMPLES.md](../EXAMPLES.md).
 - [Composing Diffs](#composing-diffs)
 - [Identifying and Unwrapping Proxies](#identifying-and-unwrapping-proxies)
 - [Disposing](#disposing)
-- [Detached Proxies](#detached-proxies)
+- [Handles and Detached Proxies](#handles-and-detached-proxies)
 - [Array Diffs and Shape Drift](#array-diffs-and-shape-drift)
 - [Supported Values](#supported-values)
 
@@ -204,52 +204,44 @@ app.user.name = 'Bob';      // Only user listener fires
 app.settings.lang = 'fr';   // Only settings listener fires
 ```
 
-**Subtree deletion and replacement:** when the subtree a nested listener is
-registered on is deleted — or replaced wholesale by a leaf value (string,
-number, boolean) — the listener is called with `null` for a
-deletion (matching the diff convention where `null` means delete) or with the
-new leaf value for a replacement. This also applies when an *ancestor* of the
-subtree is deleted or replaced by a leaf: the listener receives `null`. A
-subtree replaced by a container of the other kind — an object where an
-array was, or the reverse — is delivered as the full new value, an empty
-`[]` or `{}` included, and listeners below the old container receive
-`null`.
+**Listeners follow their objects.** A listener registered on a nested
+proxy listens to that object, not to a path: it receives the object's own
+changes wherever the object is. When `splice`, `unshift`, `shift`, `sort`,
+or `reverse` moves the object to another index, the listener follows it and
+hears nothing about the move itself — the object did not change.
+
+When the object leaves the tree — deleted, replaced (by a leaf, or by a
+container of the other kind), truncated away, removed by `splice` or
+`shift`, or gone with an ancestor — the listener is called once with
+`null`, matching the diff convention where `null` means delete. A new
+object later put at the same path is another object, and the listener does
+not follow it: register on the new one (or on the parent). If the same
+object is put back into the tree (a handle's object reinserted, see
+[Handles](#handles-and-detached-proxies)), the listener is called with its
+whole value and follows it again.
 
 ```js
-const app = new LazyWatch({ user: { name: 'Alice' } });
+const app = new LazyWatch({ user: { name: 'Alice' }, todos: [{ id: 1 }, { id: 2 }] });
 
 LazyWatch.on(app.user, changes => {
   // { name: 'Bob' }  — normal path-relative diff
-  // null             — after `delete app.user`
-  // 'offline'        — after `app.user = 'offline'`
+  // null             — after `delete app.user`, or `app.user = 'offline'`
+});
+
+LazyWatch.on(app.todos[1], changes => {
+  // nothing           — after `app.todos.unshift({ id: 0 })`: id 2 only moved
+  // { done: true }    — after `app.todos[2].done = true`: id 2, wherever it is
+  // null              — after `app.todos.splice(2, 1)`: id 2 left the tree
 });
 ```
 
-Note that listeners are bound to a *path*, not an object identity: if a new
-object is later assigned at the same path, the listener resumes receiving its
-diffs.
-
-**Array slots.** Structural array ops (`splice`, `unshift`, `shift`) and
-truncation change what an index holds without naming it in the diff. While
-a listener is registered on an element — or anything below it — structural
-ops on that array are recorded per index instead of as a compact `$splice`
-op, so the listener receives the exact path-relative diff for its slot,
-`null` markers included for keys the element that moved in doesn't carry.
-A slot truncated away, or destroyed by the array being replaced with a
-plain object, delivers `null`; a slot reported gone is not re-notified by
-later growth below it, and the listener resumes when something lands at
-its path again. The trade-off: the wire carries per-index writes for an
-array that has element listeners (the shape `{ inverse: true }` produces
-anyway) — listen on the array itself to keep compact ops.
-
-```js
-const app = new LazyWatch({ todos: [{ id: 1, done: true }, { id: 2 }] });
-
-LazyWatch.on(app.todos[0], changes => {
-  // { id: 0, done: null } — after `app.todos.unshift({ id: 0 })`: the element now at index 0
-  // null                  — after `app.todos.length = 0`: the slot is gone
-});
-```
+One case delivers a whole value instead of a diff: an element taken out of
+an array and put back within the same batch (a move by `splice`, `sort`, or
+`reverse`) that the same batch also changed. The diff carries the element
+whole in a `$splice` op's items, so its listener gets the element's value,
+with `null` for every key the batch deleted from it — merging that into
+what the listener holds gives the exact new value. A pure move still tells
+the listener nothing.
 
 Subscribe from a consistent state: a listener added in the middle of a
 batch receives that whole batch, including changes already visible on the
@@ -257,8 +249,6 @@ proxy when it subscribed (and a compact `$splice` op is not idempotent).
 Take a listener's initial snapshot right after `LazyWatch.flush`, or
 before making changes.
 
-(Handles are slot-bound in the same way: see
-[Detached Proxies](#detached-proxies).)
 
 ### Changes Made Inside a Listener
 
@@ -527,9 +517,10 @@ the built-in [undo manager](#undo-manager) packages the stack, the guard,
 and redo support.
 
 **Trade-offs:** recording previous values costs extra clones on the write
-path, and compact `$splice` recording is disabled — structural array ops
-(`splice`/`unshift`/`shift`) fall back to per-index diffs, which are still
-correct, just larger.
+path. A structural array op is recorded as a `$splice` op both ways: the
+inverse carries the op that undoes it (applied before the inverse's index
+keys, which name positions as they were before the batch), so undoing a
+move moves the elements back rather than rewriting every index.
 
 ## Transactions
 
@@ -555,8 +546,10 @@ try {
 }
 ```
 
-Transactions work on any instance — `{ inverse: true }` is not required
-(inverse recording is enabled just for the callback's duration). Pending
+Transactions work on any instance — `{ inverse: true }` is not required.
+A rollback puts back the very objects the callback replaced, moved, or
+removed, in their places, so handles and listeners on them never notice
+the transaction happened. Pending
 changes from before the transaction are flushed first, so the rollback covers
 exactly the callback's own changes. The callback must be synchronous, and
 transactions cannot be nested. An `async` callback (or one returning any
@@ -981,54 +974,61 @@ Dispose instances you no longer need when their listeners capture other
 long-lived objects; the internal caches themselves are weak and don't
 block garbage collection.
 
-## Detached Proxies
+## Handles and Detached Proxies
 
-A nested proxy addresses a *slot* in the watched tree, not an object. The
-raw object behind it stays at that slot for its whole life — assigned
-values are cloned, containers merge in place — so a handle such as
-`const todo = app.todos[1]` keeps editing index 1 no matter which element
-lands there:
+A nested proxy is a handle on an object, as a reference is in plain
+JavaScript: `const todo = app.todos[1]` keeps addressing that todo
+wherever structural array ops move it.
 
 ```js
 const app = new LazyWatch({ todos: [{ id: 1 }, { id: 2 }] });
 
-const todo = app.todos[1];    // addresses slot 1 (currently id 2)
-app.todos.unshift({ id: 0 }); // slot 1 now holds id 1
-todo.done = true;             // marks id 1 — re-find elements after structural ops
+const todo = app.todos[1];     // id 2
+app.todos.unshift({ id: 0 });  // id 2 moves to index 2
+app.todos.reverse();           // ...and to index 0
+todo.done = true;              // marks id 2, wherever it is
 ```
 
-What `splice` and `shift` return is different: a plain copy of what they
-removed, not a handle. A handle there would address the slot, which the
-shift has already filled with the next element, so the usual move would
-duplicate that element and lose the one moved. With a copy it works as
-it does on a plain array:
+`splice`, `unshift`, `shift`, `sort`, and `reverse` move the element objects
+themselves; everything else keeps an object where it is or copies a value
+in (an assigned object is cloned, a container assigned over one of the
+same kind merges into it). `copyWithin` copies, and an array with holes is
+rearranged index by index, so handles there stay with their index.
+
+What `splice`, `shift`, and `pop` return are the removed elements' own
+handles. Putting one back — with `splice`, `unshift`, `push`, or an
+assignment where no object stands — puts that same object back rather than
+a copy, so the usual move keeps the element and every handle on it:
 
 ```js
-const [moved] = app.todos.splice(from, 1);   // a plain copy of the element
-app.todos.splice(to, 0, moved);              // lands where it should
+const [moved] = app.todos.splice(from, 1);   // the element's handle
+app.todos.splice(to, 0, moved);              // the same object, at its new place
 ```
 
-When the slot itself is destroyed — the property deleted, replaced by a
-leaf value, truncated away, or removed by `splice`/`shift` — the handle
-becomes **detached**: its object is no longer anywhere in the tree. Reads
-still return the object's stale contents, but any tracked write through
-it — assignment, `delete`, array methods, `LazyWatch.patch`/`overwrite`
-entering at it — throws an `Error` naming the path:
+While an object is out of the tree — deleted, replaced by a leaf or a
+container of the other kind, truncated away, removed by `splice`/`shift`/`pop`
+and not put back — its handle is **detached**. Reads still return the
+object's contents, but any tracked write through it — assignment,
+`delete`, array methods, `LazyWatch.patch`/`overwrite` entering at it —
+throws an `Error` naming where the object was last:
 
 ```js
-const todo = app.todos[1];
-app.todos.shift();  // the last slot is removed
-todo.done = true;
-// Error: LazyWatch proxy is detached: the object it wraps is no longer at
-// "todos.1" in the watched tree (...). Re-read it from the root proxy.
+const [first] = app.todos.splice(0, 1);
+first.done = true;
+// Error: LazyWatch proxy is detached: its object left the watched tree
+// (last at "todos.0"). Re-read it from the root proxy, or put it back into
+// the tree.
 ```
 
 Such a write would otherwise mutate an object no replica can see while
-recording a diff at a path that no longer holds it — the sender's state
-unchanged, every mirror growing a phantom entry. A handle stays detached
-even after a new object is assigned at the same path (the new value is a
-clone); read it from the root again. Symbol-keyed writes remain allowed,
-being local-only metadata.
+recording nothing anyone receives. A new object assigned at the same path
+is another object (the new value is a clone); read it from the root again.
+Symbol-keyed writes remain allowed, being local-only metadata.
+
+Receivers keep handles too: a mirror applying a diff whose `$splice` ops
+take an element out and put the same content back in (a move, as the ops
+record it) puts its own object back, so handles and listeners on a mirror
+follow moves made by the sender.
 
 ## Array Diffs and Shape Drift
 
@@ -1051,21 +1051,22 @@ data.items.unshift('a');
 ```
 
 Each op is `[start, deleteCount, items]`, applied by `patch`/`overwrite`
-(on proxies and plain objects alike) **before** the fragment's index keys, so an op followed by index
-or nested writes in the same batch stays correct. Consecutive structural ops
-in one batch append to the same `$splice` list; if index writes are already
-pending on that array when a structural op happens, LazyWatch falls back to
-per-index recording for that batch (larger, but always correct). On a
-1,000-item array of objects, prepending one item emits ~68 bytes instead of
-~34 KB.
+(on proxies and plain objects alike) **before** the fragment's index keys.
+Consecutive structural ops in one batch append to the same `$splice` list,
+and writes made to the array's elements before an op name the index each
+element holds after it, so a fragment is always "ops, then index keys".
+Elements pushed before an op go into the op list first, as an op of their
+own. On a 1,000-item array of objects, prepending one item emits ~68 bytes
+instead of ~34 KB.
 
-Reordering methods — `sort`, `reverse`, and `copyWithin` — are also
-intercepted: the final arrangement is computed first, and only the relocated
-slots are recorded and emitted (as per-slot content diffs, since element
-slots are path-addressed). Sorting an already-sorted array emits nothing,
-and a throwing `sort` comparator leaves the array untouched. Comparators
-see the raw elements — reads behave exactly as through the proxy — and must
-not mutate them.
+`sort` and `reverse` are recorded as ops too: the final order is computed
+first, the longest run of elements already in order stays, and the rest
+are moved out and back in, so the diff carries only the moved elements and
+handles follow them. Sorting an already-sorted array emits nothing, and a
+throwing `sort` comparator leaves the array untouched. Comparators see the
+raw elements — reads behave exactly as through the proxy — and must not
+mutate them. `copyWithin` copies elements, which state holds only by value,
+so it writes the copies index by index.
 
 **Real arrays are full values.** Index-keyed fragments are the *merge*
 form; when a diff carries an actual array, it means "this slot is now
