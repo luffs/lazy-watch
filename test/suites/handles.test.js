@@ -187,6 +187,91 @@ export default function register(runner) {
     assertEquals(composed, { a: { $splice: [[0, 1, []], [1, 0, ['x']]], $length: 2 } });
   });
 
+  runner.test('a handle put back at the end should be a move: an op, quiet listeners, the mirror\'s own object', async () => {
+    const init = () => ({ list: [{ id: 'a' }, { id: 'b' }, { id: 'c' }], other: [] });
+    const src = new LazyWatch(init(), { inverse: true });
+    const mirror = new LazyWatch(init());
+    const batches = [];
+    LazyWatch.on(src, (d, inv) => {
+      batches.push([d, inv]);
+      LazyWatch.patch(mirror, JSON.parse(JSON.stringify(d)));
+    });
+    const c = src.list[2];
+    const heard = [];
+    LazyWatch.on(c, d => heard.push(d));
+    const mirrored = mirror.list[2];
+    const mirrorHeard = [];
+    LazyWatch.on(mirrored, d => mirrorHeard.push(d));
+    const pre = LazyWatch.snapshot(src);
+
+    src.list.sort((x, y) => (x.id < y.id ? 1 : -1));
+    src.list.push(...src.list.splice(0, 1));           // c: out, and back at the end
+    const [a] = src.list.splice(1, 1);
+    src.list[src.list.length] = a;                      // the same, by assignment
+    const [b] = src.list.splice(0, 1);
+    src.other.push(b);                                  // into another array
+    await wait(5);
+    assertEquals(ids(src.list), ['c', 'a']);
+    assertEquals(ids(src.other), ['b']);
+    const [diff, inverse] = batches[0];
+    for (const node of [diff.list, diff.other]) {
+      assertEquals(Object.keys(node).filter(k => /^\d+$/.test(k)), [], 'recorded as ops, not index writes');
+    }
+    assertEquals(heard, [], 'a pure move tells the listener nothing');
+    assertEquals(mirrorHeard, [], 'nor the mirror\'s');
+    assertTrue(mirror.list[0] === mirrored, 'the mirror put its own c back, not a copy');
+    assertTrue(src.list[0] === c && src.list[1] === a && src.other[0] === b);
+    assertConverged(src, mirror);
+    const undone = new LazyWatch(LazyWatch.snapshot(src));
+    LazyWatch.patch(undone, JSON.parse(JSON.stringify(inverse)));
+    assertEquals(LazyWatch.snapshot(undone), pre, 'the inverse undoes it');
+
+    c.x = 1;
+    assertThrows(() => LazyWatch.transaction(src, () => {
+      src.list.push(...src.list.splice(0, 1));
+      throw new Error('abort');
+    }), /abort/);
+    await wait(5);
+    assertTrue(src.list[0] === c, 'rolled back to the object itself');
+    assertEquals(heard, [{ x: 1 }]);
+    LazyWatch.dispose(src);
+    LazyWatch.dispose(mirror);
+    LazyWatch.dispose(undone);
+  });
+
+  runner.test('a listener should stay exact when its object, changed, leaves and comes back by a write in one batch', async () => {
+    const cases = [
+      ['into an object key', () => ({ list: [{ id: 'a', e: 1 }, 'x'], box: {} }), app => app.list[0],
+        (app, h) => { delete h.e; const [m] = app.list.splice(0, 1); app.box.k = m; }],
+      ['over a leaf', () => ({ list: [{ id: 'a', e: 1 }, 'x'] }), app => app.list[0],
+        (app, h) => { delete h.e; const [m] = app.list.splice(0, 1); app.list[0] = m; }],
+      ['past the end', () => ({ list: [{ id: 'a', e: 1 }] }), app => app.list[0],
+        (app, h) => { delete h.e; const [m] = app.list.splice(0, 1); app.list[2] = m; }],
+      ['deleted, then assigned', () => ({ user: { n: 1, age: 3 } }), app => app.user,
+        (app, h) => { delete h.age; delete app.user; app.other = h; }],
+      ['truncated, then pushed', () => ({ list: [{ id: 'a', e: 1 }] }), app => app.list[0],
+        (app, h) => { delete h.e; app.list.length = 0; app.list.push(h); }],
+      ['popped, then pushed', () => ({ list: [{ id: 'a', e: 1 }] }), app => app.list[0],
+        (app, h) => { delete h.e; app.list.push(app.list.pop()); }],
+      ['inside an object moved', () => ({ list: [{ s: { e: 1, f: 2 } }], box: {} }), app => app.list[0].s,
+        (app, h) => { delete h.e; const [m] = app.list.splice(0, 1); app.box.k = m; }],
+    ];
+    for (const [name, init, pick, act] of cases) {
+      const app = new LazyWatch(init());
+      const mirror = new LazyWatch(init());
+      LazyWatch.on(app, d => LazyWatch.patch(mirror, JSON.parse(JSON.stringify(d))));
+      const h = pick(app);
+      const box = { v: LazyWatch.snapshot(h) };
+      LazyWatch.on(h, d => { LazyWatch.patch(box, { v: d }); });
+      act(app, h);
+      await wait(5);
+      assertEquals(box.v, LazyWatch.snapshot(h), `${name}: the listener's copy`);
+      assertConverged(app, mirror, `${name}: the mirror`);
+      LazyWatch.dispose(app);
+      LazyWatch.dispose(mirror);
+    }
+  });
+
   runner.test('an inverse completed from an array with holes should delete what the batch put at a hole', async () => {
     const src = new LazyWatch({ e: [null, null, 0] }, { inverse: true });
     delete src.e[0];

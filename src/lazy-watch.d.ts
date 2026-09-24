@@ -88,10 +88,11 @@ export type Patch<T> = T extends readonly (infer E)[] ? ArrayPatch<E> : {
  * it: it receives the object's own diffs, and `null` once the object
  * leaves the tree — deleted, replaced, truncated or spliced away, or gone
  * with an ancestor (hence the nullable parameter; narrow before use). An
- * object put back into the tree is delivered whole, as is an element moved
- * out and back in within a batch that also changed it (with `null` for
- * the keys it lost). A new object later placed at the same path is another
- * object: the listener does not follow it.
+ * object put back into the tree is delivered whole, as is one that went
+ * out and back in within a batch by an assignment, or by an array op in a
+ * batch that also changed it (with `null` for the keys it lost). A new
+ * object later placed at the same path is another object: the listener
+ * does not follow it.
  *
  * When the instance was created with `{ inverse: true }` (or has an undo
  * manager attached), listeners receive a second argument: the inverse diff

@@ -235,13 +235,15 @@ LazyWatch.on(app.todos[1], changes => {
 });
 ```
 
-One case delivers a whole value instead of a diff: an element taken out of
-an array and put back within the same batch (a move by `splice`, `sort`, or
-`reverse`) that the same batch also changed. The diff carries the element
-whole in a `$splice` op's items, so its listener gets the element's value,
-with `null` for every key the batch deleted from it — merging that into
-what the listener holds gives the exact new value. A pure move still tells
-the listener nothing.
+One case delivers a whole value instead of a diff: an object that leaves
+the tree and comes back within the same batch. Moved by `splice`, `push`,
+`sort`, or `reverse` in a batch that also changed it, it travels whole in
+a `$splice` op's items; put back by an assignment (under an object's key,
+over a leaf, past an array's end), it is written whole. Either way its
+listener gets the object's value, with `null` for every key the batch
+deleted from it — merging that into what the listener holds gives the
+exact new value. A pure move by an array op still tells the listener
+nothing.
 
 Subscribe from a consistent state: a listener added in the middle of a
 batch receives that whole batch, including changes already visible on the
@@ -1056,8 +1058,10 @@ Consecutive structural ops in one batch append to the same `$splice` list,
 and writes made to the array's elements before an op name the index each
 element holds after it, so a fragment is always "ops, then index keys".
 Elements pushed before an op go into the op list first, as an op of their
-own. On a 1,000-item array of objects, prepending one item emits ~68 bytes
-instead of ~34 KB.
+own. A handle's object pushed back (or assigned at the array's end) is an
+op too, as `splice` would record it, so a move out and back in stays a
+move for listeners and receivers alike. On a 1,000-item array of objects,
+prepending one item emits ~68 bytes instead of ~34 KB.
 
 `sort` and `reverse` are recorded as ops too: the final order is computed
 first, the longest run of elements already in order stays, and the rest
@@ -1230,7 +1234,9 @@ A few more wire-safety rules, all enforced with a `TypeError` at write time:
   which receivers would interpret as a deletion, silently desyncing replicas
 - **Assigning `undefined` deletes the property** — JSON drops `undefined`
   values entirely, so the assignment is normalized to the null-means-delete
-  convention and emitted as `{ prop: null }`
+  convention and emitted as `{ prop: null }`. An `undefined` that `splice`
+  or `unshift` inserts (a hole spread into the call, say) goes in as the
+  `null` its op carries, which is what receivers insert
 - **`__proto__`, `constructor`, and `prototype` are reserved** — writing them
   would mutate prototypes instead of data. They are rejected on the way into
   watched state, and `patch`/`overwrite` refuse diffs containing

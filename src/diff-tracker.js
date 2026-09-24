@@ -100,9 +100,10 @@ export class DiffTracker {
   // the tree first turns the records into copies (freezeLosses). Keyed by
   // position, so a splice moves them (#spliceLosses).
   #lostContainers = new Map();
-  // Object -> the diff fragments of it that $splice ops took out of the
-  // diff this batch (see recordSplice), and the same for the last batch
-  // consumed, until the emitter takes them (takeCarried). Made when needed
+  // Object -> the diff fragments of it that left the diff with it this
+  // batch, taken out by $splice ops (see recordSplice) or lost with it
+  // (recordContainerLoss), and the same for the last batch consumed,
+  // until the emitter takes them (takeCarried). Made when needed
   #carried = null;
   #consumedCarried = null;
   // Array diff node -> the array's length when the batch began, and the
@@ -351,14 +352,18 @@ export class DiffTracker {
 
   /**
    * A complete array record (every index recorded, holes as null) as the
-   * real array it describes; element records stay as they are, and
-   * receivers apply them as the full values they are
+   * real array it describes. Its element records are complete too, and
+   * receivers apply them as the full values a real array holds, so an
+   * element's array record (a backfilled fragment) becomes its array as
+   * well: kept as a fragment, it would read as an object with index keys
    */
   #asArray(fragment) {
     const out = [];
     out.length = typeof fragment.$length === 'number' ? fragment.$length : 0;
     for (const key of Object.keys(fragment)) {
-      if (INDEX_RE.test(key) && Number(key) < out.length && fragment[key] !== null) out[key] = fragment[key];
+      if (INDEX_RE.test(key) && Number(key) < out.length && fragment[key] !== null) {
+        out[key] = Utils.reviveArrayDiffs(fragment[key]);
+      }
     }
     return out;
   }
@@ -466,12 +471,7 @@ export class DiffTracker {
     // in the op's items (receivers never see those changes as changes);
     // kept aside, per object, for a listener following it back in
     for (let i = start; i < start + deleteCount; i++) {
-      const fragment = node[i];
-      if (fragment !== undefined && Utils.isObjectOrArray(live[i])) {
-        this.#carried ??= new Map();
-        if (this.#carried.has(live[i])) this.#carried.get(live[i]).push(fragment);
-        else this.#carried.set(live[i], [fragment]);
-      }
+      if (node[i] !== undefined && Utils.isObjectOrArray(live[i])) this.#carry(live[i], node[i]);
     }
     spliceIndexKeys(node, start, deleteCount, items.length);
     this.#spliceLosses(path, start, deleteCount, items.length);
@@ -627,6 +627,17 @@ export class DiffTracker {
     if (!this.#lostContainers.has(key)) {
       this.#lostContainers.set(key, { container, node, order: this.#lostContainers.size });
     }
+    // Its changes leave with it, as with an element an op takes out: a
+    // handle's object can be put back by a write
+    if (node !== undefined) this.#carry(container, node);
+  }
+
+  /** Keep a fragment of what the batch changed in `object` as it left the tree (see #carried) */
+  #carry(object, fragment) {
+    this.#carried ??= new Map();
+    const trail = this.#carried.get(object);
+    if (trail) trail.push(fragment);
+    else this.#carried.set(object, [fragment]);
   }
 
   /**
@@ -679,8 +690,8 @@ export class DiffTracker {
   }
 
   /**
-   * The fragments $splice ops carried away in the batch consumed last,
-   * per object (see recordSplice); handed out once
+   * The fragments objects carried out of the tree in the batch consumed
+   * last, per object (see #carried); handed out once
    */
   takeCarried() {
     const carried = this.#consumedCarried ?? NOTHING_CARRIED;

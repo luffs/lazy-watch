@@ -308,4 +308,30 @@ export default function register(runner) {
 
     LazyWatch.dispose(src);
   });
+
+  runner.test('an array recorded whole in the inverse after a splice should hold arrays, not fragments', async () => {
+    const app = new LazyWatch({ b: [{ c: true }, true] }, { inverse: true });
+    const inverses = [];
+    LazyWatch.on(app, (diff, inverse) => inverses.push(inverse));
+    const initial = LazyWatch.snapshot(app);
+    app.b[0] = [1, [2, 3], 4];
+    await wait(5);
+    const middle = LazyWatch.snapshot(app);
+    app.b[0][1].shift();   // a record inside b.0
+    delete app.b;          // b's record completed from the live array
+    app.b = ['x'];
+    app.b.unshift([]);     // an op on the new b: its record goes in whole
+    await wait(5);
+    const [first, second] = inverses;
+    assertTrue(Array.isArray(second.b) && Array.isArray(second.b[0]), 'b.0 is an array in a real array');
+    const undone = new LazyWatch(LazyWatch.snapshot(app));
+    LazyWatch.patch(undone, JSON.parse(JSON.stringify(second)));
+    assertEquals(LazyWatch.snapshot(undone), middle);
+    const both = new LazyWatch(LazyWatch.snapshot(app));
+    LazyWatch.patch(both, LazyWatch.composeDiffs(second, first));
+    assertEquals(LazyWatch.snapshot(both), initial, 'composed with the batch before, as the undo manager does');
+    LazyWatch.dispose(app);
+    LazyWatch.dispose(undone);
+    LazyWatch.dispose(both);
+  });
 }

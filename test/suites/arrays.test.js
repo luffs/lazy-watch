@@ -601,4 +601,30 @@ export default function register(runner) {
       LazyWatch.dispose(w);
     }
   });
+
+  runner.test('undefined inserted by splice or unshift should land as the null the op carries', async () => {
+    const app = new LazyWatch({ d: [1, 2] }, { inverse: true });
+    const mirror = new LazyWatch({ d: [1, 2] });
+    let inverse = null;
+    LazyWatch.on(app, (diff, inv) => { inverse = inv; LazyWatch.patch(mirror, JSON.parse(JSON.stringify(diff))); });
+    const sparse = [5, , 6]; // eslint-disable-line no-sparse-arrays
+    app.d.unshift(undefined);
+    app.d.splice(2, 0, ...sparse);
+    await wait(5);
+    const raw = LazyWatch.resolveIfProxy(app.d);
+    assertEquals(raw.map((v, i) => (!(i in raw) ? 'hole' : v === undefined ? 'undefined' : v)), [null, 1, 5, null, 6, 2], 'null, as receivers hold it');
+    assertEquals(LazyWatch.snapshot(mirror), LazyWatch.snapshot(app));
+
+    const pre = LazyWatch.snapshot(app);
+    app.d[1] = 'w';        // a record inside d, completed from the live array below
+    delete app.d;
+    app.d = ['v1', 'v2', 'v3', 'v4', 'v5', 'v6'];
+    await wait(5);
+    const undone = new LazyWatch(LazyWatch.snapshot(app));
+    LazyWatch.patch(undone, JSON.parse(JSON.stringify(inverse)));
+    assertEquals(LazyWatch.snapshot(undone), pre, 'the inverse restores every slot');
+    LazyWatch.dispose(app);
+    LazyWatch.dispose(mirror);
+    LazyWatch.dispose(undone);
+  });
 }

@@ -240,7 +240,7 @@ function opArray(ctx) {
   const { node, path } = ctx.rng.pick(arrays);
   const rng = ctx.rng;
   const label = path.join('.') || '<root>';
-  switch (rng.int(11)) {
+  switch (rng.int(12)) {
     case 0: { const v = genValue(rng, 2); node.push(v); return `${label}.push(${JSON.stringify(v)})`; }
     case 1: node.pop(); return `${label}.pop()`;
     case 2: node.shift(); return `${label}.shift()`;
@@ -263,6 +263,35 @@ function opArray(ctx) {
     case 9: {
       if (!node.length) return `${label} (empty, no index delete)`;
       const i = rng.int(node.length); delete node[i]; return `delete ${label}[${i}]`;
+    }
+    case 10: {
+      // A move: elements taken out, and put back as the handles splice
+      // returned, here or in another array, or the first under an
+      // object's key
+      if (!node.length) return `${label} (empty, no move)`;
+      const i = rng.int(node.length);
+      const taken = node.splice(i, 1 + rng.int(Math.min(2, node.length - i)));
+      const into = rng.chance(0.3) ? rng.pick(collectArrays(ctx.sender)) : { node, path };
+      const dest = into.node;
+      // Only an object goes under a key: a leaf there would be a write of
+      // null (a moved hole), which the fuzzer never makes
+      const how = rng.pick(['push', 'unshift', 'splice', 'append', 'over', isObjectOrArray(taken[0]) ? 'key' : 'push']);
+      // The first goes under a key last: the write may replace an ancestor of dest
+      const first = how === 'key' ? taken.shift() : undefined;
+      if (how === 'push' || how === 'key') dest.push(...taken);
+      else if (how === 'unshift') dest.unshift(...taken);
+      else if (how === 'splice') dest.splice(rng.int(dest.length + 1), 0, ...taken);
+      else if (how === 'over' && dest.length) for (const item of taken) dest[rng.int(dest.length)] = item;
+      else for (const item of taken) dest[dest.length] = item;
+      let where = into.path.join('.') || '<root>';
+      if (how === 'key') {
+        const box = randomContainer(rng, ctx.sender);
+        const k = rng.pick(KEYS);
+        if (Array.isArray(box.node)) box.node.push(first);
+        else box.node[k] = first;
+        where = Array.isArray(box.node) ? `${box.path.join('.') || '<root>'} (an array: pushed)` : [...box.path, k].join('.');
+      }
+      return `${label}: move ${taken.length + (how === 'key' ? 1 : 0)} from ${i} to ${where} by ${how}`;
     }
     default: {
       // Wholesale reassignment of a perturbed copy (element-wise diffing)

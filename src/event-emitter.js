@@ -373,13 +373,21 @@ export class EventEmitter {
    * path now (null once it left the tree), where it was when the batch
    * began (the inverse speaks in those positions: preBatchPath, or the
    * last path seen), and its whole value when the diff cannot describe
-   * it: it came back into the tree, or went out of an array and back in
-   * within the batch (see #movedValue). An object out of the tree before
-   * the batch and after it has nothing to hear, and is left out
+   * it: it came back into the tree, or went out and back in within the
+   * batch, by an op or a write (see #movedValue). An object out of the
+   * tree before the batch and after it has nothing to hear, and is left
+   * out
    */
   #placeListeners(diff, carried) {
     const placed = [];
     const collected = [];
+    // Where the objects that left the tree this batch are, those back in
+    // it (see #returnedDepth); usually none, and then no listener looks
+    let returned = null;
+    for (const object of carried.keys()) {
+      const at = this.#locate(object);
+      if (at !== null && at.length > 0) (returned ??= []).push(at);
+    }
     for (const entry of this.#listeners) {
       const target = entry.target ?? entry.ref.deref();
       const path = target === undefined ? null : this.#locate(target);
@@ -397,9 +405,15 @@ export class EventEmitter {
       if (path !== null && !wasAttached) {
         const live = this.#resolveState ? this.#resolveState(path) : { found: false };
         value = live.found ? Utils.deepClone(live.value) : undefined;
-      } else if (path !== null && before === null) {
-        value = this.#movedValue(diff, carried, path);
-        before = lastPath;
+      } else if (path !== null) {
+        // Out and back in: put in by an op (the diff cannot map it back), or
+        // by a write, so something on the way to it left the tree this batch
+        const depth = before === null ? this.#insertedDepth(diff, path)
+          : returned === null ? 0 : this.#returnedDepth(returned, path);
+        if (depth > 0) {
+          value = this.#movedValue(diff, carried, path, depth);
+          before = lastPath;
+        }
       }
       placed.push({ entry, path, before, value });
     }
@@ -408,20 +422,17 @@ export class EventEmitter {
   }
 
   /**
-   * An object that went out of an array and back in within the batch (a
-   * move by splice, sort, or reverse): the diff carries it whole in an
-   * op's items, so what the batch changed in it is not there as changes.
-   * The listener gets its whole value, with what the batch deleted in it
-   * marked, when the batch changed it — as the fragments the ops carried
-   * away (DiffTracker.recordSplice) or the diff at its new place show —
-   * and nothing when it only moved
+   * An object that went out of the tree and back in within the batch,
+   * the element `depth` long into `path` or below it: the diff carries
+   * it whole, in an op's items (a move by splice, push, sort, or reverse)
+   * or as a written value, so what the batch changed in it is not there
+   * as changes. The listener gets its whole value, with what the batch
+   * deleted in it marked, when the batch changed it — as the fragments it
+   * carried out (see DiffTracker's #carried) or the diff at its new place
+   * show — and nothing when an op only moved it
    */
-  #movedValue(diff, carried, path) {
+  #movedValue(diff, carried, path, depth) {
     if (!this.#resolveState) return undefined;
-    // The element that moved: the shortest part of the path the diff's
-    // ops cannot map back
-    let depth = 1;
-    while (depth < path.length && preBatchPath(diff, path.slice(0, depth)) !== null) depth++;
     const element = this.#resolveState(path.slice(0, depth));
     if (!element.found) return undefined;
     // Each carried fragment speaks in the element's own positions as they
@@ -448,6 +459,30 @@ export class EventEmitter {
     const value = Utils.deepClone(live.value);
     for (const fragment of fragments) markDeletions(value, fragment);
     return value;
+  }
+
+  /** The length of the shortest part of `path` the diff's ops cannot map back: the element an op put in */
+  #insertedDepth(diff, path) {
+    let depth = 1;
+    while (depth < path.length && preBatchPath(diff, path.slice(0, depth)) !== null) depth++;
+    return depth;
+  }
+
+  /**
+   * The length of the shortest part of `path` holding an object that left
+   * the tree this batch (it carried its changes out, see
+   * DiffTracker.recordContainerLoss) and is back: put back by a write. 0
+   * when there is none. `returned` are those objects' paths
+   */
+  #returnedDepth(returned, path) {
+    let depth = 0;
+    for (const at of returned) {
+      if (at.length > path.length || (depth > 0 && at.length >= depth)) continue;
+      let i = 0;
+      while (i < at.length && String(at[i]) === String(path[i])) i++;
+      if (i === at.length) depth = at.length;
+    }
+    return depth;
   }
 
   /**

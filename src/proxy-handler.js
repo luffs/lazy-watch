@@ -530,6 +530,18 @@ export class ProxyHandler {
       this.#handleArrayLengthChange(target, value, path);
     }
 
+    // A handle's object put back at the end (push, or an assignment at
+    // `length`) goes in as splice puts it, as one `$splice` op: a move out
+    // and back in stays a move, which listeners hear nothing of and a
+    // receiver makes with its own object. (An index write would carry the
+    // object whole, and put a copy in on the receiver.) push's own
+    // `length` write that follows is then a no-op
+    if (valueIsObject && Array.isArray(target) && prop === String(target.length) &&
+      this.#isDetached(value)) {
+      this.#spliceRaw(target, path, target.length, 0, this.#placeable([value]));
+      return true;
+    }
+
     // Merge same-kind container writes: object over object, and array over
     // array (element-wise, recording a minimal array fragment instead of
     // the wholesale value). A kind change — a real array over a plain
@@ -908,13 +920,14 @@ export class ProxyHandler {
   /**
    * What inserted values land in state as: copies, except the object of a
    * handle that has left the tree, which goes back itself (once per call:
-   * a second occurrence is a copy)
+   * a second occurrence is a copy). `undefined` goes in as the `null` the
+   * op carries on the wire (a hole spread into the call is one)
    */
   #placeable(values) {
     const used = new Set();
     return values.map(value => {
       const raw = this.resolveIfProxy(value);
-      if (!Utils.isObjectOrArray(raw)) return raw;
+      if (!Utils.isObjectOrArray(raw)) return raw === undefined ? null : raw;
       if (!used.has(raw) && this.#isDetached(raw)) {
         used.add(raw);
         this.#diffTracker.freezeLosses();
@@ -980,7 +993,7 @@ export class ProxyHandler {
    */
   #fromPool(item) {
     item = this.resolveIfProxy(item);
-    if (!Utils.isObjectOrArray(item)) return item;
+    if (!Utils.isObjectOrArray(item)) return item === undefined ? null : item;
     const pool = this.#pool;
     if (pool) {
       for (const raw of pool.raws.splice(0)) {

@@ -4,6 +4,51 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
+## [Unreleased]
+
+Four fixes around objects moved out of the tree and back in. The
+convergence fuzzer found the last three once it also moved elements by
+the handles `splice` returns (back into their array, into another one,
+and under an object's key), which it now does. No API or wire-format
+change.
+
+### Fixed
+
+- **A handle's object pushed back is a move, as `splice` makes it.**
+  Taking an element out and putting it back with `push` (or an
+  assignment at the array's end) was recorded as a write of the whole
+  element at its new index, not as the op `splice` records: its
+  listeners heard its whole value for a pure move, and a receiver put a
+  copy in, detaching its own handles on the element and telling their
+  listeners `null`. It is now a `$splice` op, so listeners on either
+  side hear nothing of the move and a mirror keeps its own object
+  (`list.push(...list.splice(i, 1))`, `b.push(...a.splice(i, 1))`)
+- **A listener kept keys its object lost, when the object left the tree
+  and came back in one batch.** A batch that deleted a key in an object
+  and then took the object out and put it back with `push`, or by an
+  assignment (under an object's key, over a leaf, past an array's end,
+  or after the key holding it was deleted), handed the object's
+  listeners its whole value without the deleted keys marked, so a
+  listener merging what it hears kept them. What a batch changed in an
+  object now leaves with it however it leaves, as it did when `splice`
+  took it out, and the listener gets the whole value with `null` for
+  those keys
+- **Undo could merge an array into the object it replaced.** A batch that
+  changed an array inside another array, then deleted or replaced the
+  outer one, recreated it, and spliced the new one, recorded the outer
+  array's pre-batch value in its inverse with the inner array still a
+  fragment. Applied alone the inverse came out right, but merged with the
+  batch before it, as the undo manager merges the batches of one step,
+  that fragment merged into the object the older batch restored there,
+  and undo left index keys in it (`{ 0: 1, 1: [2, 3], 2: 4, c: true }`
+  where `{ c: true }` belonged). The inner arrays now go in as arrays
+- **`undefined` inserted by `splice` or `unshift` is stored as `null`**,
+  the value its op carries and receivers insert. It stayed `undefined`
+  in the array (a hole spread into the call is one:
+  `list.unshift(...list.splice(i, 1))` on a hole), and an inverse
+  completed from that array later read the slot as empty and left
+  whatever the batch had put there
+
 ## [7.0.0] - 2026-09-24
 
 Handles follow their objects, as references do in plain JavaScript: a
