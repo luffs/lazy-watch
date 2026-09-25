@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
-## [Unreleased]
+## [7.0.1] - 2026-09-25
 
 Four fixes around objects moved out of the tree and back in. The
 convergence fuzzer found the last three once it also moved elements by
