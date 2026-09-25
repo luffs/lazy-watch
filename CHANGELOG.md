@@ -4,7 +4,13 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
-## [Unreleased]
+## [7.0.2] - 2026-09-25
+
+`undefined` inside a value entering state (`obj.x = { a: undefined }`,
+`[undefined, 1]`) is stored as JSON carries it, which mirrors and undo
+now agree with; the object passed to `new LazyWatch` is normalized the
+same way, in place. The API reference also says what assigning `null`
+to a key does, which is unchanged. No API or wire-format change.
 
 ### Fixed
 
