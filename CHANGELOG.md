@@ -4,6 +4,32 @@ All notable changes to this project are documented in this file. Version numbers
 
 This project follows the Keep a Changelog format and adheres to Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+
+- **`undefined` inside a value is stored as JSON carries it.** A key set
+  to `undefined` inside an assigned or inserted value (`obj.x = { a:
+  undefined }`, `list.push({ a: undefined })`), or in the object a
+  LazyWatch was created on, stayed in state holding `undefined`, and so did
+  an `undefined` array element (`obj.x = [undefined, 1]`); the diff cannot
+  carry either, so receivers held no key, or `null`. Written where an
+  object had been deleted earlier in the batch, such a value left
+  receivers holding the old value of that key, and mirrors diverged; and
+  an inverse read the key as absent, so undo left whatever a later batch
+  put there. Such a key is now left out and such an element is `null`,
+  as receivers hold them; the object passed to `new LazyWatch` is
+  normalized in place, as it is kept by reference. The convergence fuzzer
+  found this once it generated `undefined` values and holes, which it now
+  does
+
+### Changed
+
+- The API reference now says what assigning `null` to a key does, which
+  is unchanged: the sender keeps `k: null` while receivers, reading the
+  diff's `null` as a deletion, drop the key. Remove a key with `delete`
+  (or by assigning `undefined`)
+
 ## [7.0.1] - 2026-09-25
 
 Four fixes around objects moved out of the tree and back in. The

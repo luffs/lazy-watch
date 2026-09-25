@@ -106,7 +106,6 @@ export class ProxyHandler {
   #eventEmitter;
   #patchMode = false;
   #instance = null;
-  #suppress = false;
 
   constructor(original, diffTracker, eventEmitter) {
     if (!Utils.isObjectOrArray(original)) {
@@ -117,6 +116,8 @@ export class ProxyHandler {
     // later is cloned), so frozen containers and exotic properties can
     // only arrive here — reject them before a write can fail mid-record
     Utils.assertTrackable(original);
+    // State holds values as JSON carries them (see Utils.cloneValue)
+    Utils.dropUndefined(original);
     this.#original = original;
     this.#diffTracker = diffTracker;
     this.#eventEmitter = eventEmitter;
@@ -646,25 +647,18 @@ export class ProxyHandler {
     this.#relink(target, first, target.length, path);
   }
 
-  /**
-   * Diff node for a path; during suppressed structural ops, recording is
-   * redirected to a throwaway object so the mutation still happens but
-   * leaves no per-index entries behind.
-   */
+  /** Diff node for a path */
   #diff(path) {
-    return this.#suppress ? {} : this.#diffTracker.getDiffObject(path);
+    return this.#diffTracker.getDiffObject(path);
   }
 
   #scheduleEmit() {
-    if (!this.#suppress) this.#eventEmitter.scheduleEmit();
+    this.#eventEmitter.scheduleEmit();
   }
 
-  /**
-   * True when pre-change values should be captured for the inverse diff.
-   * Suppression covers both structural-op internals and rollback itself.
-   */
+  /** True when pre-change values should be captured for the inverse diff */
   #inverseActive() {
-    return this.#diffTracker.inverseEnabled && !this.#suppress;
+    return this.#diffTracker.inverseEnabled;
   }
 
   /**
@@ -674,7 +668,7 @@ export class ProxyHandler {
    * diff so receivers delete the stale keys they still hold.
    */
   #recordLoss(path, prop, value) {
-    if (!this.#suppress && Utils.isObjectOrArray(value)) {
+    if (Utils.isObjectOrArray(value)) {
       this.#diffTracker.recordContainerLoss(
         path, prop, value, this.#diffTracker.peekDiffObject([...path, prop]));
     }
@@ -686,8 +680,7 @@ export class ProxyHandler {
    * Always the diff's own copy, never the object that lands in state: a
    * diff node aliased to a live container would receive the bookkeeping
    * of same-batch writes below it (`$length` stamps, null markers) as
-   * real properties of the state. Leaves and suppressed (throwaway)
-   * recordings need no copy.
+   * real properties of the state. Leaves need no copy.
    *
    * When a container was destroyed at this slot earlier in the batch (or
    * `stale` is passed directly by a replacement site), receivers still
@@ -700,7 +693,7 @@ export class ProxyHandler {
    * receivers replace those wholesale too.
    */
   #staleFilledDiffValue(clonedValue, path, prop, stale) {
-    if (this.#suppress || !Utils.isObjectOrArray(clonedValue)) {
+    if (!Utils.isObjectOrArray(clonedValue)) {
       return clonedValue;
     }
     const copy = Utils.deepClone(clonedValue);
@@ -933,26 +926,23 @@ export class ProxyHandler {
         this.#diffTracker.freezeLosses();
         return raw;
       }
-      return Utils.deepClone(raw);
+      return Utils.cloneValue(raw);
     });
   }
 
   /**
    * One splice on a raw array: the elements themselves move, and every
-   * handle on one is relinked to its new index. Recorded (unless
-   * suppressed) as one `$splice` op carrying copies of `items`, and in the
-   * inverse as the op undoing it. `items` land in state as given (see
+   * handle on one is relinked to its new index. Recorded as one `$splice`
+   * op carrying copies of `items`, and in the inverse as the op undoing it. `items` land in state as given (see
    * #placeable). Returns the removed elements. `relink` false leaves the
    * links to the caller, which moves many elements at once (#rearrange)
    */
   #spliceRaw(target, path, start, deleteCount, items, relink = true) {
     const newLength = target.length - deleteCount + items.length;
-    if (!this.#suppress) {
-      // Before anything moves: the inverse copies what the op removes
-      this.#diffTracker.recordInverseSplice(path, target, start, deleteCount, items.length);
-      this.#diffTracker.recordSplice(path, start, deleteCount,
-        items.map(item => Utils.isObjectOrArray(item) ? Utils.deepClone(item) : item), newLength, target);
-    }
+    // Before anything moves: the inverse copies what the op removes
+    this.#diffTracker.recordInverseSplice(path, target, start, deleteCount, items.length);
+    this.#diffTracker.recordSplice(path, start, deleteCount,
+      items.map(item => Utils.isObjectOrArray(item) ? Utils.deepClone(item) : item), newLength, target);
     this.#generation++;
     const removed = nativeSplice(target, start, deleteCount, items);
     this.#log?.push(['splice', target, start, removed, items.length, path]);
@@ -1014,7 +1004,7 @@ export class ProxyHandler {
         }
       }
     }
-    return Utils.deepClone(item);
+    return Utils.cloneValue(item);
   }
 
 
@@ -1075,8 +1065,8 @@ export class ProxyHandler {
     // Only clone if it's an object/array. The object of a handle that left
     // the tree is put back itself, not copied (as a plain object would be
     // moved), so its handles work again; the diff still gets its own copy
-    const reattach = Utils.isObjectOrArray(value) && !this.#suppress && this.#isDetached(value);
-    const clonedValue = Utils.isObjectOrArray(value) ? Utils.deepClone(value) : value;
+    const reattach = Utils.isObjectOrArray(value) && this.#isDetached(value);
+    const clonedValue = Utils.isObjectOrArray(value) ? Utils.cloneValue(value) : value;
 
     // Capture pre-change values before the writes below (inverse diffs are
     // wire fragments, so they carry the same $length marker)

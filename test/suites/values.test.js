@@ -374,6 +374,46 @@ export default function register(runner) {
     LazyWatch.dispose(dst);
   });
 
+  runner.test('undefined inside a value should be stored as JSON carries it, keeping mirrors and undo exact', async () => {
+    // As JSON reads it, keys in order (undo may restore them in another)
+    const sorted = value => JSON.parse(JSON.stringify(value, (k, v) =>
+      v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map(key => [key, v[key]])) : v));
+    const cases = [
+      ['a key in an assigned object', {}, w => { w.o = { a: undefined, b: 1 }; },
+        w => { w.o.b = 2; delete w.o; w.o = { a: 5 }; }],
+      ['an element of an assigned array', {}, w => { w.x = [undefined, 1]; },
+        w => { w.x[1] = 'w'; delete w.x; w.x = ['a', 'b', 'c']; }],
+      ['an element inside a pushed value', { l: [] }, w => { w.l.push([undefined, 1]); },
+        w => { w.l[0][1] = 'w'; delete w.l[0]; w.l[0] = ['a', 'b']; }],
+      ['a key in the initial object', { o: { a: undefined, b: 1 } }, () => {},
+        w => { w.o.b = 2; delete w.o; w.o = { a: 5 }; }],
+      // Written where an object was deleted this batch: the diff must delete
+      // every key receivers still hold that the new value lacks
+      ['a key in an object replacing a deleted one', { o: { a: 1, b: 1 } }, () => {},
+        w => { delete w.o; w.o = { a: undefined, b: 2 }; }],
+    ];
+    for (const [name, init, before, batch] of cases) {
+      const src = new LazyWatch(init, { inverse: true });
+      const dst = new LazyWatch(JSON.parse(JSON.stringify(init)));
+      let inverse = null;
+      LazyWatch.on(src, (d, inv) => { inverse = inv; LazyWatch.patch(dst, JSON.parse(JSON.stringify(d))); });
+      before(src);
+      await wait(5);
+      const raw = JSON.stringify(LazyWatch.resolveIfProxy(src), (k, v) => (v === undefined ? '<undefined>' : v));
+      assertTrue(!raw.includes('<undefined>'), `${name}: no undefined in state (${raw})`);
+      const pre = LazyWatch.snapshot(src);
+      batch(src);
+      await wait(5);
+      assertConverged(src, dst, `${name}: the mirror`);
+      const undone = new LazyWatch(LazyWatch.snapshot(src));
+      LazyWatch.patch(undone, JSON.parse(JSON.stringify(inverse)));
+      assertEquals(sorted(LazyWatch.snapshot(undone)), sorted(pre), `${name}: undo`);
+      LazyWatch.dispose(src);
+      LazyWatch.dispose(dst);
+      LazyWatch.dispose(undone);
+    }
+  });
+
   runner.test('should reject NaN and Infinity values', () => {
     const watched = new LazyWatch({ n: 1 });
     assertThrows(() => { watched.n = NaN; });

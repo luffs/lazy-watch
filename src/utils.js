@@ -28,16 +28,17 @@ const MAX_DATA_DEPTH = 256;
  * times faster than structuredClone for the small values watched state is
  * written in. Holes stay holes, and an own `__proto__` key is copied as the
  * data it is. Anything else, and a nesting deep enough to be a cycle, gives
- * NOT_DATA
+ * NOT_DATA. With `json`, `undefined` is stored as JSON carries it (see
+ * Utils.cloneValue)
  */
-function cloneData(value, depth) {
+function cloneData(value, depth, json = false) {
   if (value === null || typeof value !== 'object') return value;
   if (depth > MAX_DATA_DEPTH) return NOT_DATA;
   if (Array.isArray(value)) {
     const out = new Array(value.length);
     for (let i = 0; i < value.length; i++) {
       if (!(i in value)) continue;
-      const item = cloneData(value[i], depth + 1);
+      const item = json && value[i] === undefined ? null : cloneData(value[i], depth + 1, json);
       if (item === NOT_DATA) return NOT_DATA;
       out[i] = item;
     }
@@ -47,7 +48,8 @@ function cloneData(value, depth) {
   if (proto !== Object.prototype && proto !== null) return NOT_DATA;
   const out = {};
   for (const key of Object.keys(value)) {
-    const item = cloneData(value[key], depth + 1);
+    if (json && value[key] === undefined) continue;
+    const item = cloneData(value[key], depth + 1, json);
     if (item === NOT_DATA) return NOT_DATA;
     if (key === '__proto__') Object.defineProperty(out, key, { value: item, enumerable: true, writable: true, configurable: true });
     else out[key] = item;
@@ -418,6 +420,37 @@ export const Utils = {
       out[key] = this.isObjectOrArray(entry) ? this.cloneWithoutNulls(entry) : this.deepClone(entry);
     }
     return out;
+  },
+
+  /**
+   * Deep clone a value entering watched state, stored as JSON carries it: a
+   * key holding `undefined` is left out, and an `undefined` array element
+   * is `null`. Receivers hold that, since the diff is JSON; kept as
+   * `undefined`, the key would read as absent to the inverse and to undo.
+   * (deepClone keeps `undefined`, which hand-built diffs use as a deletion.)
+   */
+  cloneValue(value) {
+    const copy = cloneData(value, 0, true);
+    return copy !== NOT_DATA ? copy : this.dropUndefined(this.deepClone(value));
+  },
+
+  /**
+   * The same normalization as cloneValue, in place: for the object a
+   * LazyWatch is created on, which it keeps by reference. Cycle-safe.
+   * Returns it
+   */
+  dropUndefined(value, seen = new WeakSet()) {
+    if (!this.isObjectOrArray(value) || seen.has(value)) return value;
+    seen.add(value);
+    for (const key of Object.keys(value)) {
+      if (value[key] === undefined) {
+        if (Array.isArray(value)) value[key] = null;
+        else delete value[key];
+      } else {
+        this.dropUndefined(value[key], seen);
+      }
+    }
+    return value;
   },
 
   /**

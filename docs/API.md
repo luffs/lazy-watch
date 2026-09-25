@@ -1234,9 +1234,17 @@ A few more wire-safety rules, all enforced with a `TypeError` at write time:
   which receivers would interpret as a deletion, silently desyncing replicas
 - **Assigning `undefined` deletes the property** — JSON drops `undefined`
   values entirely, so the assignment is normalized to the null-means-delete
-  convention and emitted as `{ prop: null }`. An `undefined` that `splice`
-  or `unshift` inserts (a hole spread into the call, say) goes in as the
-  `null` its op carries, which is what receivers insert
+  convention and emitted as `{ prop: null }`. Inside a value that enters
+  state (assigned, inserted by `splice`, `unshift` or `push`, or the
+  object a LazyWatch is created on) `undefined` is stored as JSON carries
+  it: a key holding it is left out, and an array element holding it (a hole
+  spread into a call, say) is `null`, which is what receivers hold
+- **Assigning `null` to a key is not a deletion on the sender** —
+  `obj.k = null` stores `null`, but the diff carries `{ k: null }`, which
+  receivers apply as a deletion: the sender keeps the key and every mirror
+  drops it. To remove a key, `delete obj.k` (or assign `undefined`); for
+  "no value" that must reach mirrors, store another sentinel. In an array
+  the difference does not show, since a hole reads as `null`
 - **`__proto__`, `constructor`, and `prototype` are reserved** — writing them
   would mutate prototypes instead of data. They are rejected on the way into
   watched state, and `patch`/`overwrite` refuse diffs containing

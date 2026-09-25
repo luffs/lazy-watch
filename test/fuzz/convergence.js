@@ -67,6 +67,9 @@ function genLeaf(rng) {
 
 function genValue(rng, depth = 0) {
   const r = rng.next();
+  // Now and then inside a value, what JSON cannot carry: state stores it as
+  // JSON would (a key holding undefined left out, an array element null)
+  if (depth > 0 && r < 0.03) return undefined;
   if (depth >= 3 || r < 0.5) return genLeaf(rng);
   if (r < 0.75) return genObject(rng, depth + 1);
   return genArray(rng, depth + 1);
@@ -82,7 +85,10 @@ function genObject(rng, depth = 0) {
 function genArray(rng, depth = 0) {
   const out = [];
   const n = rng.int(5);
-  for (let i = 0; i < n; i++) out.push(genValue(rng, depth));
+  for (let i = 0; i < n; i++) {
+    if (rng.chance(0.05)) out.length++; // a hole
+    else out.push(genValue(rng, depth));
+  }
   return out;
 }
 
@@ -93,13 +99,14 @@ const isObjectOrArray = v => LazyWatch.Utils.isObjectOrArray(v);
 const deepClone = v => LazyWatch.Utils.deepClone(v);
 const roundTrip = value => JSON.parse(JSON.stringify(value));
 
-/** Key-order-insensitive canonical form; holes and undefined become null like JSON */
+/** Key-order-insensitive canonical form, as JSON reads it: holes and undefined elements are null, keys holding undefined are left out */
 export function canon(value) {
   if (value === MISSING) return '<missing>';
   if (value === undefined) return 'null';
   if (Array.isArray(value)) return '[' + Array.from(value, canon).join(',') + ']';
   if (value && typeof value === 'object') {
-    return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + canon(value[k])).join(',') + '}';
+    return '{' + Object.keys(value).filter(k => value[k] !== undefined).sort()
+      .map(k => JSON.stringify(k) + ':' + canon(value[k])).join(',') + '}';
   }
   return JSON.stringify(value);
 }
@@ -507,8 +514,9 @@ function runOne({ seed, mode, steps, runIndex, trace }) {
   const REMOTE = { origin: 'remote' };
   const wire = new LazyWatch(deepClone(initial));
   const relay = new LazyWatch(deepClone(initial));
-  const plain = deepClone(initial);
-  const composed = deepClone(initial);
+  // Plain mirrors start from what a snapshot would give them
+  const plain = roundTrip(initial);
+  const composed = roundTrip(initial);
   let buffer = null;
   let preBatch = canon(initial);
 
